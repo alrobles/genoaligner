@@ -29,6 +29,7 @@ hipcc --version | head -2
 echo "cmake : $(command -v cmake)"
 
 cmake -S "${ROOT}" -B "${BUILD}" \
+    -DCMAKE_CXX_COMPILER="$(command -v hipcc)" \
     -DGENOALIGNER_BACKEND=rocm \
     -DCMAKE_BUILD_TYPE=Release
 cmake --build "${BUILD}" -j "$(nproc)"
