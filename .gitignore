@@ -1,0 +1,9 @@
+build/
+*.o
+*.so
+*.a
+__pycache__/
+*.pyc
+.cache/
+compile_commands.json
+*.sif
