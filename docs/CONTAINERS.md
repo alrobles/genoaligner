@@ -143,3 +143,40 @@ is not trustworthy. Check from inside the container.
 - Gate any job that consumes the `.sif` behind the build. A job launched in the
   same breath as the build reported `container image not found`.
 - `--gres=gpu:mi210:1` is still required; the container does not change that.
+
+## H1-C NVIDIA: negative result, with the exact cause
+
+Job `29068829`, node `r15r10n01`, Quadro RTX 6000 visible, host `nvcc` 13.0
+reachable. Inside the `rocm/dev-ubuntu-24.04:6.4.3-complete` image:
+
+    hipcc: /opt/rocm/bin/hipcc
+    nvcc in image: none
+    error: "Must define exactly one of __HIP_PLATFORM_AMD__ or
+            __HIP_PLATFORM_NVIDIA__"
+
+**The image is the wrong artifact for the NVIDIA target.** It ships `hipcc` —
+which is an AMD-clang wrapper, *not* a portable HIP-for-NVIDIA shim — and no
+`nvcc`. Setting `__HIP_PLATFORM_NVIDIA__` trips the precondition in AMD's own
+`hip_runtime.h`. This cannot work by construction; do not retry it.
+
+Routes checked, all exhausted:
+
+    hip-nvcc on PyPI .............. does not exist (404)
+    hipcc on conda-forge .......... frozen at 6.3.3, too old
+    rocm/dev base as the shim ..... FAILED (this job)
+    hipify-clang + host nvcc ...... fallback, works, no new dependency
+
+What would be needed instead: a **CUDA** devel base plus ROCm's HIP-for-NVIDIA
+headers/libs — i.e. a CUDA-based image, not a ROCm-based one. Not attempted; the
+fallback above is adequate and unblocks nothing else.
+
+### Why this does not block the project
+
+    MI210 (AMD/ROCm)   fully green: bare-metal AND containerized. The WFA kernel
+                       can be written and measured today. This is the whole
+                       competitive gap — no existing tool supports MI210.
+    NVIDIA/CUDA        mechanical; hipify-clang + nvcc covers it until a proper
+                       CUDA-based shim image is built.
+
+The AMD flank was the real risk and it is closed. The NVIDIA flank is the
+mechanical one and can wait without gating any other phase.
