@@ -11,6 +11,13 @@ project(genoaligner LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# HIP sources: CMake does not know the .hip extension by default, so it cannot
+# infer the link language and fails with "Cannot determine link language for
+# target". Register .hip as a C++ source extension and route it to hipcc.
+set_source_files_properties(
+    src/probe.hip PROPERTIES LANGUAGE CXX)
+set(CMAKE_HIP_ARCHITECTURES "" CACHE STRING "" FORCE)
+
 option(GENOALIGNER_BUILD_TESTS "Build tests" ON)
 option(GENOALIGNER_BUILD_BENCH "Build benchmarks" ON)
 
