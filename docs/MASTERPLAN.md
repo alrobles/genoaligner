@@ -1,0 +1,344 @@
+# MASTERPLAN — genoaligner: primer producto de software
+
+> **Repo:** `alrobles/genoaligner-devel` (privado)
+> **Autor:** Ángel Luis Robles Fernández — Reuman Lab / KU
+> **Fecha:** 2026-09-10 · **Versión:** 1.0
+> **Objetivo estratégico:** destrabar la inferencia filogenética de phylogenyAI
+> con infraestructura de alineación propia, portable CUDA+ROCm.
+
+---
+
+## 0. Tesis: por qué esto, por qué ahora
+
+El proyecto no nace de un capricho técnico. Nace de tres activos que ya
+tenemos y que la competencia no puede replicar barato:
+
+### 0.1 Sandbox casi infinito de hardware heterogéneo
+
+    NVIDIA (CUDA):  q6000 ×~29, A100 ×~18, L40 ×4, pro6000 ×5, V100, A40, q8000
+    AMD (ROCm):     MI210 ×~81  (27 nodos × 3)
+    Toolchains:     cuda/13.0 + rocm/6.4.3, ambos verificados funcionando
+
+Nadie en filogenética está usando las MI210. **Hardware ocioso = ventaja
+gratuita.**
+
+### 0.2 Diseño para el fallo (test-and-drop barato)
+
+De `ecoreasoner/ROADMAP.md` §7, reglas aprendidas con sangre:
+
+> **test-and-drop: hipótesis validable en <4h GPU ANTES de escalar.**
+> Pool teórico ≠ pool real — medir con `scontrol`, no `sinfo`.
+
+Esta es la filosofía que gobierna el masterplan. No "construir el alineador
+perfecto", sino **ciclos baratos de hipótesis → medir → descartar o escalar**,
+miles de veces, con agentes + cluster.
+
+### 0.3 Software factory agéntica operativa
+
+    hermes-hydra        router/balanceador; exec en ku-hpc, reumanlab, alpha, terminal
+    knowledgebase       patrón HPC canónico (ARCHITECTURE.md), tier system T0/T1/T2
+    ecoreasoner         harness Slurm con checkpoint/resubmit (el patrón a copiar)
+    devin CLI           asistente de código, gratis por promoción sin tope
+    Hermes (local)      planificador + ejecutor verificado
+
+**El mejor activo no es el código: es la capacidad de generar y descartar
+diseños rápido.** El masterplan está construido para explotar eso.
+
+---
+
+## 1. Objetivo del primer producto
+
+**Un pipeline de alineación portable que corra en MI210 y produzca resultados
+idénticos a una referencia CPU — con WFA como primer método y SW como segundo.**
+
+Criterio de éxito explícito y binario:
+
+    genoaligner corre en MI210 (gfx90a ROCm)
+    Y produce scores idénticos a SeqAn/Parasail sobre un dataset de control
+    Y es replicable en otro cluster desde un manifiesto
+
+NO es criterio: "más rápido que Accelign en TCUPS".
+
+### Por qué WFA primero, SW después (decisión del usuario)
+
+- **WFA primero:** es el método apropiado para filogenética (homólogos,
+  distancia de edición baja → coste bajo). Es el kernel más simple de
+  validar y el que destraba phylogenyAI.
+- **SW después:** no lo necesitamos, pero hay gente que sí → visibilidad y
+  adopción. Estrategia de producto, no de necesidad técnica.
+
+---
+
+## 2. Arquitectura propuesta (a validar con test-and-drop)
+
+### 2.1 Decisión central: HIP puro
+
+    Una base de código HIP → hipcc compila para ROCm nativo
+                          → hipcc con -D__HIP_PLATFORM_NVIDIA__ → CUDA
+
+Razones: es lo que AMD usa (minimap2 heterogéneo, jul 2026); el cluster lo
+tiene; evita la deuda técnica de hipify; SYCL no está listo en el cluster
+(falta libs GPU de oneAPI); Kokkos añade una capa innecesaria para 2 targets.
+
+**Test-and-drop:** validar HIP puro con un kernel trivial en ambas
+plataformas ANTES de escribir el kernel real. Si falla, retroceder a SYCL.
+
+### 2.2 Estructura del repo
+
+```
+genoaligner-devel/
+├── README.md
+├── CMakeLists.txt              # build dual: detecta ROCm o CUDA
+├── docs/
+│   ├── OPTION_A_ANALYSIS.md
+│   └── MASTERPLAN.md           # este documento
+├── include/genoaligner/
+│   ├── types.hpp               # CIGAR, scoring scheme, resultado
+│   ├── api.hpp                 # interfaz pública (backend-agnostic)
+│   └── backend/
+│       ├── hip_common.hpp      # abstracción HIP (única para ambos)
+│       └── dispatch.hpp        # RT/device selection
+├── src/
+│   ├── wfa/
+│   │   ├── wfa_kernel.hip      # kernel WFA (el corazón, ~600-800 líneas)
+│   │   ├── wfa_host.cpp        # lanzamiento, buffers, etapa
+│   │   └── wfa_traceback.hip   # (fase posterior)
+│   ├── sw/
+│   │   └── sw_kernel.hip       # Smith-Waterman (segundo método)
+│   ├── io/fasta.cpp            # lectura/escritura
+│   └── reference/seqan_ref.cpp # referencia CPU para validación
+├── tests/
+│   ├── unit/                   # tests por componente
+│   ├── parity/                 # paridad vs SeqAn (el test que importa)
+│   └── data/                   # datasets de control (pequeños, versionados)
+├── bench/
+│   ├── tcus.cpp                # medición de TCUPS
+│   └── slurm/                  # jobs de benchmark en el cluster
+└── scripts/
+    ├── build_rocm.sh
+    ├── build_cuda.sh
+    └── validate_parity.py
+```
+
+### 2.3 El kernel WFA — qué hay que implementar
+
+WFA (Wavefront Alignment) computa el alineamiento en O(ns) donde s = distancia
+de edición. Para filogenética (identidad 50-95%) s es pequeño → muy eficiente.
+
+Componentes del kernel (basado en la formulación publicada, no en copia):
+
+1. **Wavefront storage:** por cada diagonal k y cada score s, guardar la
+   extensión máxima. Mapeo a memoria GPU (compartida para wavefronts activos).
+2. **Extensión:** cada hilo extiende un match desde un offset dado.
+3. **Reducción:** combinar los tres predecesores (I, D, M) por celda.
+4. **Bucle de score** hasta alcanzar el criterio de parada.
+5. **Offset (WFA-adaptive):** manejar wavefronts lejos de la diagonal.
+
+Los puntos difíciles (donde test-and-drop paga): asignación de memoria para
+wavefronts variables, sincronización entre iteraciones de score, y traceback.
+
+---
+
+## 3. Fases — diseñadas para fallo barato
+
+Cada fase tiene un **criterio de fusión** (advance/kill) medible en <4h GPU.
+Si no se cumple, se descarta el enfoque y se prueban alternativas. **Ningún
+diseño se compromete sin pasar su test.**
+
+### Fase 0 — Verificación de plataforma ✅ COMPLETA
+
+Entregable: informe de toolchain.
+Estado: HIP corrió en MI210; CUDA 13.0 presente. Ver `OPTION_A_ANALYSIS.md`.
+
+### Fase 1 — Esqueleto dual + kernel trivial (1 semana)
+
+- CMake que detecte ROCm/CUDA y compile la misma fuente HIP.
+- Kernel trivial (`vector_add`) que corra en MI210 y en una NVIDIA.
+- Script de build para ambos + CI mínima (compila en los dos).
+
+**Criterio de fusión:** el mismo binario fuente compila y corre correcto en
+MI210 (ROCm) Y en q6000 (CUDA). Si no → evaluar SYCL.
+
+### Fase 2 — Kernel WFA score-only (2 semanas)
+
+- Implementación WFA sin traceback, solo score.
+- Manejo de memoria de wavefronts.
+
+**Criterio de fusión:** score correcto en ≥95% de un set de control de
+~1,000 pares (comparado contra referencia CPU). <95% → revisar formulación
+antes de optimizar.
+
+### Fase 3 — Paridad exacta + QA (1 semana)
+
+- Set de control: pares con identidad conocida (50%, 70%, 90%, 100%).
+- Comparación exhaustiva contra SeqAn/Parasail.
+- Reporte de paridad (100% esperado; documentar cualquier divergencia).
+
+**Criterio de fusión:** 100% de scores idénticos a la referencia. Si hay
+divergencias → entender por qué ANTES de seguir (puede ser bug o límite).
+
+### Fase 4 — Traceback (2-3 semanas — la fase de riesgo)
+
+- Reconstrucción del CIGAR. Es donde WFA-GPU dedica más complejidad.
+- Estrategia de memoria para almacenar el camino.
+
+**Criterio de fusión:** CIGAR correcto → el alineamiento reconstruido
+reproduce el score. Es un test **autoconsistente** (no necesita referencia).
+
+### Fase 5 — Capa de portabilidad formal (1 semana)
+
+- Abstracción de backend completa.
+- Suite de tests que corre idénticos en ambas plataformas.
+
+**Criterio de fusión:** todos los tests de fases 2-4 pasan en ROCm Y CUDA
+desde el mismo fuente.
+
+### Fase 6 — Benchmark honesto (1 semana)
+
+- TCUPS en MI210, q6000, A100, pro6000.
+- Speedup vs referencia CPU (SeqAn).
+- Comparación documentada vs Accelign/WFA-GPU **donde corren** (reconociendo
+  que no corren en MI210).
+
+**Criterio de fusión:** números publicables + manifiesto de replicabilidad.
+
+### Fase 7 — Smith-Waterman (2 semanas, segundo método)
+
+- Kernel SW antidiagonal (mapeo distinto al de WFA).
+- Reusa toda la infraestructura de las fases 1-6.
+
+**Criterio de fusión:** los mismos tests de paridad que WFA.
+
+### Fase 8 — Integración en phylogenyAI + paper (2 semanas)
+
+- Enchufar genoaligner al pipeline (donde aporte).
+- Manifiesto de despliegue para otro cluster.
+- Preprint (JOSS o BMC Bioinformatics).
+
+---
+
+## 4. La filosofía test-and-drop aplicada
+
+Esta es la parte que hace el masterplan distinto de un plan normal. **Cada
+hipótesis técnica es un experimento barato, no una decisión de arquitectura.**
+
+### 4.1 Hipótesis a testear (con su coste)
+
+| # | Hipótesis | Test | Coste | Si falla |
+|---|---|---|---|---|
+| H1 | HIP puro compila a ambos | vector_add dual | 1h | probar SYCL |
+| H2 | WFA score-only es correcto | 1,000 pares vs CPU | 2h | revisar formulación |
+| H3 | Paridad exacta alcanzable | set de control | 2h | documentar tolerancia |
+| H4 | Traceback es viable en GPU | test autoconsistente | días | kernel score-only entregable |
+| H5 | Memoria escala a n>1000 | test de estrés | 1h | rediseñar storage |
+| H6 | La abstracción no cuesta perf | benchmark ROCm vs CUDA | 2h | aceptar overhead |
+| H7 | SW reusa la infraestructura | port del kernel WFA | 1d | infraestructura no general |
+
+**Cada test es <4h (regla de ecoreasoner). Si un test tarda más, la
+hipótesis está mal planteada, no el diseño.**
+
+### 4.2 Ciclos agénticos
+
+El patrón de trabajo:
+
+    1. Hermes (local) escribe la hipótesis + el test mínimo
+    2. Devin (CLI, gratis) implementa variantes del kernel en paralelo
+    3. Hermes lanza el test en el cluster (job Slurm <4h)
+    4. Hermes lee el resultado, decide: escalar / descartar / reformular
+    5. Repetir
+
+Miles de ciclos posibles porque: el cómputo es ocioso, Devin es gratis, y
+cada test es barato por diseño. **El cuello de botella es la calidad de las
+hipótesis, no los recursos.**
+
+### 4.3 Diseño para el fallo
+
+Todo está construido asumiendo que partes van a fallar. El plan no apuesta
+todo a una carta:
+
+- Si el traceback se atasca → Fase 2-3 ya son entregable + paper.
+- Si HIP puro no da paridad → hipify como retroceso.
+- Si WFA no escala → SW (Fase 7) ya está planeado.
+- Si nada funciona → el informe negativo es un resultado.
+
+---
+
+## 5. Uso de la infraestructura existente (no reinventar)
+
+### 5.1 Lanzamiento de cómputo
+
+**Copiar el patrón de `ecoreasoner`**, no inventar:
+
+- `#SBATCH --signal=B:USR1@300` + `finalize()` idempotente para
+  checkpoint/resubmit antes del muro de 6h.
+- `AUTO_RESUBMIT=1` para jobs que exceden `sixhour`.
+- GPUs por `--gres=gpu:tipo:n`; familias homogéneas por partición.
+- **Medir el pool con `scontrol`** (AllocTRES vs Gres), nunca `sinfo`.
+- Apptainer para entornos reproducibles si hace falta.
+
+### 5.2 Ejecución remota
+
+Vía `hermes-hydra` (`ku-hpc raw:` para comandos; `/v1/jobs` para largos), o
+SSH directo como se ha hecho hoy. Mantener el flujo que ya funciona.
+
+### 5.3 Asistentes de código
+
+Devin CLI (gratis, sin tope) para implementación paralela de variantes de
+kernel. Hermes local para planificación, verificación y decisión.
+
+### 5.4 Repo como fuente de verdad
+
+Regla de ecoreasoner §7.5: **sync a repo SIEMPRE** tras tocar scripts en el
+cluster. El repo es la verdad, no el estado efímero del HPC.
+
+---
+
+## 6. Lo que destraba esto en phylogenyAI
+
+Conectar el masterplan con el objetivo original:
+
+    HOY:    MAFFT alinea 31 genes en 12 min → la alineación NO es el cuello
+            El cuello es el MCMC (semanas) y, al escalar, el volumen
+
+    FUTURO: si el pool crece a 1,000+ genes o genomas completos,
+            la alineación pairwise se vuelve el cuello (6.7h → días)
+            → ahí genoaligner aporta, y aporta EN LAS MI210
+
+**genoaligner no acelera phylogenyAI hoy.** Lo prepara para cuando el pool
+crezca — que es exactamente cuando un competidor que solo tiene CUDA se
+quedaría atrás. Es infraestructura para la trayectoria, no para hoy.
+
+---
+
+## 7. Riesgos y mitigaciones
+
+| Riesgo | Prob. | Impacto | Mitigación |
+|---|---|---|---|
+| Traceback más difícil de lo estimado | Alta | Medio | Fase 2-3 ya son entregables |
+| HIP puro no da paridad exacta | Media | Alto | hipify como retroceso (Fase 1 test lo detecta temprano) |
+| Kernel propio 2-5× más lento que Accelign | Alta | Bajo | el criterio es portabilidad, no TCUPS |
+| Alcance se expande sin control | Media | Alto | criterios de fusión binarios por fase; techo en Fase 6 |
+| Competencia publica port primero | Baja | Medio | el hueco es de nicho; velocidad de iteración manda |
+| Presupuesto de Devin cambia | Baja | Bajo | el código queda en el repo; Hermes puede seguir solo |
+
+---
+
+## 8. Decisiones pendientes
+
+1. **¿HIP puro confirmado?** (recomendado; test H1 lo valida en 1h)
+2. **¿WFA-adaptive o WFA estándar primero?** (adaptive es más complejo;
+   estándar basta para validar el pipeline)
+3. **¿Llama a CIGAR propia o SAM-compatible?** (SAM da interoperabilidad)
+4. **¿Primer entregable público o todo interno hasta Fase 8?**
+
+---
+
+## 9. Próxima acción inmediata
+
+**Arrancar Fase 1:** esqueleto dual + kernel trivial, test H1.
+
+Concretamente: crear `CMakeLists.txt` dual (ROCm/CUDA), un `vector_add` en
+HIP, scripts `build_rocm.sh`/`build_cuda.sh`, y un job Slurm que valide que
+el mismo fuente corre en MI210 y en q6000.
+
+Coste: ~1h. Decide la arquitectura de todo lo demás.
