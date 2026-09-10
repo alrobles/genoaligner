@@ -89,7 +89,8 @@ int main() {
     }
 
     free(h);
-    hipFree(a); hipFree(b); hipFree(c); hipFree(d);
+    (void)hipFree(a); (void)hipFree(b);
+    (void)hipFree(c); (void)hipFree(d);
 
     if (bad) {
         printf("  RESULT  : FAIL (%d mismatches)\n", bad);

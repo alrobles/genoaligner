@@ -6,6 +6,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=16G
 #SBATCH --time=00:30:00
+#SBATCH --gres=gpu:mi210:1
 #SBATCH --output=/beegfs/a474r867/genoaligner/logs/h1_%j.out
 #SBATCH --error=/beegfs/a474r867/genoaligner/logs/h1_%j.err
 
