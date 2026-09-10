@@ -28,6 +28,7 @@ nvidia-smi -L 2>/dev/null || echo "no nvidia-smi"
 
 ml purge
 ml load cuda/13.0
+ml load cmake/3.30.3
 echo "nvcc: $(command -v nvcc)"
 nvcc --version 2>/dev/null | tail -2
 

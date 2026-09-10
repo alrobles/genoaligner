@@ -31,6 +31,7 @@ echo "=== platform: AMD / ROCm (requested MI210) ==="
 
 ml purge
 ml load rocm/6.4.3
+ml load cmake/3.30.3
 echo "ROCM_PATH=$ROCM_PATH"
 echo "hipcc: $(command -v hipcc)"
 hipcc --version | head -2
