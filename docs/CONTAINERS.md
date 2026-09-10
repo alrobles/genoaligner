@@ -113,3 +113,33 @@ compile-only image.
   notice. Cosmetic.
 - A `%test` that only checks `compiler --version` is nearly worthless; the
   compute image's `%test` builds and *runs* a kernel on purpose.
+
+## H1-C result: the container path passes on the MI210
+
+Job `29068828`, node `r06r18n01`, **with nothing loaded from Lmod**:
+
+    H1C_AMD: PASS
+      hipcc  : /opt/rocm/bin/hipcc   (from the image)
+      cmake  : 3.28.3                (from the image)
+      device : AMD Instinct MI210
+      arch   : gfx90a:sramecc+:xnack-
+      memory : 63.98 GB
+      RESULT : PASS (round-trip on 1048576 elements)
+
+This is the structural fix, not a patch: the five environment failures of the
+bare-metal iteration (cmake PATH, GLIBCXX ABI, `.hip` link language, hipcc
+injection, module load order) cannot occur here because none of those components
+come from the host any more.
+
+### A finding worth keeping
+
+Host-side `rocminfo` on the GPU node returned **only AMD EPYC CPU entries and no
+MI210**, while the same probe *inside* the container under `--rocm` correctly
+reported the MI210. **Do not use host `rocminfo` as a GPU presence check** — it
+is not trustworthy. Check from inside the container.
+
+### Slurm notes
+
+- Gate any job that consumes the `.sif` behind the build. A job launched in the
+  same breath as the build reported `container image not found`.
+- `--gres=gpu:mi210:1` is still required; the container does not change that.
