@@ -342,3 +342,50 @@ HIP, scripts `build_rocm.sh`/`build_cuda.sh`, y un job Slurm que valide que
 el mismo fuente corre en MI210 y en q6000.
 
 Coste: ~1h. Decide la arquitectura de todo lo demás.
+
+---
+
+## 10. Resultado del test H1 (2026-09-10)
+
+Primera ejecución de la Fase 1. Resultado **parcial, y por eso valioso**.
+
+    H1_ROCM (job 29067813): PASS
+      backend : ROCm (native HIP)
+      device  : AMD Instinct MI210
+      arch    : gfx90a:sramecc+:xnack-
+      memory  : 63.98 GB
+      RESULT  : PASS (round-trip on 1,048,576 elements)
+
+    H1_CUDA (job 29067814): FAIL
+      host    : r15r10n01, Quadro RTX 6000, nvcc 13.0
+      causa   : hipcc NOT FOUND -- el cluster no tiene el shim HIP de NVIDIA
+
+### Hallazgo
+
+El cluster KU solo provee el toolchain HIP de AMD
+(`/kuhpc/sw/rocm/{6.1.0,6.2.1,6.3.1,6.4.1,6.4.3,latest}/bin/hipcc`). No hay
+shim de NVIDIA: nvhpc no lo trae, CUDA 13.0 tampoco, y no existe módulo `hip`.
+
+Deducción estratégica: **la flota AMD (~81 MI210) es la única que compila HIP
+nativamente sin dependencias externas.** El silicio que ninguna herramienta de
+alineación soporta es justamente el que nuestro toolchain domina sin fricción.
+
+### Opciones para la capa NVIDIA
+
+1. **Instalar el shim HIP de NVIDIA** (`hip-nvcc` / toolchain ROCm para
+   NVIDIA), en el conda env o compilado. Es el mecanismo oficial: hipcc con
+   `-D__HIP_PLATFORM_NVIDIA__` envuelve a nvcc.
+2. **hipify + nvcc** para NVIDIA, hipcc directo para AMD. Menos limpio, cero
+   dependencias nuevas.
+
+### Coste de descubrir esto ahora
+
+4 iteraciones de ~2 minutos (cmake ausente → cmake ABI → registro .hip →
+gres faltante). El test-and-drop funcionó: el límite se encontró antes de
+escribir una sola línea del kernel real, no después de meses.
+
+### Consecuencia para el masterplan
+
+La Fase 1 no se cierra hasta resolver la capa NVIDIA. La capa AMD está
+validada. Próximo paso: probar la Opción 1 (shim) en un job CUDA; si falla,
+Opción 2.
