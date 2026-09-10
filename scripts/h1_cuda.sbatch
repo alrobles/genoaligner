@@ -27,8 +27,11 @@ echo "=== host: $(hostname) ==="
 nvidia-smi -L 2>/dev/null || echo "no nvidia-smi"
 
 ml purge
-ml load cuda/13.0
+# cmake 3.30.3 needs the gcc/14.2 libstdc++ (GLIBCXX_3.4.32);
+# load the compiler BEFORE cmake, and cmake BEFORE the gpu toolchain.
+ml load compiler/gcc/14.2
 ml load cmake/3.30.3
+ml load cuda/13.0
 echo "nvcc: $(command -v nvcc)"
 nvcc --version 2>/dev/null | tail -2
 

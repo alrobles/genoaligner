@@ -30,8 +30,11 @@ echo "=== host: $(hostname) ==="
 echo "=== platform: AMD / ROCm (requested MI210) ==="
 
 ml purge
-ml load rocm/6.4.3
+# cmake 3.30.3 needs the gcc/14.2 libstdc++ (GLIBCXX_3.4.32);
+# load the compiler BEFORE cmake, and cmake BEFORE the gpu toolchain.
+ml load compiler/gcc/14.2
 ml load cmake/3.30.3
+ml load rocm/6.4.3
 echo "ROCM_PATH=$ROCM_PATH"
 echo "hipcc: $(command -v hipcc)"
 hipcc --version | head -2
