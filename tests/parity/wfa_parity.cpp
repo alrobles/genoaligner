@@ -99,6 +99,16 @@ static std::vector<Case> build_control_set(int n_cases, uint32_t seed)
 int main(int argc, char** argv)
 {
     int n_cases = (argc > 1) ? atoi(argv[1]) : 1000;
+
+    // --emit <path>: write pairs + scores for the external oracle (Fase 3).
+    std::string emit_path;
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == "--emit" && i + 1 < argc) {
+            emit_path = argv[i + 1];
+            ++i;
+        }
+    }
+
     const int smax = 64;   // cap on edit distance we will chase
 
     hipDeviceProp_t prop;
@@ -108,6 +118,7 @@ int main(int argc, char** argv)
     printf("  arch   : %s\n", prop.gcnArchName);
     printf("  cases  : %d\n", n_cases);
     printf("  smax   : %d\n", smax);
+    if (!emit_path.empty()) printf("  emit   : %s\n", emit_path.c_str());
     printf("\n");
 
     auto cases = build_control_set(n_cases, 12345u);
@@ -214,6 +225,31 @@ int main(int argc, char** argv)
                        cases[i].text.size(), cases[i].pattern.size());
             }
         }
+    }
+
+    // ---- emit (Fase 3): write the EXACT pairs and scores the GPU produced ----
+    //
+    // The external oracle must score the same pairs this run scored. Re-deriving
+    // the generator in Python would risk a silent RNG divergence between the
+    // C++ mt19937 and Python's, so the harness emits the pairs it actually used.
+    // Format: index<TAB>pattern<TAB>text<TAB>gpu<TAB>cpu<TAB>label
+    // Sequences are ACGT only, so no escaping is needed.
+    if (!emit_path.empty()) {
+        FILE* fh = fopen(emit_path.c_str(), "w");
+        if (!fh) {
+            fprintf(stderr, "ERROR: cannot open emit path %s\n", emit_path.c_str());
+            return 1;
+        }
+        fprintf(fh, "# genoaligner Fase 3 GPU scores (emit)\n");
+        fprintf(fh, "# smax=%d block=%d cases=%zu\n", smax, block, cases.size());
+        fprintf(fh, "index\tpattern\ttext\tgpu\tcpu\tlabel\n");
+        for (size_t i = 0; i < cases.size(); ++i) {
+            fprintf(fh, "%zu\t%s\t%s\t%d\t%d\t%s\n",
+                    i, cases[i].pattern.c_str(), cases[i].text.c_str(),
+                    got[i], ref[i], cases[i].label.c_str());
+        }
+        fclose(fh);
+        printf("  emitted   : %s (%zu cases)\n", emit_path.c_str(), cases.size());
     }
 
     (void)hipFree(d_text); (void)hipFree(d_pat); (void)hipFree(d_pairs);
