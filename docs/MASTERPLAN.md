@@ -307,13 +307,61 @@ mismatch −1, gap −1. La distancia de edición es la **negación** del score.
 **Criterio de fusión:** CIGAR correcto → el alineamiento reconstruido
 reproduce el score. Es un test **autoconsistente** (no necesita referencia).
 
-### Fase 5 — Capa de portabilidad formal (1 semana)
+### Fase 5 — Capa de portabilidad formal (1 semana) ✅ COMPLETA
 
 - Abstracción de backend completa.
 - Suite de tests que corre idénticos en ambas plataformas.
 
 **Criterio de fusión:** todos los tests de fases 2-4 pasan en ROCm Y CUDA
 desde el mismo fuente.
+
+**RESULTADO (2026-09-11): CUMPLIDO.** Un `CMakeLists.txt`, un árbol de fuentes,
+dos compiladores:
+
+    ROCm/MI210  job 29207287 ... backend ROCm, MI210 gfx90a, round-trip PASS
+    CUDA/q6000  job 29207294 ... backend CUDA, RTX 6000 sm_75, round-trip PASS
+
+Además, el test previo contra Fases 2-3 (paridad 100% vs 3 oráculos externos) ya
+corría en ambos backends: jobs 29201335 (MI210) y 29202787 (RTX 6000).
+
+**Corrección de fondo sobre la arquitectura.** El `CMakeLists` anterior exigía
+`CMAKE_CXX_COMPILER=hipcc` para **ambos** backends, lo que hacía la rama CUDA
+imposible por construcción: hipcc es el wrapper de clang de AMD y nunca invoca a
+nvcc, y no existe shim HIP-para-NVIDIA instalable (cuatro rutas cerradas,
+2026-09-10). El modelo correcto es **una fuente, dos compiladores**:
+
+    AMD     hipcc -> ROCm nativo
+    NVIDIA  nvcc  -> -D__HIP_PLATFORM_NVIDIA__
+
+El puente es una capa de headers de ROCm, no un compilador:
+
+    hip/hip_runtime.h
+      #if defined(__HIP_PLATFORM_NVIDIA__) && !defined(__HIP_PLATFORM_AMD__)
+        #include <hip/nvidia_detail/nvidia_hip_runtime.h> -> <cuda_runtime.h>
+
+**Cuatro incompatibilidades específicas de CUDA, encontradas en este orden** —
+las tres primeras solo aparecen en un build dirigido por CMake, no en una
+invocación manual de nvcc sobre un fichero:
+
+    1. La propiedad LANGUAGE CXX en .hip debe fijarse ANTES de add_executable.
+       Hacerlo dentro de la función helper es demasiado tarde:
+       "Cannot determine link language for target".
+    2. nvcc no reconoce la extensión .hip:
+       "nvcc fatal : Don't know what to do with 'probe.hip'" -> hace falta -x cu.
+    3. CUDA 12.4 rechaza GCC > 13 como compilador host:
+       "unsupported GNU version! gcc versions later than 13 are not supported!"
+       El cluster necesita gcc 14.2 para cmake (GLIBCXX_3.4.32) pero nvcc lo
+       rechaza -> -ccbin /usr/bin/g++ (gcc 11.5) para el código host.
+    4. nvcc no emite objetos position-independent y el enlazador por defecto es
+       PIE: "relocation R_X86_64_32S against '.rodata' ... recompile with -fPIE"
+       -> -Xcompiler -fPIE en compilación y -Xcompiler -pie en enlace.
+
+Ninguna afecta a ROCm: hipcc trae su propio clang y resuelve las cuatro solo.
+
+Ficheros: `CMakeLists.txt` (reescrito), `scripts/build_cuda.sh` (usa nvcc, ya no
+hipcc), `scripts/build_rocm.sh`, `scripts/f5_portability{,_cuda}.sbatch` y
+`tests/parity/validate_fase5.sh` (validador sin GPU que además comprueba que la
+capa RECHAZA un compilador equivocado).
 
 ### Fase 6 — Benchmark honesto (1 semana)
 
