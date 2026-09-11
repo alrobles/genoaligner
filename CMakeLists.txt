@@ -73,6 +73,17 @@ set(GENOALIGNER_CUDA_ROOT "/kuhpc/sw/nvhpc/Linux_x86_64/2024/cuda/12.4"
 set(GENOALIGNER_ROCM_ROOT "/kuhpc/sw/rocm/6.4.3"
     CACHE PATH "ROCm root (provides the HIP headers used by BOTH backends)")
 
+# --- Host compiler for the CUDA backend ---------------------------------
+# nvcc validates the host GCC version and CUDA 12.4 refuses anything after 13:
+#   error: -- unsupported GNU version! gcc versions later than 13 are not supported!
+# The cluster's gcc 14.2 (needed by cmake itself) is therefore NOT usable as
+# nvcc's host compiler. The system gcc 11.5 is, and nvcc is only invoking it for
+# host code -- the device compiler is a separate component.
+#
+# This only bites on the CUDA branch; hipcc brings its own clang and ignores it.
+set(GENOALIGNER_HOST_CXX "/usr/bin/g++" CACHE FILEPATH
+    "Host compiler for nvcc (CUDA backend). CUDA 12.4 rejects GCC > 13.")
+
 if(NOT EXISTS "${GENOALIGNER_ROCM_ROOT}/include/hip/hip_runtime.h")
     message(FATAL_ERROR
         "HIP headers not found under ${GENOALIGNER_ROCM_ROOT}. Both backends need "
@@ -146,6 +157,14 @@ function(genoaligner_configure_hip target)
             set_source_files_properties(${_src}
                 PROPERTIES COMPILE_OPTIONS "-x;cu")
         endforeach()
+
+        # CUDA 12.4 refuses GCC > 13 as its host compiler, and the cluster's
+        # gcc 14.2 (which cmake itself needs) is therefore unusable here. Point
+        # nvcc at the system gcc for host code only.
+        if(GENOALIGNER_HOST_CXX)
+            target_compile_options(${target} PRIVATE
+                "SHELL:-ccbin ${GENOALIGNER_HOST_CXX}")
+        endif()
     endif()
 endfunction()
 
