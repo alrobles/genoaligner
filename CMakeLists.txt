@@ -111,12 +111,17 @@ set(GENOALIGNER_HIP_SOURCES
     include/genoaligner/backend/wfa_kernel.hip
 )
 
-# Every target that compiles a .hip file needs the language property, plus the
-# include dirs for the HIP header layer, plus (CUDA only) the platform define.
-function(genoaligner_configure_hip target)
-    set_source_files_properties(${GENOALIGNER_HIP_SOURCES}
-        PROPERTIES LANGUAGE CXX)
+# The LANGUAGE property must be set on the SOURCE before add_executable, and
+# from a scope that outlives it. Setting it inside a helper function called
+# AFTER add_executable fails with "Cannot determine link language for target"
+# -- the property has to be in effect when CMake evaluates the target.
+set_source_files_properties(
+    src/probe.hip
+    PROPERTIES LANGUAGE CXX)
 
+# Include dirs and the platform define are per-target, so they can be applied
+# after the target exists.
+function(genoaligner_configure_hip target)
     target_include_directories(${target} PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}"
         "${GENOALIGNER_ROCM_ROOT}/include")
