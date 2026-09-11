@@ -3,16 +3,42 @@ project(genoaligner LANGUAGES CXX)
 
 # genoaligner: hardware-agnostic sequence alignment (CUDA + ROCm).
 #
-# Strategy: write everything in HIP. hipcc targets AMD natively and NVIDIA
-# through -D__HIP_PLATFORM_NVIDIA__, so one source tree yields both backends.
+# ============================================================ ONE SOURCE, TWO COMPILERS
 #
-# IMPORTANT (learned on KU HPC, 2026-09-10):
-#   * CMake has no native HIP language mode unless a HIP-capable CMake is used;
-#     forcing CXX_COMPILER to hipcc does NOT work (g++ is still invoked and the
-#     .hip file is treated as a linker input).
-#   * The robust approach is to declare .hip as CXX and inject hipcc through
-#     CMAKE_CXX_COMPILER at configure time, which the build scripts do via
-#     -DCMAKE_CXX_COMPILER=<hipcc>. This file asserts that it happened.
+# The strategy is one HIP source tree and two compilers -- NOT one compiler:
+#
+#   AMD (MI210)   hipcc  (AMD clang wrapper)  -> ROCm native
+#   NVIDIA        nvcc   (CUDA)               -> __HIP_PLATFORM_NVIDIA__
+#
+# The mechanism that makes the NVIDIA side work is a header layer inside ROCm,
+# not a compiler shim:
+#
+#   hip/hip_runtime.h
+#     #if defined(__HIP_PLATFORM_NVIDIA__) && !defined(__HIP_PLATFORM_AMD__)
+#       #include <hip/nvidia_detail/nvidia_hip_runtime.h>  -> <cuda_runtime.h>
+#
+# So nvcc compiles the .hip source directly, given that define and ROCm's
+# include dir. Verified end-to-end: 100% parity on both backends against three
+# external oracles (jobs 29201335 MI210, 29202787 RTX 6000).
+#
+# HISTORY (this file was wrong twice, both worth recording):
+#   1. An earlier version required CMAKE_CXX_COMPILER to be hipcc for BOTH
+#      backends. That made the CUDA branch impossible by construction, because
+#      no HIP-for-NVIDIA shim exists to install (four routes closed, 2026-09-10).
+#      The correct model is two compilers over one source.
+#   2. It also assumed hipcc could target NVCC via -D__HIP_PLATFORM_NVIDIA__.
+#      It cannot: hipcc is AMD's clang wrapper and never invokes nvcc.
+#
+# ============================================================ CMAKE + HIP GOTCHAS
+#
+# CMake has no HIP language mode here, so .hip is declared as CXX (below).
+# Merely setting the language is not enough for hipcc: it must also BE the CXX
+# compiler, because setting CXX_COMPILER as a target property is ignored and
+# g++ ends up treating .hip as a linker input.
+#
+# The KU cluster also needs a specific compiler load order (compiler/gcc/14.2
+# BEFORE cmake, or cmake dies on GLIBCXX_3.4.32). See docs/CONTAINERS.md and the
+# ku-hpc-gpu-toolchain skill; the build scripts handle it.
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -20,39 +46,108 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 option(GENOALIGNER_BUILD_TESTS "Build tests" ON)
 option(GENOALIGNER_BUILD_BENCH "Build benchmarks" ON)
 
-# --- Backend detection -------------------------------------------------
-if(NOT DEFINED GENOALIGNER_BACKEND)
-    if(DEFINED ENV{ROCM_PATH} OR DEFINED ENV{HIP_PATH})
-        set(GENOALIGNER_BACKEND "rocm")
-    elseif(DEFINED ENV{CUDA_HOME} OR DEFINED ENV{CUDAToolkit_ROOT})
-        set(GENOALIGNER_BACKEND "cuda")
-    else()
-        set(GENOALIGNER_BACKEND "rocm")
-    endif()
+# --- Backend selection -------------------------------------------------
+# Explicit is better than inferred here: the two backends need different
+# compilers, and guessing wrong produces a confusing failure much later.
+set(GENOALIGNER_BACKEND "rocm" CACHE STRING "Backend: rocm or cuda")
+set_property(CACHE GENOALIGNER_BACKEND PROPERTY STRINGS rocm cuda)
+
+if(NOT GENOALIGNER_BACKEND MATCHES "^(rocm|cuda)$")
+    message(FATAL_ERROR
+        "GENOALIGNER_BACKEND must be 'rocm' or 'cuda', got '${GENOALIGNER_BACKEND}'")
 endif()
 message(STATUS "genoaligner backend: ${GENOALIGNER_BACKEND}")
 
-# The CXX compiler MUST be hipcc for .hip sources to compile. The build
-# scripts pass -DCMAKE_CXX_COMPILER=$(command -v hipcc); verify it here so a
-# misconfigured build fails loudly instead of producing broken objects.
-get_filename_component(_cxx_name "${CMAKE_CXX_COMPILER}" NAME)
-message(STATUS "CXX compiler: ${CMAKE_CXX_COMPILER} (${_cxx_name})")
-if(NOT _cxx_name MATCHES "^hipcc")
+# --- CUDA toolkit location ---------------------------------------------
+# Needed for the NVIDIA branch because ROCm's nvidia_detail layer includes
+# <cuda_runtime.h> and its friends. The KU nvhpc install splits CUDA headers
+# across include/ and targets/x86_64-linux/include/, so both are added.
+#
+# CUDA VERSION IS LOAD-BEARING: use 12.4, not 13.0. ROCm 6.4.3's nvidia_detail
+# layer targets CUDA 12.x and fails to compile under 13.0 on cudaMemLocation and
+# on cudaDeviceProp.clockRate / .computeMode.
+set(GENOALIGNER_CUDA_ROOT "/kuhpc/sw/nvhpc/Linux_x86_64/2024/cuda/12.4"
+    CACHE PATH "CUDA toolkit root (CUDA 12.x required for the HIP header layer)")
+
+# --- ROCm location -----------------------------------------------------
+set(GENOALIGNER_ROCM_ROOT "/kuhpc/sw/rocm/6.4.3"
+    CACHE PATH "ROCm root (provides the HIP headers used by BOTH backends)")
+
+if(NOT EXISTS "${GENOALIGNER_ROCM_ROOT}/include/hip/hip_runtime.h")
     message(FATAL_ERROR
-        "CMAKE_CXX_COMPILER is '${_cxx_name}', not hipcc. Configure with:\n"
-        "  cmake -DCMAKE_CXX_COMPILER=$(command -v hipcc) ...\n"
-        "or use scripts/build_rocm.sh / scripts/build_cuda.sh")
+        "HIP headers not found under ${GENOALIGNER_ROCM_ROOT}. Both backends need "
+        "ROCm's headers: the NVIDIA path reaches CUDA through hip/nvidia_detail.")
 endif()
 
-set_source_files_properties(src/probe.hip PROPERTIES LANGUAGE CXX)
+# --- Compiler expectation ----------------------------------------------
+# Assert the right compiler for the chosen backend. A mismatch here is the
+# single most likely misconfiguration, so fail loudly and say what to do.
+get_filename_component(_cxx_name "${CMAKE_CXX_COMPILER}" NAME)
 
+if(GENOALIGNER_BACKEND STREQUAL "rocm")
+    if(NOT _cxx_name MATCHES "^hipcc")
+        message(FATAL_ERROR
+            "backend=rocm needs CMAKE_CXX_COMPILER=hipcc, got '${_cxx_name}'.\n"
+            "  cmake -DCMAKE_CXX_COMPILER=$(command -v hipcc) -DGENOALIGNER_BACKEND=rocm ...\n"
+            "or use scripts/build_rocm.sh")
+    endif()
+else()
+    if(NOT _cxx_name MATCHES "^nvcc")
+        message(FATAL_ERROR
+            "backend=cuda needs CMAKE_CXX_COMPILER=nvcc, got '${_cxx_name}'.\n"
+            "hipcc CANNOT target NVIDIA (it is AMD's clang wrapper and never "
+            "invokes nvcc), so the CUDA branch uses nvcc over the same source.\n"
+            "  cmake -DCMAKE_CXX_COMPILER=${GENOALIGNER_CUDA_ROOT}/bin/nvcc "
+            "-DGENOALIGNER_BACKEND=cuda ...\n"
+            "or use scripts/build_cuda.sh")
+    endif()
+endif()
+message(STATUS "CXX compiler: ${CMAKE_CXX_COMPILER} (${_cxx_name})")
+
+# --- .hip must be treated as C++ ---------------------------------------
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+set(GENOALIGNER_HIP_SOURCES
+    include/genoaligner/backend/wfa_kernel.hip
+)
+
+# Every target that compiles a .hip file needs the language property, plus the
+# include dirs for the HIP header layer, plus (CUDA only) the platform define.
+function(genoaligner_configure_hip target)
+    set_source_files_properties(${GENOALIGNER_HIP_SOURCES}
+        PROPERTIES LANGUAGE CXX)
+
+    target_include_directories(${target} PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+        "${GENOALIGNER_ROCM_ROOT}/include")
+
+    if(GENOALIGNER_BACKEND STREQUAL "cuda")
+        # The define that routes hip_runtime.h to nvidia_detail.
+        target_compile_definitions(${target} PRIVATE __HIP_PLATFORM_NVIDIA__)
+        target_include_directories(${target} PRIVATE
+            "${GENOALIGNER_CUDA_ROOT}/include"
+            "${GENOALIGNER_CUDA_ROOT}/targets/x86_64-linux/include")
+    endif()
+endfunction()
+
+# --- Targets ------------------------------------------------------------
 add_executable(genoaligner_probe src/probe.hip)
-
-if(GENOALIGNER_BACKEND STREQUAL "cuda")
-    target_compile_definitions(genoaligner_probe PRIVATE __HIP_PLATFORM_NVIDIA__)
-endif()
+genoaligner_configure_hip(genoaligner_probe)
 
 if(GENOALIGNER_BUILD_TESTS)
     enable_testing()
     add_test(NAME probe_runs COMMAND genoaligner_probe)
 endif()
+
+# --- Summary -----------------------------------------------------------
+message(STATUS "")
+message(STATUS "genoaligner configuration")
+message(STATUS "  backend     : ${GENOALIGNER_BACKEND}")
+message(STATUS "  compiler    : ${CMAKE_CXX_COMPILER}")
+message(STATUS "  ROCm root   : ${GENOALIGNER_ROCM_ROOT}")
+if(GENOALIGNER_BACKEND STREQUAL "cuda")
+    message(STATUS "  CUDA root   : ${GENOALIGNER_CUDA_ROOT}")
+    message(STATUS "  platform    : __HIP_PLATFORM_NVIDIA__ -> hip/nvidia_detail")
+endif()
+message(STATUS "  tests       : ${GENOALIGNER_BUILD_TESTS}")
+message(STATUS "")

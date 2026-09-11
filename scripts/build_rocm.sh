@@ -23,10 +23,10 @@ command -v cmake >/dev/null 2>&1 || {
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD="${ROOT}/build/rocm"
 
-echo "=== ROCm build ==="
-echo "hipcc : $(command -v hipcc)"
+echo "=== genoaligner ROCm build ==="
+echo "hipcc  : $(command -v hipcc)"
 hipcc --version | head -2
-echo "cmake : $(command -v cmake)"
+echo "cmake  : $(command -v cmake)"
 
 cmake -S "${ROOT}" -B "${BUILD}" \
     -DCMAKE_CXX_COMPILER="$(command -v hipcc)" \
