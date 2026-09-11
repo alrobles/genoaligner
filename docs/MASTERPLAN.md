@@ -159,7 +159,7 @@ Estado: HIP corrió en MI210; CUDA 13.0 presente. Ver `OPTION_A_ANALYSIS.md`.
 **Criterio de fusión:** el mismo binario fuente compila y corre correcto en
 MI210 (ROCm) Y en q6000 (CUDA). Si no → evaluar SYCL.
 
-### Fase 2 — Kernel WFA score-only (2 semanas)
+### Fase 2 — Kernel WFA score-only (2 semanas) ✅ COMPLETA
 
 - Implementación WFA sin traceback, solo score.
 - Manejo de memoria de wavefronts.
@@ -167,6 +167,21 @@ MI210 (ROCm) Y en q6000 (CUDA). Si no → evaluar SYCL.
 **Criterio de fusión:** score correcto en ≥95% de un set de control de
 ~1,000 pares (comparado contra referencia CPU). <95% → revisar formulación
 antes de optimizar.
+
+**RESULTADO (2026-09-11): CUMPLIDO con 100%.** Job 29184155 en MI210
+(`gfx90a:sramecc+:xnack-`, r06r18n01): 946 resueltos, 946 pass, 0 fail,
+61 abandonados (`isD > smax=64`), paridad 100.00%.
+
+Coste real: 2 submits + 1 smoke job, no los "2h" estimados. El primer submit
+(job 29184154) falló con `Memory access fault` (rc=134) por un buffer de
+wavefront un `int` corto — un bug que **el gate CPU no podía ver**, porque la
+rama shim del kernel re-dimensionaba el buffer por su cuenta. Detalles y
+aritmética en `ROADMAP_RETAKEOVER.md` §8.
+
+Nota de método: las cuatro primeras formulaciones fallaron por deducir el
+álgebra en vez de portar la referencia. El port verbatim de
+`wavefront_compute_edit_idm` (con cita archivo:línea) resolvió en una iteración
+lo que cuatro intentos de deducción no resolvieron.
 
 ### Fase 3 — Paridad exacta + QA (1 semana)
 

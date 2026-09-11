@@ -331,3 +331,109 @@ local; si no, validar la lógica con un shim de `hip/hip_runtime.h` en CPU antes
 de tocar el cluster).
 
 Después, y solo después: `sbatch scripts/h2_wfa_parity.sbatch`.
+
+---
+
+## 8. Resultados R1-R2 (2026-09-10/11)
+
+### R1 — port del kernel ✅ COMPLETO
+
+`include/genoaligner/backend/wfa_kernel.hip` reescrito como port verbatim de
+`wavefront_compute_edit_idm`. Verificado por `scripts/check_kernel_cpu.sh`
+(exit 0): 15/15 casos a mano, 3000/3000 en los tres regímenes, 1470/1470 pares
+exhaustivos ≤6, contra el DP de `src/reference/edit_distance_cpu.hpp`.
+
+### R2 — H2 en MI210 ✅ PASS
+
+Dos submits, y el primero es el resultado más valioso de la fase.
+
+**Intento 1 — job 29184154: FALLO (rc=134)**
+
+    H2: FAIL (rc=134)
+    Memory access fault by GPU node-4 (Agent handle: 0xf14bd0)
+    on address 0x14af83abc000. Reason: Unknown.
+    /tmp/wfa_parity 1000  ->  Aborted (core dumped)
+
+...pese a que el CPU gate había pasado. **Causa: el buffer de wavefront estaba
+un `int` corto.** El padding existía solo en el lado bajo. Aritmética con
+`smax=64`:
+
+    launch allocaba   2*(2*smax+1+1) = 260 ints
+    B empieza en      wf_stride      = 130
+    último toque de B  idx(+smax+1)   = 130 + 130 = 260
+    máximo válido     259
+    -> desbordamiento de exactamente 1 int
+
+`idx(k-1)` en `k=-smax` necesita el slot 0, y `idx(k+1)` en `k=+smax` necesita
+el slot `2*smax+2`. **Los dos extremos necesitan un slot**: el tamaño por
+wavefront es `stride+2`, no `stride+1`. Corregido en `eba5944`.
+
+**Por qué el gate CPU no lo vio** (y la corrección estructural): la rama shim
+del kernel hacía `shim::smem_vec().assign(total, ...)` por su cuenta, así que el
+harness nunca controlaba la asignación y una escritura fuera de rango caía
+dentro de un buffer mayor. El kernel ya no re-asigna; el harness dimensiona el
+buffer exactamente como el launch site, de modo que un launch corto es ahora un
+error de ASan local. El gate ganó además un pase `asan+ubsan`.
+
+Lección: **el gate CPU es necesario pero no suficiente.** No ve sincronización,
+warp behaviour, ni límites de asignación de device. Este bug lo encontró el
+hardware, no el razonamiento.
+
+(Aparte: el probe de sanitizers del gate era por preprocesado, y GCC 11.5 del
+login node tiene headers pero no `libasan.so.6.0.0`; eso producía un "fallo de
+memoria" fantasma que bloqueaba un submit válido. Corregido en `1cd727f`: el
+probe ahora compila y enlaza.)
+
+**Intento 2 — job 29184155: PASS**
+
+    === host: r06r18n01 ===
+    HIP version: 6.4.43484-123eb5128
+    genoaligner WFA parity harness (H2)
+      device : AMD Instinct MI210
+      arch   : gfx90a:sramecc+:xnack-
+      cases  : 1000
+      smax   : 64
+      block  : 256 threads (need 129 for 2*smax+1 diagonals)
+
+    === H2 RESULT (WFA score parity) ===
+      resolved  : 946
+      pass      : 946
+      fail      : 0
+      abandoned : 61  (edit distance > smax=64)
+      parity    : 100.00%  (criterion: >= 95%)
+      H2: PASS
+
+**Criterio de fusión de Fase 2 (≥95%): CUMPLIDO, con 100%.**
+
+Nota sobre los 61 abandonados: son pares cuyo `isD > smax=64` (los regímenes
+`len=256` del set de control), no fallos. El harness los excluye correctamente
+del denominador. Subir `smax` los resolvería, a costa de más memoria compartida
+por bloque.
+
+### Comandos reproducibles
+
+    # gate local / login node (sin GPU)
+    bash scripts/check_kernel_cpu.sh
+
+    # pre-flight de entorno (imagen + GPU visibles)
+    sbatch /beegfs/a474r867/genoaligner/scripts/smoke_mi210.sbatch
+
+    # paridad real
+    sbatch scripts/h2_wfa_parity.sbatch
+
+### Estado de las fases
+
+    R0  paridad CPU         HECHO
+    R1  port al kernel HIP  HECHO — 100% CPU, exit 0
+    R2  H2 en MI210         HECHO — 100%, job 29184155
+    R3  tests de regresión  HECHO
+    R4  commits             HECHO
+    R5  capa NVIDIA         ABIERTO — decisión del usuario
+
+### Nota de infraestructura: artefactos en beegfs
+
+`images/genoaligner-compile.sif` (5.2 GB) vive en scratch y **no** es durable.
+Receta de reconstrucción: `containers/build_image.sh compile`. Un `ls` filtrado
+por `grep` reportó este artefacto como ausente durante esta sesión y estuvo a
+punto de provocar un rebuild innecesario: **no canalizar un chequeo de
+existencia por un filtro.**
