@@ -165,6 +165,17 @@ function(genoaligner_configure_hip target)
             target_compile_options(${target} PRIVATE
                 "SHELL:-ccbin ${GENOALIGNER_HOST_CXX}")
         endif()
+
+        # Position-independent code. Modern toolchains default to PIE linking,
+        # but nvcc does not emit PIC/PIE objects on its own, which fails with:
+        #   relocation R_X86_64_32S against `.rodata' can not be used when
+        #   making a PIE object; recompile with -fPIE
+        # Both halves are needed: -Xcompiler -fPIE for the objects and -pie for
+        # the link step. hipcc handles this itself, hence CUDA-only.
+        target_compile_options(${target} PRIVATE
+            "SHELL:-Xcompiler -fPIE")
+        target_link_options(${target} PRIVATE
+            "SHELL:-Xcompiler -pie")
     endif()
 endfunction()
 
