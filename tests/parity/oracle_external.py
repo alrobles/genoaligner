@@ -176,15 +176,19 @@ def cmd_compare(args) -> int:
                 print(f"ERROR: {args.compare}:{lineno}: expected "
                       f"index<TAB>pattern<TAB>text<TAB>gpu[...]", file=sys.stderr)
                 return 2
-            label = parts[5] if len(parts) > 5 else ""
-            rows.append((parts[1], parts[2], int(parts[3]), label))
+            # Column 6, if present, is the SeqAn3 oracle from seqan3_oracle.cpp.
+            seqan3 = int(parts[5]) if len(parts) > 5 and parts[5].lstrip("-").isdigit() else None
+            # The label is the LAST column, since SeqAn3 inserts a column before it.
+            label = parts[-1] if len(parts) > 6 else (parts[5] if len(parts) > 5 else "")
+            rows.append((parts[1], parts[2], int(parts[3]), seqan3, label))
 
     agree = bad = abandoned = 0
-    for i, (p, t, got, label) in enumerate(rows):
+    seqan3_checked = seqan3_bad = 0
+    for i, (p, t, got, seqan3, label) in enumerate(rows):
         if got < 0:
             abandoned += 1
             continue
-        want = both(p, t)
+        want = both(p, t)                    # edlib + rapidfuzz, cross-checked
         if got == want:
             agree += 1
         else:
@@ -192,6 +196,14 @@ def cmd_compare(args) -> int:
             if bad <= 10:
                 print(f"  MISMATCH case {i} [{label}]: gpu={got} oracle={want} "
                       f"(pattern len {len(p)}, text len {len(t)})")
+        # Independently, verify the third oracle on the same row.
+        if seqan3 is not None and seqan3 >= 0:
+            seqan3_checked += 1
+            if seqan3 != want:
+                seqan3_bad += 1
+                if seqan3_bad <= 5:
+                    print(f"  SEQAN3 DISAGREES case {i}: seqan3={seqan3} "
+                          f"edlib/rapidfuzz={want}")
 
     total = agree + bad
     rate = 100.0 * agree / total if total else 0.0
@@ -202,9 +214,19 @@ def cmd_compare(args) -> int:
     print(f"  mismatch   : {bad}")
     print(f"  abandoned  : {abandoned}  (gpu < 0: isD > smax; NOT a failure)")
     print(f"  parity     : {rate:.2f}%  (external oracle: edlib + rapidfuzz)")
-    if bad == 0:
-        print("  Fase 3     : PASS -- GPU agrees with an independent implementation")
-    return 0 if bad == 0 else 1
+    if seqan3_checked:
+        print(f"  seqan3     : {seqan3_checked} rows cross-checked, "
+              f"{seqan3_bad} disagreement(s)")
+
+    # A comparison over zero resolved cases is NOT a pass. An earlier version
+    # printed PASS here, which is the worst kind of bug: silence read as success.
+    if total == 0:
+        print("  Fase 3     : INCONCLUSIVE -- no cases were compared "
+              "(empty or unparsable input)")
+        return 2
+    if bad == 0 and seqan3_bad == 0:
+        print("  Fase 3     : PASS -- GPU agrees with independent implementations")
+    return 0 if (bad == 0 and seqan3_bad == 0) else 1
 
 
 def main() -> int:
