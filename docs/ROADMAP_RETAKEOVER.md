@@ -429,6 +429,54 @@ por bloque.
     R3  tests de regresión  HECHO
     R4  commits             HECHO
     R5  capa NVIDIA         HECHO — 100% CUDA, job 29199289
+    R6  Fase 3 externa      HECHO — 100% vs 3 oráculos, job 29201335
+
+### R6 — Fase 3: paridad contra oráculos externos ✅ CERRADA
+
+**Resultado: la GPU coincide al 100% con TRES implementaciones que no
+escribimos.** Job 29201335 en MI210:
+
+    cases      : 1007
+    resolved   : 946
+    agree      : 946
+    mismatch   : 0
+    abandoned  : 61   (isD > smax=64; no es fallo)
+    parity     : 100.00%
+    seqan3     : 946 filas verificadas, 0 desacuerdos
+
+    edlib (Myers bit-vector)  ·  rapidfuzz (bit-parallel Levenshtein)  ·  SeqAn3 3.4.0
+
+Las tres se verifican entre sí en cada par; si dos discrepan, el oráculo falla
+en vez de emitir un número. En 300 pares de control: cero desacuerdos entre las
+tres.
+
+**Por qué esto es más fuerte que H2.** H2 comparó la GPU contra nuestro propio
+DP: ambos lados comparten cualquier error conceptual nuestro. Contra
+implementaciones externas, ese riesgo compartido desaparece.
+
+**Corrección importante sobre SeqAn.** En R5 afirmé que SeqAn era "un proyecto
+C++ aparte" y lo descarté sin medirlo. **Era falso.** SeqAn3 es header-only:
+`git clone --depth 1` = 4.3 MB en segundos, y compila con
+`/kuhpc/sw/gcc/14.2/bin/g++ -std=c++23`. Coste real: ~25 minutos, de los cuales
+5 fueron intentos de compilación por errores de API. Parasail, en cambio, sí
+resultó inservible (binding roto para coste unitario).
+
+Otra vez el mismo patrón: **deduje la API en vez de leer la fuente autoritativa.**
+Con SeqAn el snippet funcional estaba dentro del propio header
+(`align_pairwise.hpp`). Dos de mis afirmaciones en los comentarios del kernel y
+una en el plan fueron falsas por esta razón.
+
+**Un bug encontrado al probar el test, no el código:** `--compare` imprimía
+PASS sobre **cero casos resueltos**. Silencio leído como éxito, el peor modo de
+fallo posible para una herramienta de verificación. Ahora devuelve 2
+(INCONCLUSIVE). Lo destapó pasar el test contra un fichero vacío en vez de
+confiar en que un test que pasa significa que el test funciona.
+
+**Pipeline reproducible:**
+
+    sbatch scripts/h3_external_parity.sbatch     # GPU + 3 oráculos, autocontenido
+    python3 tests/parity/oracle_external.py --compare <emit.seqan3.tsv>
+    bash tests/parity/e2e_fase3.sh               # valida que el oráculo PUEDE fallar
 
 ### R5 — capa NVIDIA ✅ CERRADA, opción A
 

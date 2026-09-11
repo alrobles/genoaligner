@@ -238,7 +238,7 @@ Nota de método: las cuatro primeras formulaciones fallaron por deducir el
 `wavefront_compute_edit_idm` (con cita archivo:línea) resolvió en una iteración
 lo que cuatro intentos de deducción no resolvieron.
 
-### Fase 3 — Paridad exacta + QA (1 semana)
+### Fase 3 — Paridad exacta + QA (1 semana) ✅ COMPLETA
 
 - Set de control: pares con identidad conocida (50%, 70%, 90%, 100%).
 - Comparación exhaustiva contra SeqAn/Parasail.
@@ -246,6 +246,57 @@ lo que cuatro intentos de deducción no resolvieron.
 
 **Criterio de fusión:** 100% de scores idénticos a la referencia. Si hay
 divergencias → entender por qué ANTES de seguir (puede ser bug o límite).
+
+**RESULTADO (2026-09-11): CUMPLIDO con 100%.** Job 29201335 en MI210:
+
+    cases      : 1007
+    resolved   : 946
+    agree      : 946
+    mismatch   : 0
+    abandoned  : 61   (isD > smax=64; NO es fallo)
+    parity     : 100.00%
+    seqan3     : 946 filas verificadas, 0 desacuerdos
+
+**La referencia son TRES implementaciones que no escribimos nosotros**, no una:
+
+    edlib       Myers bit-vector, C (binding Python)
+    rapidfuzz   Levenshtein bit-parallel, código C++ independiente
+    SeqAn3      header-only C++23, 3.4.0
+
+Más el DP propio (`src/reference/edit_distance_cpu.hpp`) como cuarta. Las tres
+externas se verifican entre sí en cada par; si dos discrepan, el oráculo falla
+en vez de emitir un número. En los 300 pares del set de control:
+edlib == rapidfuzz == seqan3, cero desacuerdos.
+
+**Por qué la distinción con H2 importa.** H2 (jobs 29184155, 29199289) comparó
+la GPU contra nuestro propio DP. Eso es necesario pero no suficiente para la
+afirmación de Fase 3: ambos lados compartirían cualquier error conceptual
+nuestro. Contra implementaciones externas, ese riesgo desaparece.
+
+**Corrección a esta sección: Parasail NO se usó, y SeqAn SÍ.** Durante R5
+afirmé que SeqAn era "un proyecto C++ aparte" y descarté ambos. Medido después:
+
+    SeqAn3 es header-only. git clone --depth 1 = 4.3 MB, segundos.
+    Compila con /kuhpc/sw/gcc/14.2/bin/g++ -std=c++23 (el g++ por defecto del
+    cluster es 11.5 y NO sirve: SeqAn3 3.4 exige GCC >= 12 y C++23).
+    Coste real: ~25 min, incluidos 5 intentos de compilación por errores de API
+    (method_global{} | edit_scheme; assign_char en vez de from_char; las views
+    se movieron a utility/views).
+
+    Parasail: instalable por pip, pero su binding de Python está roto para coste
+    unitario en 1.3.4 — matrix_create ignora match/mismatch (produce size n+1 y
+    diagonal == size), Matrix(name) es inmutable, y Matrix(file) da una matriz
+    correcta que nw() luego puntúa como ACGT/ACGT = 1 con todos los gaps
+    probados. Nueve iteraciones sin resultado.
+
+Así que la mención del masterplan era correcta en el caso de SeqAn y mi
+justificación para descartarla era falsa; y en el caso de Parasail al revés
+(instalable pero inservible). **El patrón que se repite: deducir la API en vez
+de leer la fuente autoritativa.** Con SeqAn el ejemplo funcional estaba dentro
+del propio header, en `align_pairwise.hpp`.
+
+Nota de convención: SeqAn3 maximiza, así que `edit_scheme` puntúa match 0,
+mismatch −1, gap −1. La distancia de edición es la **negación** del score.
 
 ### Fase 4 — Traceback (2-3 semanas — la fase de riesgo)
 
