@@ -71,15 +71,25 @@ fi
 # --- pass 2: sanitizers, to catch out-of-bounds the plain build hides --------
 # AddressSanitizer + UBSan. This is the pass that would have caught the shared
 # buffer overflow before it reached the GPU.
-if "$CXX" -fsanitize=address,undefined -fno-omit-frame-pointer -O1 \
-        -x c++ -E - </dev/null >/dev/null 2>&1; then
-    if ! run_pass "asan+ubsan -O1" "-fsanitize=address,undefined -fno-omit-frame-pointer -O1"; then
+#
+# Probe by COMPILING AND LINKING a real program, not by preprocessing: a host can
+# have the sanitizer headers but lack the runtime library (GCC 11.5 on the KU
+# login node has no libasan.so.6.0.0), and a preprocessing probe does not detect
+# that. A missing optional tool degrades the gate to pass-1-only and says so; it
+# must NOT be reported as a parity/memory failure.
+SAN_PROBE="$BUILD_DIR/.san_probe"
+SAN_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -O1"
+:
+if ! printf 'int main(){int a[2]={0,1};return a[0];}\n' \
+        | "$CXX" $SAN_FLAGS -x c++ - -o "$SAN_PROBE" >/dev/null 2>&1; then
+    echo "!!! sanitizers UNAVAILABLE with $CXX (compile+link probe failed)."
+    echo "!!! Memory pass SKIPPED — out-of-bounds reads may reach the GPU undetected."
+    echo "!!! Install libasan (e.g. gcc-toolset / libasan package) to enable it."
+else
+    if ! run_pass "asan+ubsan -O1" "$SAN_FLAGS"; then
         echo "=== CPU GATE FAILED (memory) — do not submit to the cluster ==="
         exit 1
     fi
-else
-    echo "!!! sanitizers unavailable with $CXX — memory pass SKIPPED."
-    echo "!!! Out-of-bounds reads may reach the GPU undetected."
 fi
 
 echo "=== CPU GATE PASSED — algebra + memory indexing verified, cleared for MI210 ==="
