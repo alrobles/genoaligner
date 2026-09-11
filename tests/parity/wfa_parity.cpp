@@ -183,10 +183,15 @@ int main(int argc, char** argv)
     int block = 1;
     while (block < need) block <<= 1;
     if (block > 1024) block = 1024;
-    // Each wavefront occupies (2*smax+1)+1 slots: the padded index range is
-    // [0, 2*smax+1], with slot 0 and slot 2*smax+1 holding the sentinel. Two
-    // ping-pong waves. The kernel computes the same wf_stride internally.
-    const size_t shmem = (size_t)2 * (2 * smax + 1 + 1) * sizeof(int);
+    // Each wavefront needs padding on BOTH ends, one slot each: the reads of
+    // prev[idx(k-1)] at k=-smax and prev[idx(k+1)] at k=+smax must land on a
+    // sentinel slot, not out of bounds. Used range is [0, 2*smax+2], so each
+    // wavefront occupies 2*smax+3 slots and two ping-pong waves are needed.
+    //
+    // The +2 is load-bearing, not defensive: sizing this as 2*(2*smax+1) made
+    // the kernel's high-side read run one int past the allocation, which on the
+    // MI210 is a memory access fault (H2 job 29184154, rc=134).
+    const size_t shmem = (size_t)2 * (2 * smax + 3) * sizeof(int);
     printf("  block  : %d threads (need %d for 2*smax+1 diagonals)\n\n", block, need);
     wfa_score_kernel<<<(int)cases.size(), block, shmem>>>(d_pairs, d_scores, smax);
     HIP_CHECK(hipGetLastError());

@@ -41,8 +41,10 @@ static int wfa_replay(const PairView& p, int smax)
     if (m <= 0 || n <= 0) return (m <= 0) ? n : m;
 
     const int stride    = 2 * smax + 1;
-    const int wf_stride = stride + 1;
-    shim::smem_vec().assign(2 * wf_stride, WFA_NEG);
+    const int wf_stride = stride + 2;   // padding on BOTH ends (see kernel note)
+    // Size exactly as the H2 launch site does, so an undersized launch trips
+    // ASan here rather than faulting on the MI210 (see H2 job 29184154).
+    shim::smem_vec().assign((size_t)2 * (2 * smax + 3), WFA_NEG);
     int* smem = shim_smem_ptr();
     int* A = smem;
     int* B = smem + wf_stride;

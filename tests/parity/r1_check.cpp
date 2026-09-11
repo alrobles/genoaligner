@@ -46,8 +46,15 @@ static int wfa_replay(const PairView& p, int smax)
     if (m <= 0 || n <= 0) return (m <= 0) ? n : m;
 
     const int stride    = 2 * smax + 1;
-    const int wf_stride = stride + 1;
-    shim::smem_vec().assign(2 * wf_stride, WFA_NEG);
+    const int wf_stride = stride + 2;   // padding on BOTH ends (see kernel note)
+
+    // Size exactly as the H2 launch site does, and NOT one int more. The kernel
+    // re-assigns this vector itself (see the shim branch in wfa_kernel.hip), so
+    // the value here acts as an assertion: the replay mimics the GPU allocation
+    // so that an under-sized launch shows up as an out-of-bounds write under
+    // ASan instead of as a silent pass. This is what H2 job 29184154 lacked.
+    const size_t launch_ints = (size_t)2 * (2 * smax + 3);
+    shim::smem_vec().assign(launch_ints, WFA_NEG);
     int* smem = shim_smem_ptr();
     int* A = smem;
     int* B = smem + wf_stride;

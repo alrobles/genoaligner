@@ -146,20 +146,31 @@ __global__ void wfa_score_kernel(const PairView* __restrict__ pairs,
     }
     if (m <= 0 || n <= 0) return;
 
-    // Layout. k in [-smax, smax] is stored at idx(k) = k + smax + 1, so the
-    // used range is [0, 2*smax+1] == [0, stride]. Slot 0 and slot `stride` are
-    // PADDING and hold the sentinel: that is what makes the reads of
-    // prev[idx(k-1)] at k=-smax and prev[idx(k+1)] at k=+smax land on
-    // unreachable padding instead of out of bounds. Each wavefront therefore
-    // occupies wf_stride == stride+1 slots, and the two are back to back.
+    // Layout. k in [-smax, smax] is stored at idx(k) = k + smax + 1.
+    //
+    // The padding is needed on BOTH ends, by one slot each:
+    //   idx(k-1) at k=-smax  reads idx(-smax-1) = 0
+    //   idx(k+1) at k=+smax  reads idx(+smax+1) = 2*smax+2
+    // so the used range is [0, 2*smax+2] and each wavefront needs
+    // 2*smax+3 == stride+2 slots. Both padding slots hold the sentinel, so
+    // those reads are unreachable rather than out of bounds.
+    //
+    // NOTE: sizing this as stride+1 (low padding only) overflows by one slot on
+    // the high side. The CPU replay harness does NOT catch that, because its
+    // std::vector is large enough that a one-past-the-end read stays inside the
+    // allocation and returns benign garbage. On the GPU it is a memory access
+    // fault. This was found by H2 job 29184154 (rc=134).
     const int stride    = 2 * smax + 1;
-    const int wf_stride = stride + 1;          // slots per wavefront (incl. padding)
+    const int wf_stride = stride + 2;          // slots per wavefront (both paddings)
     const int total     = 2 * wf_stride;       // both wavefronts
     auto idx = [&](int k) { return k + smax + 1; };
 #ifdef GENOALIGNER_HIP_SHIM
-    // CPU replay harness (R1): shared memory is a host vector. The harness calls
-    // the same wfa_step() logic below, so the algebra under test is this file's.
-    shim::smem_vec().assign(total, WFA_NEG);
+    // CPU replay harness (R1): shared memory is a host vector. The harness
+    // sizes it to EXACTLY what the GPU launch site requests, and we do NOT
+    // re-assign here — re-sizing would hide an undersized launch, because the
+    // stray write would land inside a larger allocation. Letting the harness
+    // own the size is what makes an under-sized launch an ASan error on CPU
+    // instead of a memory fault on the MI210.
     int* smem = shim_smem_ptr();
 #else
     extern __shared__ int smem[];
