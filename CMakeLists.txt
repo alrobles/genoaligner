@@ -107,7 +107,11 @@ message(STATUS "CXX compiler: ${CMAKE_CXX_COMPILER} (${_cxx_name})")
 # --- .hip must be treated as C++ ---------------------------------------
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-set(GENOALIGNER_HIP_SOURCES
+# All .hip translation units in the project. Kept in one place because several
+# per-source properties must be applied to every one of them (LANGUAGE CXX, and
+# on the CUDA backend the -x cu override nvcc requires).
+set(GENOALIGNER_ALL_HIP_SOURCES
+    src/probe.hip
     include/genoaligner/backend/wfa_kernel.hip
 )
 
@@ -116,7 +120,7 @@ set(GENOALIGNER_HIP_SOURCES
 # AFTER add_executable fails with "Cannot determine link language for target"
 # -- the property has to be in effect when CMake evaluates the target.
 set_source_files_properties(
-    src/probe.hip
+    ${GENOALIGNER_ALL_HIP_SOURCES}
     PROPERTIES LANGUAGE CXX)
 
 # Include dirs and the platform define are per-target, so they can be applied
@@ -132,6 +136,16 @@ function(genoaligner_configure_hip target)
         target_include_directories(${target} PRIVATE
             "${GENOALIGNER_CUDA_ROOT}/include"
             "${GENOALIGNER_CUDA_ROOT}/targets/x86_64-linux/include")
+
+        # nvcc does not recognise the .hip extension:
+        #   "nvcc fatal : Don't know what to do with '.../probe.hip'"
+        # so every .hip translation unit must be forced to CUDA. hipcc needs no
+        # equivalent flag (it owns .hip natively), which is why this lives in the
+        # CUDA branch only.
+        foreach(_src ${GENOALIGNER_ALL_HIP_SOURCES})
+            set_source_files_properties(${_src}
+                PROPERTIES COMPILE_OPTIONS "-x;cu")
+        endforeach()
     endif()
 endfunction()
 
