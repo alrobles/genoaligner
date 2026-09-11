@@ -474,9 +474,21 @@ confiar en que un test que pasa significa que el test funciona.
 
 **Pipeline reproducible:**
 
-    sbatch scripts/h3_external_parity.sbatch     # GPU + 3 oráculos, autocontenido
+    sbatch scripts/h3_external_parity.sbatch        # MI210 + 3 oráculos
+    sbatch scripts/h3_external_parity_cuda.sbatch   # RTX 6000 + 3 oráculos
     python3 tests/parity/oracle_external.py --compare <emit.seqan3.tsv>
     bash tests/parity/e2e_fase3.sh               # valida que el oráculo PUEDE fallar
+
+**AMBOS BACKENDS (cierre de la asimetría).** La comparación externa se corrió
+también en NVIDIA, para que la afirmación de portabilidad cubra la comparación
+FUERTE y no solo la débil contra nuestro propio DP:
+
+    MI210    (gfx90a, hipcc 6.4.3) ....... 100.00%  job 29201335
+    RTX 6000 (Turing sm_75, nvcc 12.4) ... 100.00%  job 29202787
+    números idénticos: 946 agree / 0 mismatch / 61 abandoned / 0 desacuerdos seqan3
+
+El mismo fuente del kernel, sin hipify: `hip/hip_runtime.h` despacha a
+`nvidia_detail` bajo `__HIP_PLATFORM_NVIDIA__`. CUDA 12.4, no 13.0.
 
 ### R5 — capa NVIDIA ✅ CERRADA, opción A
 

@@ -247,7 +247,8 @@ lo que cuatro intentos de deducción no resolvieron.
 **Criterio de fusión:** 100% de scores idénticos a la referencia. Si hay
 divergencias → entender por qué ANTES de seguir (puede ser bug o límite).
 
-**RESULTADO (2026-09-11): CUMPLIDO con 100%.** Job 29201335 en MI210:
+**RESULTADO (2026-09-11): CUMPLIDO con 100%, en AMBOS backends.** Jobs 29201335
+(MI210) y 29202787 (RTX 6000), números idénticos:
 
     cases      : 1007
     resolved   : 946
