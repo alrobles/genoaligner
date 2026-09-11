@@ -71,10 +71,10 @@ NO es criterio: "más rápido que Accelign en TCUPS".
 
 ## 2. Arquitectura propuesta (a validar con test-and-drop)
 
-### 2.1 Decisión central: HIP puro
+### 2.1 Decisión central: HIP puro ✅ VALIDADA (con una corrección)
 
-    Una base de código HIP → hipcc compila para ROCm nativo
-                          → hipcc con -D__HIP_PLATFORM_NVIDIA__ → CUDA
+    Una base de código HIP → hipcc  → ROCm nativo (MI210)
+                          → nvcc con -D__HIP_PLATFORM_NVIDIA__ → CUDA
 
 Razones: es lo que AMD usa (minimap2 heterogéneo, jul 2026); el cluster lo
 tiene; evita la deuda técnica de hipify; SYCL no está listo en el cluster
@@ -82,6 +82,27 @@ tiene; evita la deuda técnica de hipify; SYCL no está listo en el cluster
 
 **Test-and-drop:** validar HIP puro con un kernel trivial en ambas
 plataformas ANTES de escribir el kernel real. Si falla, retroceder a SYCL.
+
+**VEREDICTO (2026-09-11): la decisión es correcta, pero esta sección la
+explicaba mal.** El renglón `hipcc con -D__HIP_PLATFORM_NVIDIA__` es engañoso:
+no es hipcc el que compila para NVIDIA (hipcc es un wrapper de clang de AMD y
+NO envuelve a nvcc). El compilador para NVIDIA es **`nvcc`**, y lo que hace
+posible la fuente única es una **capa de headers** dentro de ROCm:
+
+    hip/hip_runtime.h
+      #if defined(__HIP_PLATFORM_NVIDIA__) && !defined(__HIP_PLATFORM_AMD__)
+        #include <hip/nvidia_detail/nvidia_hip_runtime.h>   // -> <cuda_runtime.h>
+      #elif ...
+
+Así que "una fuente, dos backends" se sostiene — pero por include paths y un
+`-D`, no porque hipcc sepa hablar con CUDA. Detalles y la invocación exacta en
+la Fase 1; el requisito medido es **CUDA 12.4, no 13.0**.
+
+Corolario de método: durante H1 se buscó un *shim instalable*, no se encontró, y
+se concluyó que la tesis estaba muerta para NVIDIA. La conclusión era falsa: el
+mecanismo no era un paquete, era un header ya presente. Un negativo
+"documentado" sigue siendo una hipótesis hasta que se reproduce en el caso
+concreto.
 
 ### 2.2 Estructura del repo
 
@@ -150,7 +171,7 @@ diseño se compromete sin pasar su test.**
 Entregable: informe de toolchain.
 Estado: HIP corrió en MI210; CUDA 13.0 presente. Ver `OPTION_A_ANALYSIS.md`.
 
-### Fase 1 — Esqueleto dual + kernel trivial (1 semana)
+### Fase 1 — Esqueleto dual + kernel trivial (1 semana) ✅ COMPLETA
 
 - CMake que detecte ROCm/CUDA y compile la misma fuente HIP.
 - Kernel trivial (`vector_add`) que corra en MI210 y en una NVIDIA.
@@ -158,6 +179,40 @@ Estado: HIP corrió en MI210; CUDA 13.0 presente. Ver `OPTION_A_ANALYSIS.md`.
 
 **Criterio de fusión:** el mismo binario fuente compila y corre correcto en
 MI210 (ROCm) Y en q6000 (CUDA). Si no → evaluar SYCL.
+
+**RESULTADO (2026-09-11): CUMPLIDO.** No con un `vector_add`, sino con el kernel
+WFA real, que es una prueba mucho más fuerte. La misma fuente `wfa_kernel.hip`
+compila y corre en ambos:
+
+    MI210  (gfx90a, hipcc 6.4.3) ....... 100.00%  (job 29184155)
+    RTX 6000 (Turing sm_75, nvcc 12.4) .. 100.00%  (job 29199289)
+
+Mismo set de control, mismos números (946 pass / 0 fail / 61 abandoned).
+
+**CÓMO, y por qué el §10 original se equivocaba.** El masterplan y buena parte
+del trabajo de H1 asumieron que la portabilidad HIP-pura a NVIDIA requería un
+*shim instalable*, y al no encontrarlo se concluyó (demasiado rápido) que la
+tesis estaba muerta para NVIDIA. No lo está. El mecanismo siempre estuvo en los
+headers de ROCm:
+
+    hip/hip_runtime.h  --(si __HIP_PLATFORM_NVIDIA__)-->  hip/nvidia_detail/
+                                                          nvidia_hip_runtime.h
+                                                          -> #include <cuda_runtime.h>
+
+Es una **capa de headers, no un toolchain aparte**. Compilar para NVIDIA es:
+
+    nvcc -w -D__HIP_PLATFORM_NVIDIA__ -std=c++17 \
+         -gencode arch=compute_75,code=sm_75 \
+         -I $ROCM/include -I $CUDA/include -I $CUDA/targets/x86_64-linux/include \
+         -x cu ...
+
+Sin hipify, sin instalar nada, sin dependencia nueva. La única restricción
+medida: **CUDA 12.4, no 13.0** (el layer de ROCm 6.4.3 apunta a 12.x y falla con
+13.0 en `cudaMemLocation` / `cudaDeviceProp.clockRate`).
+
+Lo que faltaba no era el mecanismo, era **la prueba**. Diez minutos de `nvcc`
+directo desmintieron una conclusión que se había apoyado en un skill en vez de
+en una reproducción.
 
 ### Fase 2 — Kernel WFA score-only (2 semanas) ✅ COMPLETA
 

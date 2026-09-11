@@ -428,7 +428,61 @@ por bloque.
     R2  H2 en MI210         HECHO — 100%, job 29184155
     R3  tests de regresión  HECHO
     R4  commits             HECHO
-    R5  capa NVIDIA         ABIERTO — decisión del usuario
+    R5  capa NVIDIA         HECHO — 100% CUDA, job 29199289
+
+### R5 — capa NVIDIA ✅ CERRADA, opción A
+
+**Resultado: la portabilidad CUDA funciona, sin hipify y sin dependencia nueva.**
+La misma fuente `wfa_kernel.hip` da 100% en ambos backends:
+
+    MI210   (gfx90a, hipcc 6.4.3) ........ 100.00%  job 29184155
+    RTX 6000 (Turing sm_75, nvcc 12.4) ... 100.00%  job 29199289
+    mismos números: 946 pass / 0 fail / 61 abandoned
+
+**El hallazgo que cambia el diagnóstico.** H1 había concluido que la capa NVIDIA
+era imposible, porque buscó un *shim instalable* y no lo encontró (cuatro rutas
+cerradas, todas reales). La conclusión era falsa por un motivo de categoría: el
+mecanismo no es un paquete, es **una capa de headers que ya estaba en el
+cluster**.
+
+    hip/hip_runtime.h
+      #if defined(__HIP_PLATFORM_NVIDIA__) && !defined(__HIP_PLATFORM_AMD__)
+        #include <hip/nvidia_detail/nvidia_hip_runtime.h>  ->  <cuda_runtime.h>
+      #elif defined(__HIP_PLATFORM_AMD__) ...
+      #else #error "Must define exactly one of ..."
+
+El compilador para NVIDIA es `nvcc`, no hipcc. Lo que hace viable la fuente única
+es esa capa más los include paths:
+
+    nvcc -w -D__HIP_PLATFORM_NVIDIA__ -std=c++17 \
+         -gencode arch=compute_75,code=sm_75 \
+         -I /kuhpc/sw/rocm/6.4.3/include \
+         -I $CUDA/include -I $CUDA/targets/x86_64-linux/include \
+         -I . -x cu -o wfa_parity_cuda tests/parity/wfa_parity.cpp
+
+**Restricción medida:** CUDA **12.4**, no 13.0. El layer `nvidia_detail` de ROCm
+6.4.3 apunta a 12.x; con 13.0 falla en `cudaMemLocation` y en
+`cudaDeviceProp.clockRate/.computeMode`. Usar
+`/kuhpc/sw/nvhpc/Linux_x86_64/2024/cuda/12.4`.
+
+**Coste real:** ~2 horas, de las cuales la mayor parte fue diagnóstico. Cero
+traducción. La opción A estimada en "~1 día" quedó obsoleta.
+
+**Corrección al `MASTERPLAN` §2.1:** decía `hipcc con -D__HIP_PLATFORM_NVIDIA__`,
+que es engañoso (hipcc es un wrapper de clang de AMD y no envuelve a nvcc). Ya
+corregido en el propio masterplan.
+
+**Secuencia de diagnóstico, para el registro:** hipify-clang falló por headers
+cuRAND ausentes en el nvhpc del sitio (no es un problema de flags); hipify-perl
+dio un diff de **cero reescrituras** (nuestro código usa solo API compartida);
+y la prueba directa de `nvcc` compiló a la primera. Los tres resultados juntos
+son los que cerraron la cuestión: el paso de traducción no solo era innecesario,
+era imposible de ejecutar en este sitio y tampoco hacía falta.
+
+**Lección de método:** "cuatro rutas agotadas con evidencia" en un skill seguía
+siendo una hipótesis. Diez minutos de `nvcc` directo la desmintieron. Un negativo
+bien documentado no es un hecho verificado hasta que lo reproduces en el caso
+concreto que te importa.
 
 ### Nota de infraestructura: artefactos en beegfs
 
