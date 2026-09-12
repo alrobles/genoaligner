@@ -301,18 +301,44 @@ BatchResult align_batch(const std::vector<AlignRequest>& reqs)
 
     if (any_cigar) {
         // Traceback path: score + CIGAR in one kernel.
+        //
+        // chunk_bytes is the 4th kernel argument AND the dynamic shared-memory size
+        // of the launch. The first version of this API passed cfg_for()'s shmem here,
+        // which is the SCORE kernel's size -- a different quantity -- and every
+        // traceback launch failed with "wfa_trace_kernel launch". The value must
+        // match what the kernel expects (the harness, which works, computes it this
+        // way), and if it exceeds the 48 KB default the attribute has to be raised
+        // BEFORE the launch or the driver rejects it.
         const int wf_stride    = 2 * smax + 3;
         const int wf_alloc_max = (smax + 1) * wf_stride;
+        const int chunk_bytes  = wf_alloc_max * (int)sizeof(int);
+
         int* d_ws = nullptr;
         if (hipMalloc(&d_ws, (size_t)wf_alloc_max * (size_t)N * sizeof(int)) != hipSuccess) {
             return fail("hipMalloc(d_ws)");
         }
         hipMemset(d_ws, 0, (size_t)wf_alloc_max * (size_t)N * sizeof(int));
 
-        LaunchCfg c = cfg_for(smax, false);
-        hipLaunchKernelGGL(wfa_trace_kernel, dim3((unsigned)N), dim3(1), (size_t)0,
+        if (chunk_bytes > 48 * 1024) {
+            hipError_t as = hipFuncSetAttribute(
+                (const void*)wfa_trace_kernel,
+                hipFuncAttributeMaxDynamicSharedMemorySize, chunk_bytes);
+            if (as != hipSuccess) {
+                hipFree(d_ws);
+                // Ask the device what it can actually do, so the message is actionable
+                // instead of "invalid argument".
+                int max_smem = 0;
+                hipDeviceGetAttribute(&max_smem, hipDeviceAttributeMaxSharedMemoryPerBlockOptin, 0);
+                (void)max_smem;
+                return fail("shared memory for this smax exceeds the device limit "
+                            "(lower smax, or use with_cigar=false to score only)");
+            }
+        }
+
+        hipLaunchKernelGGL(wfa_trace_kernel, dim3((unsigned)N), dim3(1),
+                           (size_t)chunk_bytes,
                            (hipStream_t)0, d_pairs, d_scores, d_cg, d_meta, d_ws,
-                           smax, wf_stride, wf_alloc_max, (int)c.shmem, cigar_cap);
+                           smax, wf_stride, wf_alloc_max, chunk_bytes, cigar_cap);
         hipError_t le = hipGetLastError();
         if (le != hipSuccess) { hipFree(d_ws); return fail("wfa_trace_kernel launch"); }
         hipDeviceSynchronize();
