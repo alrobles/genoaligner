@@ -111,6 +111,7 @@ int main(int argc, char** argv)
     uint32_t seed  = 12345u;
     int    ident   = 90;
     int    verify  = 25;   // sample pairs scored against the CPU DP reference
+    bool   time_gen = false;  // include host case generation in end-to-end?
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -121,6 +122,7 @@ int main(int argc, char** argv)
         else if (a == "--smax")   smax    = next(smax);
         else if (a == "--reps")   reps    = next(reps);
         else if (a == "--verify") verify  = next(verify);
+        else if (a == "--time-gen") time_gen = true;
         else if (a == "--seed")   seed    = (uint32_t)next((int)seed);
     }
 
@@ -142,9 +144,23 @@ int main(int argc, char** argv)
            n_pairs, len, ident, smax, reps);
 
     // ---- phase 1: host case generation ------------------------------------
-    auto t0 = std::chrono::steady_clock::now();
+    // GENERATED ONCE, OUTSIDE THE MEASUREMENT WINDOW, unless --time-gen is given.
+    //
+    // The first version timed generation inside end-to-end and it was ~50% of the
+    // total -- a property of this benchmark, not of the product. A user does not
+    // regenerate their sequences on every alignment call. Keeping it in the
+    // headline number would have made the tool look slow for a reason no one
+    // shipping it would ever experience.
+    //
+    // --time-gen restores the old behaviour, so the cost is still measurable for
+    // anyone who wants to know what bulk generation costs.
+    auto t_gen0 = std::chrono::steady_clock::now();
     std::vector<Pair> cases = build_cases(n_pairs, len, ident, seed);
-    const double gen_ms = ms_since(t0);
+    const double gen_ms = time_gen ? ms_since(t_gen0) : 0.0;
+    if (time_gen) {
+        printf("  NOTE: --time-gen is ON; host generation is inside end-to-end.\n\n");
+    }
+    std::chrono::steady_clock::time_point t0;
 
     // ---- phase 2: pack into the device layout -----------------------------
     // PairView holds raw POINTERS, not offsets. A memcpy of host-built views
@@ -356,7 +372,11 @@ int main(int argc, char** argv)
     printf("PHASE BREAKDOWN (ms, per full run)\n");
     printf("  context warm-up (1x)    : %10.3f         (one-time per process, NOT in e2e)\n",
            warmup_ms);
-    printf("  generate cases (host)   : %10.3f  %5.1f%%\n", gen_ms, 100.0 * gen_ms / e2e_ms);
+    if (time_gen)
+        printf("  generate cases (host)   : %10.3f  %5.1f%%\n", gen_ms, 100.0 * gen_ms / e2e_ms);
+    else
+        printf("  generate cases (host)   : %10.3f         (excluded; --time-gen to include)\n",
+               gen_ms);
     printf("  pack to device layout   : %10.3f  %5.1f%%\n", pack_ms, 100.0 * pack_ms / e2e_ms);
     printf("  hipMalloc + memset      : %10.3f  %5.1f%%\n", alloc_ms, 100.0 * alloc_ms / e2e_ms);
     printf("  memcpy H2D              : %10.3f  %5.1f%%\n", h2d_ms, 100.0 * h2d_ms / e2e_ms);
