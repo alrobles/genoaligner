@@ -71,6 +71,17 @@
 #ifndef GENOALIGNER_WFA_KERNEL_HIP
 #define GENOALIGNER_WFA_KERNEL_HIP
 
+// This header is self-contained on purpose. It has no #include of its own before
+// this, which meant every translation unit that pulled it in had to happen to
+// bring <cstddef> and <cstdint> first -- true in the development tree by accident
+// of include order, and FALSE in a clean checkout, where the CPU gate failed with
+// 'size_t was not declared' at the workspace indexing (line ~518) and INT32_MIN
+// undeclared. Found by the deployment test (fase8), which builds from a fresh
+// clone deliberately. A header that only compiles inside its home tree is not
+// portable, and portability is this project's whole claim.
+#include <cstddef>
+#include <cstdint>
+
 #include <hip/hip_runtime.h>
 
 namespace genoaligner {
