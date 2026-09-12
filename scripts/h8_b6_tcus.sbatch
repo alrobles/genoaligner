@@ -94,9 +94,14 @@ kernel_tcus() {
     fi
 
     local res abd want
-    res=$(grep -E '^  resolved /' "$outfile" | sed 's/.*: *//' | awk '{print $1}')
-    abd=$(grep -E '^  resolved /' "$outfile" | sed 's/.*: *//' | awk '{print $3}')
-    want=$(grep -E '^  pairs   :' "$outfile" | sed 's/.*: *//' | awk '{print $1}')
+    # NOTE the extraction: the pairs line is
+    #   "  pairs   : 2000   len : 1024   ident : 90%   smax : 256   reps : 20"
+    # so a greedy sed 's/.*: *//' returns the LAST field (reps), not the first. That
+    # bug made every run look abandoned (2000 != 20) and refuse -- correctly refusing,
+    # for the wrong reason. Extract by pattern, not position.
+    res=$(grep -E '^  resolved /' "$outfile" | sed -n 's/^  resolved \/ abandoned *: *\([0-9]*\) \/.*/\1/p')
+    abd=$(grep -E '^  resolved /' "$outfile" | sed -n 's/^  resolved \/ abandoned *: *[0-9]* \/ *\([0-9]*\).*/\1/p')
+    want=$(grep -E '^  pairs   :' "$outfile" | sed -n 's/^  pairs *: *\([0-9]*\).*/\1/p')
     # Every pair must resolve, or the throughput is diluted by abandonment (the Fase 6
     # trap). Refuse rather than report a number that measures something else.
     if [ -n "$want" ] && [ "$res" != "$want" ]; then
