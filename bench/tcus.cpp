@@ -1,0 +1,271 @@
+// genoaligner Fase 6 — phase-separated timing probe.
+//
+// WHY THIS EXISTS BEFORE THE REAL BENCH
+// -------------------------------------
+// "TCUPS" can mean two very different numbers: the throughput of the kernel
+// itself, or the throughput a user sees including allocation and transfer. The
+// literature (Accelign, WFA-GPU) reports the first. Reporting the second as if
+// it were comparable would be dishonest, and reporting the first without saying
+// how much was excluded is the same sin in the other direction.
+//
+// So this tool measures the SPLIT, on realistic long sequences, before anyone
+// commits to a headline number:
+//
+//     generate cases          (host, once)
+//     hipMalloc + hipMemset   (device setup, once)   <- amortised or not?
+//     memcpy H2D              (transfer)
+//     kernel launch           (hipEvent timed, R repetitions)
+//     memcpy D2H              (readback)
+//
+// The output is milliseconds per phase and, for the kernel, the same work
+// expressed as TCUPS so the two framings sit side by side and the decision is
+// made on a number rather than a preference.
+//
+// WHAT "TCUPS" COUNTS HERE
+// ------------------------
+//   cells = pattern_len * text_len  per pair, summed over pairs.
+//   1 TCUPS = 1e12 cells/second.
+// This is the same definition the field uses for WFA-style full-DP work, and it
+// is deliberately generous to a wavefront method: WFA does NOT visit every cell,
+// it visits O(n*s). Reporting cells/ (actual measured time) is therefore a
+// fair "what would a full-DP kernel need to do to match this" number when
+// compared against full-DP tools, and it is NOT a claim about cells touched.
+// Both interpretations are printed so neither can be quoted by accident.
+//
+// RÉGIME
+// ------
+// The parity control set is 32-256 bp with adversarial cases -- correct for
+// parity, useless for throughput. This uses the phylogenetic regime the project
+// targets: identity 50/70/90/95%, lengths up to a few kbp, many pairs.
+//
+// BUILD (same two backends as the kernel itself):
+//   ROCm:  hipcc -O2 -std=c++17 -I. -o tcus bench/tcus.cpp
+//   CUDA:  nvcc -w -D__HIP_PLATFORM_NVIDIA__ -x cu ... (see scripts/h6_bench_cuda.sbatch)
+//   CPU:   g++ with the shim, for validating this file without a GPU job.
+
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <chrono>
+#include <random>
+#include <string>
+#include <vector>
+
+#include <hip/hip_runtime.h>
+
+#include <genoaligner/backend/wfa_kernel.hip>
+
+// ---------------------------------------------------------------------------
+// Case generation — same RNG discipline as the parity harness (mt19937 in C++),
+// so the sequences here are exactly the kind the kernel was validated on.
+// ---------------------------------------------------------------------------
+struct Pair {
+    std::string text;
+    std::string pattern;
+};
+
+static std::vector<Pair> build_cases(int n_pairs, int len, int ident_pct, uint32_t seed)
+{
+    std::vector<Pair> out;
+    out.reserve((size_t)n_pairs);
+
+    std::mt19937 rng(seed);
+    std::uniform_int_distribution<int> base(0, 3);
+    std::uniform_int_distribution<int> pos(0, len > 1 ? len - 1 : 0);
+    std::uniform_int_distribution<int> ch(0, 3);
+    const char alphabet[] = "ACGT";
+
+    for (int c = 0; c < n_pairs; ++c) {
+        std::string text;
+        text.reserve((size_t)len);
+        for (int i = 0; i < len; ++i) text.push_back(alphabet[base(rng)]);
+
+        std::string pattern = text;
+        const int n_mut = (int)((size_t)len * (100 - ident_pct) / 100.0);
+        for (int i = 0; i < n_mut; ++i) pattern[pos(rng)] = alphabet[ch(rng)];
+
+        // Keep indel pressure in, as in the parity set: pure substitutions would
+        // let a substitution-only kernel look fast.
+        if (c % 7 == 0 && pattern.size() > 4) pattern.erase(0, 2);
+
+        out.push_back({std::move(text), std::move(pattern)});
+    }
+    return out;
+}
+
+static double ms_since(std::chrono::steady_clock::time_point t0)
+{
+    return std::chrono::duration<double, std::milli>(
+               std::chrono::steady_clock::now() - t0).count();
+}
+
+int main(int argc, char** argv)
+{
+    int    n_pairs = 2000;
+    int    len     = 1024;
+    int    smax    = 64;
+    int    reps    = 10;
+    uint32_t seed  = 12345u;
+    int    ident   = 90;
+
+    for (int i = 1; i < argc; ++i) {
+        const std::string a = argv[i];
+        auto next = [&](int def) { return (i + 1 < argc) ? atoi(argv[++i]) : def; };
+        if      (a == "--pairs")  n_pairs = next(n_pairs);
+        else if (a == "--len")    len     = next(len);
+        else if (a == "--ident")  ident   = next(ident);
+        else if (a == "--smax")   smax    = next(smax);
+        else if (a == "--reps")   reps    = next(reps);
+        else if (a == "--seed")   seed    = (uint32_t)next((int)seed);
+    }
+
+    printf("genoaligner Fase 6 -- phase-separated timing probe\n");
+    printf("  backend : %s\n", GENOALIGNER_BENCH_BACKEND);
+#ifdef __HIP_PLATFORM_NVIDIA__
+    printf("  vendor  : NVIDIA (nvcc, __HIP_PLATFORM_NVIDIA__)\n");
+#else
+    printf("  vendor  : AMD (hipcc)\n");
+#endif
+
+    hipDeviceProp_t prop{};
+    if (hipGetDeviceProperties(&prop, 0) != hipSuccess) {
+        printf("  no device -- this probe is a GPU measurement, not the CPU shim.\n");
+        return 2;
+    }
+    printf("  device  : %s\n", prop.name);
+    printf("  pairs   : %d   len : %d   ident : %d%%   smax : %d   reps : %d\n\n",
+           n_pairs, len, ident, smax, reps);
+
+    // ---- phase 1: host case generation ------------------------------------
+    auto t0 = std::chrono::steady_clock::now();
+    std::vector<Pair> cases = build_cases(n_pairs, len, ident, seed);
+    const double gen_ms = ms_since(t0);
+
+    // ---- phase 2: pack into the device layout -----------------------------
+    // PairView holds raw POINTERS, not offsets. A memcpy of host-built views
+    // would carry host addresses into device code -- a silent wrong-answer bug
+    // on unified memory and a fault elsewhere. So the strings are copied first,
+    // and the views are built with DEVICE addresses afterwards (below).
+    t0 = std::chrono::steady_clock::now();
+    std::string text_store, pat_store;
+    std::vector<int> toff((size_t)n_pairs), poff((size_t)n_pairs);
+    text_store.reserve((size_t)n_pairs * (size_t)len);
+    pat_store.reserve((size_t)n_pairs * (size_t)len);
+    for (int i = 0; i < n_pairs; ++i) {
+        toff[(size_t)i] = (int)text_store.size();
+        poff[(size_t)i] = (int)pat_store.size();
+        text_store += cases[(size_t)i].text;
+        pat_store  += cases[(size_t)i].pattern;
+    }
+    const double pack_ms = ms_since(t0);
+
+    // ---- phase 3: device allocation + zeroing -----------------------------
+    PairView* d_pairs   = nullptr;
+    char*     d_text    = nullptr;
+    char*     d_pat     = nullptr;
+    int*      d_scores  = nullptr;
+
+    t0 = std::chrono::steady_clock::now();
+    hipError_t st = hipMalloc(&d_pairs,  (size_t)n_pairs * sizeof(PairView));
+    if (st == hipSuccess) st = hipMalloc(&d_text,   text_store.size());
+    if (st == hipSuccess) st = hipMalloc(&d_pat,    pat_store.size());
+    if (st == hipSuccess) st = hipMalloc(&d_scores, (size_t)n_pairs * sizeof(int));
+    if (st == hipSuccess) st = hipMemset(d_scores, 0, (size_t)n_pairs * sizeof(int));
+    if (st != hipSuccess) {
+        printf("FATAL: allocation failed (%s)\n", hipGetErrorString(st));
+        return 3;
+    }
+    const double alloc_ms = ms_since(t0);
+
+    // ---- phase 4: host -> device transfer ---------------------------------
+    t0 = std::chrono::steady_clock::now();
+    hipMemcpy(d_text,  text_store.data(), text_store.size(), hipMemcpyHostToDevice);
+    hipMemcpy(d_pat,   pat_store.data(),  pat_store.size(),  hipMemcpyHostToDevice);
+    hipDeviceSynchronize();
+    const double h2d_ms = ms_since(t0);
+
+    // Views now point at DEVICE memory. Built after the string copy, never
+    // memcpy'd from a host-side struct.
+    std::vector<PairView> views((size_t)n_pairs);
+    for (int i = 0; i < n_pairs; ++i) {
+        views[(size_t)i] = PairView{ d_text + toff[(size_t)i],
+                                     (int)cases[(size_t)i].text.size(),
+                                     d_pat  + poff[(size_t)i],
+                                     (int)cases[(size_t)i].pattern.size(),
+                                     0 };
+    }
+    hipMemcpy(d_pairs, views.data(), (size_t)n_pairs * sizeof(PairView),
+              hipMemcpyHostToDevice);
+    hipDeviceSynchronize();
+
+    // ---- phase 5: the kernel, timed in isolation --------------------------
+    // One untimed launch first: the first launch of a kernel pays module
+    // loading, and folding that into the average would understate throughput
+    // by an amount that depends on how many reps you chose. That is a
+    // measurement artefact, not a property of the kernel.
+    hipLaunchKernelGGL(wfa_score_kernel, dim3((unsigned)n_pairs), dim3(1), 0,
+                       (hipStream_t)0, d_pairs, d_scores, smax);
+    hipError_t le = hipGetLastError();
+    if (le != hipSuccess) {
+        printf("FATAL: launch failed (%s)\n", hipGetErrorString(le));
+        return 4;
+    }
+    hipDeviceSynchronize();
+
+    hipEvent_t ev_start, ev_stop;
+    hipEventCreate(&ev_start);
+    hipEventCreate(&ev_stop);
+    hipEventRecord(ev_start, (hipStream_t)0);
+    for (int r = 0; r < reps; ++r) {
+        hipLaunchKernelGGL(wfa_score_kernel, dim3((unsigned)n_pairs), dim3(1), 0,
+                           (hipStream_t)0, d_pairs, d_scores, smax);
+    }
+    hipEventRecord(ev_stop, (hipStream_t)0);
+    hipEventSynchronize(ev_stop);
+    float kernel_ms = 0.0f;
+    hipEventElapsedTime(&kernel_ms, ev_start, ev_stop);
+    const double per_launch_ms = kernel_ms / (double)reps;
+
+    // ---- phase 6: device -> host readback ---------------------------------
+    std::vector<int> scores((size_t)n_pairs, 0);
+    t0 = std::chrono::steady_clock::now();
+    hipMemcpy(scores.data(), d_scores, (size_t)n_pairs * sizeof(int), hipMemcpyDeviceToHost);
+    hipDeviceSynchronize();
+    const double d2h_ms = ms_since(t0);
+
+    // ---- work accounting --------------------------------------------------
+    // cells as full DP would see them: len * len per pair (pattern == text len here)
+    double cells = 0.0;
+    for (const auto& pv : views)
+        cells += (double)pv.pattern_len * (double)pv.text_len;
+
+    const double kern_s   = per_launch_ms / 1000.0;
+    const double tcus     = (kern_s > 0.0) ? cells / kern_s / 1e12 : 0.0;
+    const double setup_ms = gen_ms + pack_ms + alloc_ms + h2d_ms;
+    const double e2e_ms   = setup_ms + per_launch_ms + d2h_ms;
+    const double tcus_e2e = (e2e_ms > 0.0) ? cells / (e2e_ms / 1000.0) / 1e12 : 0.0;
+
+    printf("PHASE BREAKDOWN (ms, per full run)\n");
+    printf("  generate cases (host)   : %10.3f  %5.1f%%\n", gen_ms, 100.0 * gen_ms / e2e_ms);
+    printf("  pack to device layout   : %10.3f  %5.1f%%\n", pack_ms, 100.0 * pack_ms / e2e_ms);
+    printf("  hipMalloc + memset      : %10.3f  %5.1f%%\n", alloc_ms, 100.0 * alloc_ms / e2e_ms);
+    printf("  memcpy H2D              : %10.3f  %5.1f%%\n", h2d_ms, 100.0 * h2d_ms / e2e_ms);
+    printf("  KERNEL (mean of %d)     : %10.3f  %5.1f%%   <-- the literature number\n",
+           reps, per_launch_ms, 100.0 * per_launch_ms / e2e_ms);
+    printf("  memcpy D2H              : %10.3f  %5.1f%%\n", d2h_ms, 100.0 * d2h_ms / e2e_ms);
+    printf("  ---------------------------------------------\n");
+    printf("  end-to-end              : %10.3f\n\n", e2e_ms);
+
+    printf("THROUGHPUT (1 TCUPS = 1e12 cells/s)\n");
+    printf("  cells per run           : %.3e  (%d pairs x %d x %d)\n",
+           cells, n_pairs, len, len);
+    printf("  kernel-only ............ : %8.3f TCUPS   (comparable to Accelign/WFA-GPU)\n",
+           tcus);
+    printf("  end-to-end ............. : %8.3f TCUPS   (what a user sees; NOT comparable)\n",
+           tcus_e2e);
+    printf("  setup share of e2e ..... : %5.1f%%\n", 100.0 * setup_ms / e2e_ms);
+
+    hipFree(d_pairs); hipFree(d_text); hipFree(d_pat); hipFree(d_scores);
+    hipEventDestroy(ev_start); hipEventDestroy(ev_stop);
+    return 0;
+}
