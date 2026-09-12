@@ -54,6 +54,7 @@
 #include <hip/hip_runtime.h>
 
 #include "include/genoaligner/backend/wfa_kernel.hip"
+#include "src/reference/edit_distance_cpu.hpp"
 
 using namespace genoaligner;
 
@@ -109,6 +110,7 @@ int main(int argc, char** argv)
     int    reps    = 10;
     uint32_t seed  = 12345u;
     int    ident   = 90;
+    int    verify  = 25;   // sample pairs scored against the CPU DP reference
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -118,6 +120,7 @@ int main(int argc, char** argv)
         else if (a == "--ident")  ident   = next(ident);
         else if (a == "--smax")   smax    = next(smax);
         else if (a == "--reps")   reps    = next(reps);
+        else if (a == "--verify") verify  = next(verify);
         else if (a == "--seed")   seed    = (uint32_t)next((int)seed);
     }
 
@@ -215,11 +218,28 @@ int main(int argc, char** argv)
     hipDeviceSynchronize();
 
     // ---- phase 5: the kernel, timed in isolation --------------------------
+    // LAUNCH CONFIG MUST MATCH THE KERNEL'S OWN ASSUMPTIONS. The score kernel
+    // maps diagonal k = threadIdx.x - s, so the block must cover 2*smax+1
+    // diagonals; a smaller block silently misses diagonals. And it declares
+    // `extern __shared__ int smem[]` sized 2 wavefronts x (2*smax+3) ints --
+    // passing 0 here makes every read land on unallocated memory, so every pair
+    // returns -1 and the timing measures a faulting guard, not the algorithm.
+    // (Both numbers are copied from the parity harness, which is the launch site
+    // that was validated: tests/parity/wfa_parity.cpp, near line 429.)
+    const int need_diag = 2 * smax + 1;
+    int block = 1;
+    while (block < need_diag) block <<= 1;
+    if (block > 1024) block = 1024;
+    const size_t shmem = (size_t)2 * (2 * smax + 3) * sizeof(int);
+
+    printf("  launch  : block=%d threads, smem=%zu B (%.1f KB)\n",
+           block, shmem, shmem / 1024.0);
+
     // One untimed launch first: the first launch of a kernel pays module
     // loading, and folding that into the average would understate throughput
     // by an amount that depends on how many reps you chose. That is a
     // measurement artefact, not a property of the kernel.
-    hipLaunchKernelGGL(wfa_score_kernel, dim3((unsigned)n_pairs), dim3(1), 0,
+    hipLaunchKernelGGL(wfa_score_kernel, dim3((unsigned)n_pairs), dim3(block), shmem,
                        (hipStream_t)0, d_pairs, d_scores, smax);
     hipError_t le = hipGetLastError();
     if (le != hipSuccess) {
@@ -233,8 +253,8 @@ int main(int argc, char** argv)
     hipEventCreate(&ev_stop);
     hipEventRecord(ev_start, (hipStream_t)0);
     for (int r = 0; r < reps; ++r) {
-        hipLaunchKernelGGL(wfa_score_kernel, dim3((unsigned)n_pairs), dim3(1), 0,
-                           (hipStream_t)0, d_pairs, d_scores, smax);
+        hipLaunchKernelGGL(wfa_score_kernel, dim3((unsigned)n_pairs), dim3(block),
+                           shmem, (hipStream_t)0, d_pairs, d_scores, smax);
     }
     hipEventRecord(ev_stop, (hipStream_t)0);
     hipEventSynchronize(ev_stop);
@@ -267,8 +287,46 @@ int main(int argc, char** argv)
                         * (double)views[(size_t)i].text_len;
     }
 
-    // ---- work accounting --------------------------------------------------
-    // cells as full DP would see them: len * len per pair (pattern == text len here)
+    // ---- VERIFY: is the kernel doing the work we are timing? --------------
+    // The single most important check in this file. A GPU run reported 136 TCUPS
+    // while the kernel was returning -1 for every pair, because the launch passed
+    // 0 bytes of shared memory and every read landed on unallocated memory. The
+    // timing was real; the work was not. Any throughput claim is void without
+    // evidence the kernel actually resolved the pairs.
+    //
+    // Sampled rather than exhaustive: the CPU DP is O(n*m) per pair and this is
+    // a timing tool, not the parity harness.
+    int v_checked = 0, v_agree = 0, v_skip = 0;
+    const int v_n = (verify < n_pairs) ? verify : n_pairs;
+    for (int i = 0; i < v_n; ++i) {
+        const int got = scores[(size_t)i];
+        if (got < 0) { ++v_skip; continue; }   // abandoned: nothing to compare
+        const int want = edit_distance_cpu(cases[(size_t)i].pattern.data(),
+                                           (int)cases[(size_t)i].pattern.size(),
+                                           cases[(size_t)i].text.data(),
+                                           (int)cases[(size_t)i].text.size());
+        ++v_checked;
+        if (got == want) ++v_agree;
+        else if (v_checked - v_agree <= 5) {
+            printf("  VERIFY MISMATCH pair %d: kernel=%d cpu=%d\n", i, got, want);
+        }
+    }
+    const bool verify_ok = (v_checked > 0) && (v_agree == v_checked);
+    printf("VERIFY vs CPU DP (independent O(nm) reference, first %d pairs)\n", v_n);
+    printf("  compared : %d   agree : %d   skipped(abandoned) : %d\n",
+           v_checked, v_agree, v_skip);
+    if (v_checked == 0) {
+        printf("  *** NOTHING COMPARED. Either every sampled pair was abandoned or no\n");
+        printf("      pair was launched. Any TCUPS below is unverified. ***\n");
+    } else if (!verify_ok) {
+        printf("  *** KERNEL DISAGREES WITH THE CPU REFERENCE. Timings below are for a\n");
+        printf("      WRONG kernel. Do not quote them. ***\n");
+    } else {
+        printf("  OK: %d/%d sampled pairs match the CPU reference.\n", v_agree, v_checked);
+    }
+    printf("\n");
+
+
     double cells = 0.0;
     for (const auto& pv : views)
         cells += (double)pv.pattern_len * (double)pv.text_len;
@@ -316,5 +374,10 @@ int main(int argc, char** argv)
 
     hipFree(d_pairs); hipFree(d_text); hipFree(d_pat); hipFree(d_scores);
     hipEventDestroy(ev_start); hipEventDestroy(ev_stop);
+
+    // Exit code carries the verdict: a timing run whose kernel did not match the
+    // CPU reference (or did nothing) must not look like a successful benchmark.
+    if (v_checked == 0) return 5;
+    if (!verify_ok)     return 6;
     return 0;
 }
