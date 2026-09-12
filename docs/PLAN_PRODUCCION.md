@@ -114,11 +114,32 @@ pasa. En MI210 (job 29213875) la API da **PASS**. El CI no tendrá un build rojo
       test.
 
 
-### B5 — README de usuario
-- [ ] Sección de instalación (CMake, ya verificado).
-- [ ] Un ejemplo completo compilable: leer FASTA → alinear → escribir resultados.
-- [ ] La tabla de límites (`smax ≤ 511`; abandonados; un smax por batch).
-- [ ] El README actual describe el **estado de desarrollo**, no el **uso**.
+### B5 — README de usuario ✅ COMPLETA
+- [x] `README.md` escrito: instalación (ambos backends, con la tabla de CUDA por
+      arquitectura), ejemplo completo, **salida real pegada del programa**, sección
+      de límites, verificación sin GPU, y tabla de rendimiento con su comparación
+      honesta (2-3x por debajo del estado del arte CUDA-only).
+- [x] Cada comando del README **ejecutado**; cada archivo enlazado, verificado.
+- [x] Ejemplo como target de CMake (`examples/align_fasta.cpp`), para que la
+      documentación no se podra.
+- [x] Verificado end-to-end **desde un clon limpio**: gate PASS (3000/3000, edlib 0
+      desaguisados), instalación cmake/build/install rc=0, y **consumidor externo**
+      compilado solo contra el prefijo instalado (job 29226409).
+
+**Cuatro defectos reales encontrados, el peor de toda la auditoría:**
+1. **El camino de traceback NUNCA funcionó por la API.** El 4º argumento del kernel es
+   `chunk_bytes`, que también es el tamaño de shared del launch; la API pasaba el
+   tamaño del kernel de *score*. Todo `with_cigar=true` fallaba con
+   `wfa_trace_kernel launch`. **Su test pasaba** porque los pares eran tan cortos que
+   el valor equivocado era aceptado por casualidad.
+2. `hipDeviceAttributeMaxSharedMemoryPerBlockOptin` no existe en ROCm 6.4.3 → no
+   compilaba la **librería**.
+3. La librería no incluía sus cabeceras como un consumidor (`"include/..."` en vez de
+   `<genoaligner/...>`) → cualquier consumidor contra el árbol instalado fallaba.
+4. **Compilar en un host sin GPU producía una librería inútil**: hipcc usaba su
+   arquitectura por defecto, el enlace salía bien y el fallo aparecía en runtime como
+   `invalid device function`. Arreglado con `-DGENOALIGNER_GPU_ARCH=gfx90a`.
+
 
 ### B6 — Números de TCUPS con barras de error
 - [ ] Re-medir con el diseño **intercalado** (el validado en Fase 7).
