@@ -48,7 +48,7 @@ probe() {
     local lab="$1"; shift
     printf "%-42s" "$lab"
     /tmp/tresid "$@" --reps 30 --kernel flat --verify 5 2>&1 \
-        | grep -E 'KERNEL \(mean|distance \(score' \
+        | grep -E 'KERNEL \(mean|distance \(score|resolved /|occupancy|launch  :' \
         | sed 's/.*: *//; s/  <--.*//' | tr '\n' ' '
     echo
 }
@@ -74,6 +74,17 @@ echo
 echo "TEST C — same smax, same distance, half the pairs (per-pair vs per-launch)"
 probe "smax=256 ident=99 pairs=2000"  --len 1024 --pairs 2000 --ident 99 --smax 256
 probe "smax=256 ident=99 pairs=1000"  --len 1024 --pairs 1000 --ident 99 --smax 256
+
+echo
+echo "TEST D — the SAME configuration 4x, to establish the flat kernel's spread here"
+echo "  job 29210734 measured +-0.1% for the flat; this job saw 15.807 vs 10.779 ms"
+echo "  (47%) for one identical config, so the spread has to be re-established."
+echo
+printf "%-42s %s\n" "config" "kernel_ms dist resolved"
+probe "rep1 smax=256 ident=99 pairs=2000" --len 1024 --pairs 2000 --ident 99 --smax 256
+probe "rep2 smax=256 ident=99 pairs=2000" --len 1024 --pairs 2000 --ident 99 --smax 256
+probe "rep3 smax=256 ident=99 pairs=2000" --len 1024 --pairs 2000 --ident 99 --smax 256
+probe "rep4 smax=256 ident=99 pairs=2000" --len 1024 --pairs 2000 --ident 99 --smax 256
 
 echo
 echo "=== H7-resid DONE ==="
