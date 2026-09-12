@@ -201,13 +201,19 @@ add_executable(genoaligner_api_test tests/api/test_api.cpp)
 target_link_libraries(genoaligner_api_test PRIVATE genoaligner)
 genoaligner_configure_hip(genoaligner_api_test)
 
+# FASTA reading is header-only and pure host code, so this test needs no HIP flags.
+add_executable(genoaligner_fasta_test tests/io/test_fasta.cpp)
+target_include_directories(genoaligner_fasta_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+
 install(TARGETS genoaligner ARCHIVE DESTINATION lib)
 install(FILES include/genoaligner/api.hpp DESTINATION include/genoaligner)
+install(FILES include/genoaligner/io/fasta.hpp DESTINATION include/genoaligner/io)
 
 if(GENOALIGNER_BUILD_TESTS)
     enable_testing()
     add_test(NAME probe_runs COMMAND genoaligner_probe)
     add_test(NAME api_runs   COMMAND genoaligner_api_test)
+    add_test(NAME fasta_runs COMMAND genoaligner_fasta_test)
 endif()
 
 # --- Summary -----------------------------------------------------------

@@ -195,4 +195,23 @@ else
 fi
 
 echo
-echo "=== CPU GATE COMPLETE — score, memory, traceback and public API verified ==="
+echo "--- [host] build and run the FASTA reader test ---"
+if g++ -O2 -std=c++17 -I"$REPO_ROOT" -o "$BUILD_DIR/test_fasta" \
+       "$REPO_ROOT/tests/io/test_fasta.cpp" 2>"$BUILD_DIR/fasta_build.log"; then
+    if ! "$BUILD_DIR/test_fasta" | tee "$BUILD_DIR/fasta_test.out" | tail -12; then
+        echo
+        echo "=== CPU GATE FAILED (FASTA reader) — do not submit to the cluster ==="
+        exit 1
+    fi
+    if ! grep -q "RESULT: PASS" "$BUILD_DIR/fasta_test.out"; then
+        echo "  !!! FASTA test produced no PASS verdict — treating as FAILURE."
+        exit 1
+    fi
+else
+    echo "  !!! FASTA test failed to BUILD:"
+    sed -n '1,20p' "$BUILD_DIR/fasta_build.log"
+    exit 1
+fi
+
+echo
+echo "=== CPU GATE COMPLETE — score, memory, traceback, public API and FASTA verified ==="
