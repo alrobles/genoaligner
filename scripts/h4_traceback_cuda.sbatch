@@ -25,6 +25,12 @@ R=/kuhpc/sw/rocm/6.4.3
 C=/kuhpc/sw/nvhpc/Linux_x86_64/2024/cuda/12.4
 ROOT=/beegfs/a474r867/genoaligner/repo
 N_CASES=${N_CASES:-207}
+# Emit to beegfs, NOT /tmp. See h4_traceback.sbatch for why: the /tmp path is
+# node-local and vanishes with the job, which is how the Fase 4 external gate
+# ended up with nothing to check.
+OUT_DIR=/beegfs/a474r867/genoaligner/out
+mkdir -p "$OUT_DIR"
+CIGAR_TSV=$OUT_DIR/cigars_gpu_cuda_${SLURM_JOB_ID}.tsv
 
 echo "=== host: $(hostname) ==="
 echo "=== H4-CUDA: Fase 4 traceback on NVIDIA (nvcc, same source) ==="
@@ -71,8 +77,14 @@ echo "--- embedded GPU code ---"
 
 echo
 echo "--- run: traceback ---"
-/tmp/wfa_parity_trace_cuda "$N_CASES" --traceback --emit /tmp/cigars_gpu_cuda.tsv
+/tmp/wfa_parity_trace_cuda "$N_CASES" --traceback --emit "$CIGAR_TSV"
 RC=$?
+
+echo
+echo "--- stage 3: CIGAR score vs edlib (external implementation) on GPU output ---"
+python3 tests/parity/check_cigar.py "$CIGAR_TSV"
+RC_EDLIB=$?
+if [ "$RC_EDLIB" -ne 0 ]; then RC=1; fi
 
 echo
 echo "=== H4-CUDA RESULT ==="

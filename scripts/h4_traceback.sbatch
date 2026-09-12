@@ -29,6 +29,12 @@ set -o pipefail
 ROOT=/beegfs/a474r867/genoaligner/repo
 N_CASES=${N_CASES:-207}
 CHUNK_BYTES=${CHUNK_BYTES:-49152}
+# Emit to beegfs, NOT /tmp. A /tmp path dies with the job and left the Fase 4
+# gate unable to run its external stage on the GPU output (the CIGARs had to be
+# re-emitted). The node-local path was fine for the run and useless afterwards.
+OUT_DIR=/beegfs/a474r867/genoaligner/out
+mkdir -p "$OUT_DIR"
+CIGAR_TSV=$OUT_DIR/cigars_gpu_mi210_${SLURM_JOB_ID}.tsv
 
 echo "=== host: $(hostname) ==="
 echo "=== H4: Fase 4 traceback on MI210 ==="
@@ -64,7 +70,7 @@ echo "--- embedded GPU code ---"
 echo
 echo "--- run: traceback, default chunk ($CHUNK_BYTES B) ---"
 /tmp/wfa_parity_trace "$N_CASES" --traceback --chunk-bytes "$CHUNK_BYTES" \
-    --emit /tmp/cigars_gpu.tsv
+    --emit "$CIGAR_TSV"
 RC=$?
 
 echo
@@ -72,6 +78,17 @@ echo "--- run: traceback with NO shared memory (global fallback) ---"
 # This is the measurement the design decision rests on: how much slower is the
 # zero-shared-memory path, i.e. what does the shared buffer actually buy?
 /tmp/wfa_parity_trace "$N_CASES" --traceback --chunk-bytes 0
+
+echo
+echo "--- stage 3: CIGAR score vs edlib (external implementation) on GPU output ---"
+# The third stage of the gate, and the only one that is genuinely external. The
+# in-harness checks (re-score, well-formedness) are self-consistency: both can
+# pass while the CIGAR is wrong, and that actually happened during development.
+# Until this stage runs on the GPU-emitted CIGARs, the gate's external arm had
+# only ever been exercised on CPU output.
+python3 tests/parity/check_cigar.py "$CIGAR_TSV"
+RC_EDLIB=$?
+if [ "$RC_EDLIB" -ne 0 ]; then RC=1; fi
 
 echo
 echo "=== H4 RESULT ==="
