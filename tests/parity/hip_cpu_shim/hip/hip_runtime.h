@@ -13,6 +13,12 @@
 #ifndef GENOALIGNER_HIP_SHIM_H
 #define GENOALIGNER_HIP_SHIM_H
 
+// <cstddef> is here for size_t, used by the hipLaunchKernelGGLInternal forward
+// declaration below. It was missing and the shim only compiled when something
+// else upstream happened to include it first -- the same self-contained-header
+// bug the kernel header had, found in the same deployment test (fase8, clean
+// clone). Both were fixed together; do not remove either.
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
