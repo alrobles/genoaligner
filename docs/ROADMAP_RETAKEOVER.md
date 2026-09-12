@@ -1,10 +1,12 @@
 # ROADMAP RETAKEOVER — genoaligner, camino a Fase 2
 
-> **Repo:** `alrobles/genoaligner-devel` (privado) · **HEAD:** `5d76bc0`
+> **Repo:** `alrobles/genoaligner-devel` (privado)
 > **Autor:** Ángel Luis Robles Fernández — Reuman Lab / KU
-> **Fecha:** 2026-09-10 · **Versión:** 1.0
+> **Fecha:** 2026-09-10 (rev. 2026-09-11) · **Versión:** 1.1
 > **Complementa:** `docs/MASTERPLAN.md` (v1.0). No lo reemplaza.
-> **Estado:** la formulación WFA está **resuelta y verificada al 100% en CPU**.
+> **Estado:** Fases 1-5 COMPLETAS. WFA score y traceback (CIGAR) al 100% en CPU y
+> en ambos backends (MI210/hipcc y RTX 6000/nvcc), con gate externo (edlib) sobre
+> la salida de GPU. Próxima: Fase 6 (benchmark honesto).
 
 ---
 
@@ -430,6 +432,66 @@ por bloque.
     R4  commits             HECHO
     R5  capa NVIDIA         HECHO — 100% CUDA, job 29199289
     R6  Fase 3 externa      HECHO — 100% vs 3 oráculos, job 29201335
+    R7  Fase 4 traceback    HECHO — CPU + ambos backends; gate externo en GPU
+
+### R7 — Fase 4: reconstrucción de CIGAR ✅ CERRADA
+
+Fase 4 = sacar el CIGAR del kernel, no solo el score. Dos bugs, ambos silenciosos
+en GPU, ambos de índice y ninguno de álgebra:
+
+1. **Pases forward.** Tres punteros base precalculados indexados con un solo
+   contador de bucle. Los predecesores del diagonal `k` viven en `k-1`, `k` y
+   `k+1` — tres slots distintos — así que `ins`/`del` leían a su vecino y la
+   recurrencia nunca alcanzaba la posición final. 170 de 214 pares devolvían -1
+   mientras los match perfectos sí resolvían. Arreglado copiando sin adornos la
+   indexación por diagonal de `forward_all()` del prototipo validado.
+
+2. **El que apareció al arreglar el 1.** La caminata arrancaba en el índice de
+   wavefront **0** en vez de `score_total`: leía la wavefront de score 0 (solo
+   diagonal 0), devolvía null para todo score ≠ 0, y no emitía nada
+   (`rev_used=0` **con el score correcto**). Score y CIGAR salen de rutas de
+   código distintas: un score bien no implica que el CIGAR haya empezado.
+
+**Resultados medidos:**
+
+    CPU (shim, mismo cuerpo del kernel) ... 203/203 re-score · 203/203 bien formados · 203/203 vs edlib
+    MI210  (job 29207401) ................ H4 PASS · 203/203 re-score · 203/203 bien formados · 11 unresolved
+                                           (todos con distancia real > smax=64) · gate edlib GPU 203/203 (job 29207419)
+    RTX 6000 (job 29207404) .............. idéntico · H4-CUDA PASS · gate edlib GPU 203/203 (job 29207420)
+    compiladores reales: hipcc 6.4.3 → RC=0 (gfx906) · nvcc 12.4 → RC=0 (dos cubins sm_75)
+
+**Cierre de la asimetría del gate.** Hasta aquí el chequeo externo (edlib, unique
+oráculo independiente) solo se había corrido sobre CIGARs **emitidos por la CPU**.
+Ahora Stage 3 corre dentro del propio job de GPU, sobre los CIGARs que la GPU
+acaba de emitir, y su exit code entra en el del job. Ambos backends: `score agrees
+203 / DISAGREES 0`. Los tsv quedan en `/beegfs/a474r867/genoaligner/out/`
+(nombre `cigars_gpu_{mi210,cuda}_<jobid>.tsv`), durables y trazables al job.
+
+La corrida con 0 B de shared vs 48 KB mide **que el resultado no cambia**, no que
+la variante shared exista: el kernel siempre usa workspace global. No reportar
+como "shared memory implementado".
+
+**El gate puede fallar (tres direcciones probadas, no asumidas):**
+
+    +1 quitado en ins          → wellformed=0 y el score sigue correcto
+    off-by-one en forward      → "29 pares unresolved DENTRO de smax"
+    flag de truncado ignorado  → truncated=40 con cap=8, re-score 7/203
+
+El segundo lo caza un guard añadido a raíz de este trabajo: `unresolved` se parte
+en "distancia real > smax" (por diseño) y "dentro de smax" (defecto real).
+Confundir ambos es lo que escondió el bug 1. El baseline devuelve exit 0.
+
+**Bug de build, no de código:** el trace kernel llama `hipDeviceGetAttribute`,
+que `nvidia_detail` mapea a la **API de driver** de CUDA. Por eso este kernel
+necesita `-lcuda` (+ `lib64/stubs`) y el de score no. Es una diferencia de regla
+de build entre dos kernels del MISMO árbol de fuente, no un flag global.
+
+**Nota de método (dos veces esta sesión):** un fix de `-lcuda` verificado en el
+nodo de login pero **sin commitear** se usó para lanzar un job que corrió la
+versión vieja del script — el "error nuevo" que apareció era desincronización,
+no un problema distinto. Y el emit a `/tmp` del nodo dejó al gate externo con
+nada que verificar. Los artefactos de un gate van a beegfs y con job id en el
+nombre.
 
 ### R6 — Fase 3: paridad contra oráculos externos ✅ CERRADA
 

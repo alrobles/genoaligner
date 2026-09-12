@@ -299,13 +299,28 @@ del propio header, en `align_pairwise.hpp`.
 Nota de convención: SeqAn3 maximiza, así que `edit_scheme` puntúa match 0,
 mismatch −1, gap −1. La distancia de edición es la **negación** del score.
 
-### Fase 4 — Traceback (2-3 semanas — la fase de riesgo)
+### Fase 4 — Traceback (2-3 semanas — la fase de riesgo) ✅ COMPLETA
 
 - Reconstrucción del CIGAR. Es donde WFA-GPU dedica más complejidad.
 - Estrategia de memoria para almacenar el camino.
 
 **Criterio de fusión:** CIGAR correcto → el alineamiento reconstruido
 reproduce el score. Es un test **autoconsistente** (no necesita referencia).
+
+**Resultado (2026-09-11): COMPLETA, y el criterio autoconsistente resultó
+insuficiente.** El CIGAR se extrae del kernel en ambos backends con la misma
+fuente. Dos bugs de índice (pases forward multi-diagonal; arranque de la caminata
+en el wavefront 0 en vez de `score_total`), ambos silenciosos en GPU, ambos
+hallados al separar `unresolved` en "distancia real > smax" vs "dentro de smax".
+
+    MI210  (job 29207419) ... H4 PASS · 203/203 re-score · 203/203 bien formados · gate edlib GPU 203/203
+    RTX 6000 (job 29207420) ... H4-CUDA PASS · idéntico · gate edlib GPU 203/203
+
+Nota: re-score y buena formación son autoconsistencia — ambos pasaron mientras el
+CIGAR estaba mal durante el desarrollo. El oráculo externo (edlib) se añadió como
+Stage 3 del gate y corre ahora dentro del job de GPU. La variante shared-memory no
+está implementada (el kernel usa workspace global); la corrida 0 B vs 48 KB solo
+mide que el resultado no cambia. Ver `ROADMAP_RETAKEOVER.md` §R7.
 
 ### Fase 5 — Capa de portabilidad formal (1 semana) ✅ COMPLETA
 
