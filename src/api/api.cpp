@@ -16,10 +16,14 @@
 // MI210/PRO 6000 and is documented in docs/RESULTADO_FASE7_OPTIMIZACION.md; it is
 // behind a flag rather than default because it is still a candidate, not merged.
 
-#include "include/genoaligner/api.hpp"
-
-#include "include/genoaligner/backend/wfa_kernel.hip"
-#include "include/genoaligner/backend/wfa_score_flat.hip"
+// Include the public headers by the path a CONSUMER would use, resolved relative to
+// this file. The previous form ("include/genoaligner/api.hpp", root-relative) worked
+// in the build tree because the repository root was on the include path, and failed
+// for every consumer that compiled against an installed tree with -I<prefix>/include.
+// A library must include its own public headers the way it expects others to.
+#include "genoaligner/api.hpp"
+#include "genoaligner/backend/wfa_kernel.hip"
+#include "genoaligner/backend/wfa_score_flat.hip"
 
 #include <cstdio>
 #include <cstring>

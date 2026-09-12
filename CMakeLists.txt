@@ -191,7 +191,7 @@ endfunction()
 add_library(genoaligner STATIC src/api/api.cpp)
 genoaligner_configure_hip(genoaligner)
 target_include_directories(genoaligner PUBLIC
-    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>"
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
     "$<INSTALL_INTERFACE:include>")
 
 add_executable(genoaligner_probe src/probe.hip)
@@ -208,6 +208,14 @@ target_include_directories(genoaligner_fasta_test PRIVATE "${CMAKE_CURRENT_SOURC
 install(TARGETS genoaligner ARCHIVE DESTINATION lib)
 install(FILES include/genoaligner/api.hpp DESTINATION include/genoaligner)
 install(FILES include/genoaligner/io/fasta.hpp DESTINATION include/genoaligner/io)
+install(DIRECTORY include/genoaligner/backend DESTINATION include/genoaligner)
+
+# The README example, built as part of the tree so the documented usage cannot rot.
+# It links the library and uses the consumer include form (<genoaligner/api.hpp>),
+# which is the form that must work against an installed tree.
+add_executable(genoaligner_example examples/align_fasta.cpp)
+target_link_libraries(genoaligner_example PRIVATE genoaligner)
+genoaligner_configure_hip(genoaligner_example)
 
 if(GENOALIGNER_BUILD_TESTS)
     enable_testing()
