@@ -36,10 +36,22 @@
 using namespace genoaligner;
 
 static int g_fail = 0;
+static bool g_dont_care = false;   // set when no device is visible: nothing that
+                                   // depends on execution can be asserted
 
 static void check(bool ok, const char* what)
 {
     if (!ok) { printf("  FAIL: %s\n", what); ++g_fail; }
+}
+
+// A check that needs real execution. On a host with no device there is nothing to
+// verify, so it is neither passed nor failed -- it is not evaluated. Using plain
+// check() for these reported a MISSING GPU as four separate library bugs, which is
+// the third time this file has confused "cannot run here" with "is broken".
+static void check_exec(bool ok, const char* what)
+{
+    if (g_dont_care) return;
+    check(ok, what);
 }
 
 // The example from api.hpp, executed verbatim. If this drifts from the header, the
@@ -81,6 +93,7 @@ int main()
     const bool gpu_build = true;
 #endif
     const bool gpu = gpu_build && device_available();
+    g_dont_care = !gpu;
     if (gpu_build && !gpu) {
         printf("  NOTE: GPU build, but no device is visible here. Correctness checks\n");
         printf("        are SKIPPED (they would fail for the wrong reason). Run on a\n");
@@ -99,8 +112,8 @@ int main()
             reqs[(size_t)i].smax    = 32;
         }
         BatchResult b = align_batch(reqs);
-        check(b.results.size() == 5, "batch returns one result per request");
-        check(b.resolved_count + b.unresolved_count == 5, "counters partition the batch");
+        check_exec(b.results.size() == 5, "batch returns one result per request");
+        check_exec(b.resolved_count + b.unresolved_count == 5, "counters partition the batch");
         printf("  results=%zu resolved=%d unresolved=%d\n\n",
                b.results.size(), b.resolved_count, b.unresolved_count);
     }
@@ -173,9 +186,9 @@ int main()
         }
         printf("  pairs=%d resolved=%d score mismatches=%d invalid cigars=%d\n",
                NP, resolved, mismatch, cigar_bad);
-        check(mismatch == 0, "API scores match the CPU DP");
-        check(cigar_bad == 0, "API CIGARs pass both validators");
-        check(b.resolved_count == resolved, "resolved_count matches the per-result flags");
+        check_exec(mismatch == 0, "API scores match the CPU DP");
+        check_exec(cigar_bad == 0, "API CIGARs pass both validators");
+        check_exec(b.resolved_count == resolved, "resolved_count matches the per-result flags");
     }
 
     // ---- heterogeneous batch lengths: the case that broke cigar_cap ------
@@ -202,7 +215,7 @@ int main()
             reqs.push_back(r);
         }
         BatchResult b = align_batch(reqs);
-        check(b.ok(), "batch reported ok");
+        check_exec(b.ok(), "batch reported ok");
         int bad = 0;
         for (size_t i = 0; i < reqs.size(); ++i) {
             const AlignResult& r = b.results[i];
@@ -229,7 +242,7 @@ int main()
             r.smax    = 8;
         }
         BatchResult b = align_batch(reqs);
-        check(b.ok() && b.error == nullptr, "success path leaves status ok and error null");
+        check_exec(b.ok() && b.error == nullptr, "success path leaves status ok and error null");
         printf("  ok=%d error=%s\n", (int)b.ok(), b.error ? b.error : "(null)");
     }
 
@@ -270,7 +283,7 @@ int main()
         r.smax = 511;
         BatchResult b2 = align_batch({r});
         if (gpu) {
-            check(b2.ok(), "smax=511 accepted (the documented maximum)");
+            check_exec(b2.ok(), "smax=511 accepted (the documented maximum)");
             printf("  smax=511   : ok=%d\n", (int)b2.ok());
         } else {
             printf("  smax=511   : (not asserted -- needs a device)\n");
