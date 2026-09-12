@@ -124,6 +124,9 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(GENOALIGNER_ALL_HIP_SOURCES
     src/probe.hip
     include/genoaligner/backend/wfa_kernel.hip
+    # api.cpp is a .cpp, but it includes the kernel headers, so on the CUDA backend
+    # nvcc needs the same -x cu override. It belongs in this list for that reason.
+    src/api/api.cpp
 )
 
 # The LANGUAGE property must be set on the SOURCE before add_executable, and
@@ -180,12 +183,31 @@ function(genoaligner_configure_hip target)
 endfunction()
 
 # --- Targets ------------------------------------------------------------
+#
+# The library target is the one that matters to a consumer: until it existed,
+# `cmake --build` produced only a probe executable, so "install this software"
+# had no meaning. api.cpp is the public surface (align/align_batch); the kernels
+# it launches are headers, so they need no separate translation unit.
+add_library(genoaligner STATIC src/api/api.cpp)
+genoaligner_configure_hip(genoaligner)
+target_include_directories(genoaligner PUBLIC
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>"
+    "$<INSTALL_INTERFACE:include>")
+
 add_executable(genoaligner_probe src/probe.hip)
 genoaligner_configure_hip(genoaligner_probe)
+
+add_executable(genoaligner_api_test tests/api/test_api.cpp)
+target_link_libraries(genoaligner_api_test PRIVATE genoaligner)
+genoaligner_configure_hip(genoaligner_api_test)
+
+install(TARGETS genoaligner ARCHIVE DESTINATION lib)
+install(FILES include/genoaligner/api.hpp DESTINATION include/genoaligner)
 
 if(GENOALIGNER_BUILD_TESTS)
     enable_testing()
     add_test(NAME probe_runs COMMAND genoaligner_probe)
+    add_test(NAME api_runs   COMMAND genoaligner_api_test)
 endif()
 
 # --- Summary -----------------------------------------------------------
