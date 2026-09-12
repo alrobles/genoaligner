@@ -7,6 +7,12 @@
 > correcto y lento.
 >
 > Jobs: 29226683 (triaje), 29226704 (kernel correcto en GPU), 29226705 (test principal).
+>
+> **Actualización (2026-09-12, mismo día):** Fase A implementada — el kernel es ahora
+> warp-per-row con la dependencia intra-fila resuelta como scan de prefijos (ver
+> §A1 nota). Pasa el gate CPU en las DOS anchuras de warp emuladas (32 y 64),
+> 110/110 casos, con control negativo integrado. Falta la verificación en GPU
+> (correctitud + determinismo + speedup), que es el siguiente job.
 
 ---
 
@@ -56,12 +62,29 @@ la misma fila, y una barrera por fila **no** garantiza esa visibilidad. Por eso 
 **Recomendación: A1, medida contra A3.** Razón: A2 está descartada por medición previa
 del propio proyecto, y A1 ataca la dependencia real (intra-fila) sin barreras extra.
 
+> **Nota A1 — lo que el `shfl_up` directo NO puede hacer (2026-09-12).** El riesgo
+> anotado arriba resultó real: `H[i][j]`/`E[i][j]` necesitan el valor de la misma fila
+> que la lane vecina está calculando *en el mismo paso* — en lockstep ese valor aún no
+> existe cuando se pide. La forma correcta de A1 es reformular E como scan de prefijos:
+> `c[j] = max(0, diag+s, F)`, `U[j] = max(U[j-1]+d, c[j]+ge·j)` con `d=max(0,ge−go)`, y
+> `E[j] = U[j-1] − go − ge·(j−1)`. El álgebra completa está en `sw_kernel.hip` y fue
+> verificada contra la recurrencia directa en 6000 casos aleatorios antes de escribir
+> el kernel. Resultado: cero barreras (ni `__syncthreads` ni `__syncwarp`), cada lane
+> solo toca slots de shared que le pertenecen, todo lo demás viaja por shuffles.
+> El shim CPU aprendió a emular warps con threads reales (`shim::run_block`), así que
+> `blockDim>1` ahora está gateado en CPU en segundos — a ambas anchuras (32 y 64).
+
 **Criterio de éxito de la Fase A (todo obligatorio):**
 1. Paridad **exacta** contra la referencia en los 15 casos, con `blockDim > 1`.
+   → ✅ en CPU emulada: 110/110 a warpSize 32 y 64. GPU: pendiente.
 2. La paridad se rompe si se quita la sincronización (test que falla con el bug).
+   → ✅ control negativo integrado: con el exchange desactivado fallan 100/110.
 3. **Determinismo**: 7 corridas de la misma entrada dan tiempos con dispersión < 5%
    (el estándar que B6 estableció, porque el kernel WFA falló ahí).
+   → pendiente de job GPU (`test_sw_gpu --bench`). Sin barreras, el modo de fallo
+   de B6 no tiene mecanismo — pero se mide, no se asume.
 4. Speedup medido con el **diseño intercalado** de B6, no cruzando jobs.
+   → pendiente.
 
 ---
 

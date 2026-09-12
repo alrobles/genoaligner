@@ -35,7 +35,7 @@ using namespace genoaligner;
 // Definitions for the shim's launch-configuration globals. The shim declares
 // them; something must define them. The kernel references them but the replay
 // below does not launch it, so they stay zero.
-uint3 threadIdx{0,0,0};
+thread_local uint3 threadIdx{0,0,0};
 uint3 blockIdx{0,0,0};
 dim3  blockDim{1,1,1};
 dim3  gridDim{1,1,1};

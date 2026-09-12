@@ -2,12 +2,11 @@
 //
 // WHY THIS FILE EXISTS
 // --------------------
-// The SW kernel faults on GPU ("Memory access fault ... Reason: Unknown", core dumped)
-// and two fixes have already been applied on reasoning alone:
-//   1. static + dynamic shared memory overlap (real, fixed);
-//   2. a missing barrier after the H/E/F initialisation (real, fixed).
-// Neither stopped the fault. The next step is not a third hypothesis -- it is to make the
-// failing case identify itself.
+// The SW kernel faulted on GPU twice ("Memory access fault ... Reason: Unknown",
+// core dumped) before this harness existed; both faults were invisible to the CPU
+// gate (host pointers inside a device struct; static/dynamic shared-memory
+// overlap). The lesson stands: when a kernel faults on device, make the failing
+// case identify itself rather than guessing.
 //
 // METHOD: bisection by construction
 // ---------------------------------
@@ -34,12 +33,17 @@ using genoaligner::SWParams;
 using genoaligner::SWPairView;
 using genoaligner::SWResult;
 
+static int g_dev_warp = 32;
+
 static bool run_one(const std::string& text, const std::string& pattern,
                     SWParams P, const char* label)
 {
     const int n = (int)pattern.size();
     const int m = (int)text.size();
-    const size_t smem = ((size_t)(n + 1) * 3 + 3 * genoaligner::SW_BLOCK) * sizeof(int);
+    // Launch contract (sw_kernel.hip): one warp per pair. A single pair is a
+    // one-warp launch; blockDim must be a multiple of the device warpSize.
+    const int    ints_per_w = genoaligner::sw_smem_ints_per_warp(n);
+    const size_t smem       = (size_t)ints_per_w * sizeof(int);
 
     std::printf("  BEFORE  %-28s m=%4d n=%4d smem=%6zu B  ... ",
                 label, m, n, smem);
@@ -80,8 +84,8 @@ static bool run_one(const std::string& text, const std::string& pattern,
     hipMemcpy(d_pairs, &hv, sizeof(SWPairView), hipMemcpyHostToDevice);
     hipMemset(d_res, 0, sizeof(SWResult));
 
-    hipLaunchKernelGGL(genoaligner::sw_score_kernel, dim3(1), dim3(1), smem,
-                       (hipStream_t)0, d_pairs, P, d_res);
+    hipLaunchKernelGGL(genoaligner::sw_score_kernel, dim3(1), dim3((unsigned)g_dev_warp),
+                       smem, (hipStream_t)0, d_pairs, P, d_res, 1, ints_per_w);
     hipError_t le = hipGetLastError();
     if (le != hipSuccess) {
         std::printf("LAUNCH ERROR: %s\n", hipGetErrorString(le));
@@ -112,6 +116,8 @@ int main()
         return 77;
     }
     std::printf("device: %s\n", prop.name);
+    hipDeviceGetAttribute(&g_dev_warp, hipDeviceAttributeWarpSize, 0);
+    std::printf("device warpSize: %d\n", g_dev_warp);
 
     int smem_per_block = 0;
     hipDeviceGetAttribute(&smem_per_block,

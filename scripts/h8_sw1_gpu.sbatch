@@ -10,19 +10,18 @@
 #SBATCH --output=/beegfs/a474r867/genoaligner/logs/h8sw1_%j.out
 #SBATCH --error=/beegfs/a474r867/genoaligner/logs/h8sw1_%j.err
 
-# Smith-Waterman, step 1: is the kernel CORRECT on a GPU, in the one configuration the
-# gate can vouch for (blockDim=1, sequential row walk)?
+# Smith-Waterman on GPU: the warp-per-row kernel.
 #
-# This is deliberately the smallest claim worth making. The kernel passes the CPU shim
-# gate against the independent full-matrix reference at blockDim=1, but the shim's
-# __syncthreads is a no-op, so a GPU run is the first time the shared-memory row walk
-# executes with real barriers at all.
-#
-# blockDim > 1 is NOT tested here: the column 1 stride reads H[j-1]/E[j-1] written by
-# another thread in the same row, and one barrier per row does not make that visible.
-# That is a known defect, recorded in the kernel's own gate output. Until it is fixed,
-# the launch uses 1 thread per block, which is correct but slow -- and slow-but-correct
-# is the honest place to start.
+# What this job establishes, stated narrowly:
+#   1. CORRECTNESS at blockDim > 1 -- one warp per pair, columns tiled across
+#      lanes, the intra-row dependency carried by the scan in sw_kernel.hip.
+#      The CPU parity gate already ran this same body under real threaded
+#      emulation at warpSize 32 AND 64; this is the check that nothing is lost
+#      on a real device -- both earlier SW faults only showed on GPU.
+#   2. DETERMINISM (--bench): 7 launches of identical work, reported as a
+#      spread. The kernel has no barriers, so the B6 failure mode (idle lanes
+#      on barriers, 2.5x between identical runs) has no mechanism here -- but
+#      the criterion is measured, not assumed.
 set -o pipefail
 
 ROOT=/beegfs/a474r867/genoaligner/repo
@@ -37,9 +36,9 @@ B=/beegfs/a474r867/sw_gpu
     -o "$B" tests/sw/test_sw_gpu.cpp || { echo "BUILD FAILED"; exit 1; }
 
 echo "=== host: $(hostname) ==="
-echo "=== SW on GPU: correctness of the sequential row walk ==="
+echo "=== SW on GPU: warp-per-row correctness + determinism ==="
 echo
-"$B" | tee "$LOGD/sw_gpu_${SLURM_JOB_ID}.txt"
+"$B" --bench | tee "$LOGD/sw_gpu_${SLURM_JOB_ID}.txt"
 RC=${PIPESTATUS[0]}
 echo
 echo "=== H8-SW1 RESULT ==="

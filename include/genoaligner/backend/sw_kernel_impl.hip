@@ -2,7 +2,15 @@
 //
 // Included after the declaration in sw_kernel.hip. Kept separate so the CPU shim can
 // execute this body on host memory (tests/parity/hip_cpu_shim), which is how every
-// kernel in this project is gated in seconds without a GPU.
+// kernel in this project is gated in seconds without a GPU. For this kernel the shim
+// matters even more than usual: shim::run_block executes it with REAL threads and
+// REAL exchanges, so the blockDim>1 behaviour below is what the parity gate checks --
+// the previous row-walk version could only be verified at blockDim=1 precisely
+// because the shim could not emulate cross-lane dataflow. Now it can.
+//
+// One warp per pair, row by row, lanes owning tiled columns. The header file has the
+// scan algebra that makes the intra-row dependency parallel-safe, and the reason
+// there are no barriers anywhere in this body.
 
 #ifndef GENOALIGNER_SW_KERNEL_IMPL_HIP
 #define GENOALIGNER_SW_KERNEL_IMPL_HIP
@@ -11,30 +19,44 @@
 
 namespace genoaligner {
 
-// Row-major walk with the previous H row in shared memory.
-//
-// Thread t owns columns j = t+1, t+1+blockDim, ... of every row (grid-stride inside the
-// row). Column 0 is the boundary and is written by thread 0 only. One __syncthreads per
-// ROW: see the header for why not one per anti-diagonal.
 __global__ void sw_score_kernel(const SWPairView* __restrict__ pairs,
                                 SWParams           params,
-                                SWResult* __restrict__ out)
+                                SWResult* __restrict__ out,
+                                int                n_pairs,
+                                int                smem_ints_per_warp)
 {
-    const int pair_id = blockIdx.x;
-    const SWPairView p = pairs[pair_id];
+    const int wsize = warpSize;                      // 32 NVIDIA / 64 AMD; settable under the shim
+    const int lane  = (int)threadIdx.x % wsize;
+    const int wid   = (int)threadIdx.x / wsize;
+    const int npw   = (int)blockDim.x / wsize;       // warps packed into this block
 
+    // The contract (sw_kernel.hip) is blockDim = warps * warpSize. On a malformed
+    // launch the truncated last warp would map onto pairs the next block also owns;
+    // refuse it instead of computing the same pair twice.
+    if (wid >= npw) return;
+
+    const int pair_id = (int)blockIdx.x * npw + wid;
+    if (pair_id >= n_pairs) return;                  // whole warp exits together
+
+    const SWPairView p = pairs[pair_id];
     const int m = p.text_len;      // rows
     const int n = p.pattern_len;   // columns
 
     // Empty side: no local alignment exists. Report score 0 with no position.
+    // The exit is uniform across the warp, so no lane is left at a shuffle alone.
     if (m <= 0 || n <= 0) {
-        if (threadIdx.x == 0) out[pair_id] = SWResult{0, -1, -1};
+        if (lane == 0) out[pair_id] = SWResult{0, -1, -1};
         return;
     }
 
-    // H_prev[j]  : H of row i-1 for column j      (n+1 entries, index 0 = boundary)
-    // E_prev[j]  : E of row i   for column j      (gap in TEXT, consumes pattern)
-    // F_prev[j]  : F of row i-1 for column j      (gap in PATTERN, consumes text)
+    // Shared memory. Per warp: a private slice of smem_ints_per_warp ints laid out as
+    //     [ Hprev[0..n] | F[0..n] ]      each nstride = smem_ints_per_warp/2 ints wide
+    // Hprev[j] = H of row i-1 at column j; F[j] = the vertical-gap value for column j.
+    // E gets NO array: it is folded into the row scan (see the header).
+    //
+    // Every slot is read and written ONLY by the lane that owns that column
+    // (j % wsize == lane, counting from 1), so no barrier -- block or warp -- is
+    // needed for it. Cross-lane values all move through __shfl_*_sync on registers.
 #ifdef GENOALIGNER_HIP_SHIM
     // CPU replay harness: shared memory is a host vector the harness sizes to exactly
     // what the launch site would request. Same arrangement as the WFA kernel, and for
@@ -44,110 +66,105 @@ __global__ void sw_score_kernel(const SWPairView* __restrict__ pairs,
 #else
     extern __shared__ int smem[];
 #endif
-    int* H = smem;              // (n+1)
-    int* E = H + (n + 1);       // (n+1)
-    int* F = E + (n + 1);       // (n+1)
+    const int nstride = smem_ints_per_warp / 2;
+    int* Hprev = smem + wid * smem_ints_per_warp;
+    int* Farr  = Hprev + nstride;
 
-    for (int j = threadIdx.x; j <= n; j += blockDim.x) {
-        H[j] = 0; E[j] = 0; F[j] = 0;
-    }
+    for (int j = lane + 1; j <= n; j += wsize) { Hprev[j] = 0; Farr[j] = 0; }
 
-    // The initialisation above must be VISIBLE to every thread before the first row is
-    // walked: thread t reads E[0] and F[0] (and H[j-1] across its stride), which other
-    // threads wrote. Without this barrier those reads race the writes -- a stale
-    // uninitialised value enters the DP. The GPU faulted on a later run for a related
-    // reason (see the reduction comment), but this missing barrier is a correctness bug
-    // in its own right and would have produced wrong scores even without a fault.
-    __syncthreads();
+    const int go = params.gap_open;
+    const int ge = params.gap_extend;
+    // Scan decay per column: d = max(0, ge - go). With the usual go > ge this is 0
+    // and the scan degenerates to a plain prefix max; the general form keeps the
+    // kernel exact for every parameter choice.
+    const int dscan = (ge - go > 0) ? (ge - go) : 0;
 
-    // Best-so-far, reduced across the block at the end of each row. Kept per-thread so
-    // no barrier is needed to update it, then combined once.
-    int  my_best = 0;
-    int  my_bi = -1;
-    int  my_bj = -1;
-
-    __syncthreads();
+    // Best-so-far, per lane; reduced across the warp by shuffles at the end.
+    int best = 0, bi = -1, bj = -1;
+    const int ntiles = (n + wsize - 1) / wsize;
 
     for (int i = 1; i <= m; ++i) {
         const char a = p.text[i - 1];
 
-        // diag_prev carries H[i-1][j-1] as the row walk advances, which is why the
-        // columns must be visited in increasing order within a thread's stride. Each
-        // thread keeps its own copy for its own columns, so no barrier is needed
-        // between columns -- only between rows.
-        int diag_prev = 0;   // H[i-1][0] == 0
+        int U_carry = 0;    // U at column 0: H[i][0] + ge*0 = 0
+        int d_carry = 0;    // H[i-1][0] = 0 (boundary column)
 
-        for (int j = (int)threadIdx.x + 1; j <= n; j += (int)blockDim.x) {
-            const char b = p.pattern[j - 1];
-            const int  s = (a == b) ? params.match : params.mismatch;
+        for (int t = 0; t < ntiles; ++t) {
+            const int j = t * wsize + lane + 1;
+            const bool valid = (j <= n);
 
-            // E: gap in text, opening from H[i][j-1] or extending E[i][j-1].
-            // Threads stride by blockDim, so H[j-1] and E[j-1] may belong to ANOTHER
-            // thread of the same row. That is why E and H are shared and why the row
-            // is completed before moving on -- within a row, the values a thread reads
-            // at j-1 were written earlier in the same row (by the previous thread for
-            // consecutive columns, or by this thread across rows for its own stride).
-            int e = E[j - 1] - params.gap_extend;
-            const int e_open = H[j - 1] - params.gap_open;
-            if (e_open > e) e = e_open;
+            const int h_prev = valid ? Hprev[j] : 0;   // H[i-1][j]
+            const int f_prev = valid ? Farr[j]  : 0;   // F[i-1][j]
 
-            // F: gap in pattern, opening from H[i-1][j] or extending F[i-1][j].
-            int f = F[j] - params.gap_extend;
-            const int f_open = H[j] - params.gap_open;
-            if (f_open > f) f = f_open;
+            // diag = H[i-1][j-1]: the previous lane's h_prev in this tile, or --
+            // for lane 0 -- the last lane's h_prev of the PREVIOUS tile, carried.
+            // All lanes execute every shuffle: the calls are unconditional so the
+            // warp stays converged (and so the emulated exchanges line up).
+            int diag = __shfl_up_sync(GA_WARP_FULL_MASK, h_prev, 1);
+            if (lane == 0) diag = d_carry;
 
-            int h = diag_prev + s;
-            if (e > h) h = e;
-            if (f > h) h = f;
-            if (h < 0) h = 0;                 // LOCAL: restart instead of going negative
+            // F[i][j] = max(H[i-1][j] - go, F[i-1][j] - ge): vertical, per-column,
+            // entirely inside this lane's registers/slots.
+            int f_new = h_prev - go;
+            { const int e2 = f_prev - ge; if (e2 > f_new) f_new = e2; }
 
-            // Update the thread's own running maximum BEFORE overwriting diag_prev.
-            if (h > my_best) { my_best = h; my_bi = i - 1; my_bj = j - 1; }
+            const int s = valid
+                ? ((a == p.pattern[j - 1]) ? params.match : params.mismatch)
+                : 0;
+            int c = diag + s;
+            if (f_new > c) c = f_new;
+            if (c < 0)   c = 0;
 
-            // Shift for the next column in this thread's stride, then store.
-            const int h_diag_next = H[j];     // H[i-1][j] becomes the diagonal for j+1
-            H[j] = h;
-            E[j] = e;
-            F[j] = f;
-            diag_prev = h_diag_next;
-        }
-        __syncthreads();
-    }
-
-    // Reduce the per-thread maxima.
-    //
-    // WHY THIS USES THE DYNAMIC BUFFER AND NOT `__shared__ int r[SW_BLOCK]`
-    // ---------------------------------------------------------------------
-    // The first version declared static shared arrays here. In HIP/CUDA static and
-    // dynamic shared memory occupy the SAME space: statics get offsets from the start
-    // and the dynamic region begins AFTER them, so `smem[0]` is not the base of the
-    // dynamic allocation once statics exist -- and the H/E/F buffers written through
-    // `smem` collided with the reduction arrays. The GPU reported exactly that:
-    // "Memory access fault ... Reason: Unknown", core dumped.
-    //
-    // The reduction now reuses the tail of the dynamic buffer, whose size the launch
-    // already knows, so there is no second allocation to overlap with.
-    int* r_best = smem + 3 * (n + 1);
-    int* r_i    = r_best + SW_BLOCK;
-    int* r_j    = r_i + SW_BLOCK;
-
-    r_best[threadIdx.x] = my_best;
-    r_i[threadIdx.x]    = my_bi;
-    r_j[threadIdx.x]    = my_bj;
-    __syncthreads();
-
-    for (int stride = (int)blockDim.x / 2; stride > 0; stride >>= 1) {
-        if ((int)threadIdx.x < stride) {
-            if (r_best[threadIdx.x + stride] > r_best[threadIdx.x]) {
-                r_best[threadIdx.x] = r_best[threadIdx.x + stride];
-                r_i[threadIdx.x]    = r_i[threadIdx.x + stride];
-                r_j[threadIdx.x]    = r_j[threadIdx.x + stride];
+            // --- the row scan (header algebra) --------------------------------
+            // Element at column j: (dscan, w[j]) applies U -> max(U + dscan, w[j]).
+            // Invalid lanes contribute (dscan, SW_NEG_INF): their decay can only
+            // reach lanes after them, which are invalid too -- the last tile's
+            // trailing lanes never feed a valid column nor a used carry.
+            int dm = dscan;
+            int mm = valid ? c + ge * j : SW_NEG_INF;
+            for (int off = 1; off < wsize; off <<= 1) {
+                const int dp = __shfl_up_sync(GA_WARP_FULL_MASK, dm, off);
+                const int mp = __shfl_up_sync(GA_WARP_FULL_MASK, mm, off);
+                if (lane >= off) {
+                    // Incoming segment precedes mine: (d_p+d, max(m_p+d, m)).
+                    const int thru = mp + dm;
+                    if (thru > mm) mm = thru;
+                    dm += dp;
+                }
             }
+            // Apply the tile's composed operator to the incoming carry: this lane's
+            // inclusive prefix U[j].
+            const int U_incl = (U_carry + dm > mm) ? U_carry + dm : mm;
+            int U_excl = __shfl_up_sync(GA_WARP_FULL_MASK, U_incl, 1);
+            if (lane == 0) U_excl = U_carry;
+
+            // E[i][j] = U[j-1] - go - ge*(j-1);  H[i][j] = max(c[j], E[i][j]).
+            const int e = U_excl - go - ge * (j - 1);
+            int h = (c > e) ? c : e;
+            if (!valid) h = 0;
+
+            if (valid && h > best) { best = h; bi = i - 1; bj = j - 1; }
+            if (valid) { Hprev[j] = h; Farr[j] = f_new; }
+
+            // Carries into the next tile, broadcast from the last lane: U at the
+            // tile's final column, and H[i-1] there (next tile's lane-0 diagonal).
+            // Unused after the last tile; computed anyway so every lane hits the
+            // same shuffle sequence.
+            U_carry = __shfl_sync(GA_WARP_FULL_MASK, U_incl, wsize - 1);
+            d_carry = __shfl_sync(GA_WARP_FULL_MASK, h_prev, wsize - 1);
         }
-        __syncthreads();
     }
 
-    if (threadIdx.x == 0) out[pair_id] = SWResult{r_best[0], r_i[0], r_j[0]};
+    // Warp-wide argmax by xor-butterfly: every lane ends with the global winner;
+    // lane 0 reports it. Ties keep the first lane's coordinate -- the score is the
+    // quantity under test, not which optimal cell reported it.
+    for (int off = wsize / 2; off > 0; off >>= 1) {
+        const int ob = __shfl_xor_sync(GA_WARP_FULL_MASK, best, off);
+        const int oi = __shfl_xor_sync(GA_WARP_FULL_MASK, bi,   off);
+        const int oj = __shfl_xor_sync(GA_WARP_FULL_MASK, bj,   off);
+        if (ob > best) { best = ob; bi = oi; bj = oj; }
+    }
+    if (lane == 0) out[pair_id] = SWResult{best, bi, bj};
 }
 
 }  // namespace genoaligner

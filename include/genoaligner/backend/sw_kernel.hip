@@ -14,8 +14,8 @@
 // The max(0, ...) is what makes it LOCAL: a cell that would go negative restarts, so
 // the alignment begins and ends anywhere.
 //
-// CHOICE OF PARALLELISATION, AND WHY NOT ANTI-DIAGONAL
-// ----------------------------------------------------
+// PARALLELISATION: ONE WARP PER PAIR, ROW BY ROW, COLUMNS TILED BY LANE
+// -------------------------------------------------------------------
 // The textbook GPU approach is an anti-diagonal sweep with one __syncthreads per
 // diagonal. This project has the measurement to avoid it: the WFA kernel's per-wavefront
 // barrier pattern produced a time that varied 2.5x between launches doing IDENTICAL work
@@ -23,15 +23,46 @@
 // non-deterministically. An anti-diagonal SW kernel has one barrier per anti-diagonal --
 // m+n of them per pair -- which is that failure mode, maximised.
 //
-// Instead: ONE THREAD BLOCK PER PAIR, the block processes the matrix ROW BY ROW, with
-// the previous row kept in shared memory. Every thread owns one or more columns and
-// walks i = 1..m. Inside a row the cells are independent given the previous row, so
-// only ONE barrier per row is needed, and the block size is FIXED (SW_BLOCK) rather
-// than derived from the data -- so occupancy cannot vary between launches.
+// This kernel uses NO BARRIERS AT ALL. One warp owns one pair and walks the matrix row
+// by row; inside a row the warp's lanes own columns j = lane+1, lane+1+warpSize, ...
+// (tiles of warpSize columns). The non-obvious part is the intra-row dependency:
+// E[i][j] and H[i][j] need the CURRENT row's H[i][j-1]/E[i][j-1], which live in the
+// neighbouring lane and are being computed in the same step -- a serial chain that a
+// plain __shfl_up of the in-flight value cannot break, because in lockstep the source
+// lane has not produced it yet.
 //
-// That is m barriers instead of m+n, with a fixed block. It is not the fastest possible
-// SW (that needs striped/swizzled layouts), and it is not claimed to be: it is the
-// version whose correctness and timing are both checkable.
+// The chain is broken by reformulating E as a prefix scan. Define, for row i,
+//
+//     c[j] = max(0, H[i-1][j-1] + s_j, F[i][j])      (no left-dependency: the
+//              diagonal comes from a shuffle of the PREVIOUS row's register, and
+//              F is vertical so each lane carries its own)
+//     w[j] = c[j] + ge*j
+//     U[j] = max(U[j-1] + d, w[j]),   U[0] = 0,   d = max(0, ge - go)
+//
+// Then exactly, for every j >= 1,
+//
+//     E[i][j] = U[j-1] - go - ge*(j-1)
+//     H[i][j] = max(c[j], E[i][j])
+//
+// (Derivation: E[i][j] = max over k<j of (H[k] - go - ge*(j-1-k)); writing
+//  u[k] = H[k] + ge*k gives U[j] = max_{k<=j} u[k], and the affine-gap algebra
+//  folds u[j] back into the scan so U[j] = max(U[j-1]+d, c[j]+ge*j). Verified
+//  against the direct recurrence on 6000 random cases incl. ge > go.)
+//
+// Each scan element applies U -> max(U + d, w); composing two adjacent elements is
+// associative, (d_p,m_p) then (d_m,m_m) == (d_p+d_m, max(m_p+d_m, m_m)), so a
+// Hillis-Steele scan over the warp's lanes computes every prefix in log2(warpSize)
+// shuffle steps. Carries between tiles travel by broadcast from the last lane.
+//
+// What this buys, stated plainly:
+//   * blockDim > 1 is CORRECT -- the old grid-stride row walk read columns written
+//     by other threads with no way to make them visible (documented defect).
+//   * NO __syncthreads and NO __syncwarp: lanes only ever touch shared slots they
+//     own; every cross-lane value moves through a register shuffle. Timing is
+//     deterministic by construction, not by measurement luck.
+//   * Warp-width portable: lane/column mapping and the scan loop both use the
+//     runtime warpSize, so the same body runs on 32-lane NVIDIA and 64-lane AMD
+//     warps. The CPU gate emulates BOTH widths.
 //
 // WHAT THIS FILE DOES NOT DO YET
 // ------------------------------
@@ -76,27 +107,45 @@ struct SWResult {
     int end_j;   // pattern index
 };
 
-// Fixed block size. NOT derived from the data: a block sized from the input is how the
-// WFA kernel ended up with variable idle occupancy and non-deterministic timing.
-static constexpr int SW_BLOCK = 128;
+// Full-warp shuffle mask, portable across the two backends: the _sync intrinsics take
+// `unsigned int` on CUDA and `unsigned long long` on ROCm/HIP for AMD. All lanes of a
+// warp are always active in this kernel, so the mask is all-ones either way.
+#if defined(GENOALIGNER_HIP_SHIM)
+#  define GA_WARP_FULL_MASK (~0ull)
+#elif defined(__HIP_PLATFORM_NVIDIA__)
+#  define GA_WARP_FULL_MASK (0xffffffffu)
+#else
+#  define GA_WARP_FULL_MASK (~0ull)
+#endif
 
-// Score only (no traceback), one block per pair.
+// Sentinel for lanes whose column is beyond the pattern (invalid tiles). Must stay
+// representable after adding a few tiles' worth of scan decay, so far from INT_MIN.
+static constexpr int SW_NEG_INF = -(1 << 29);
+
+// Warps per block. Each warp owns one pair; the block exists only to pack warps.
+// Fixed, not derived from the data: a block sized from the input is how the WFA
+// kernel ended up with variable idle occupancy and non-deterministic timing.
+static constexpr int SW_WARPS_PER_BLOCK = 4;
+
+// ---- launch contract (one place; the Fase 6 lesson is that a launch site that
+// ---- re-derives buffer sizes passes the wrong one) ------------------------
 //
-// Shared memory the caller must provide, in bytes:
-//     ((pattern_len + 1) * 3 + 3 * SW_BLOCK) * sizeof(int)
-//   = (n+1)*3  for the previous H row and the E/F gap arrays
-//   + 3*SW_BLOCK for the block-wide max reduction
+//   blockDim.x = SW_WARPS_PER_BLOCK * device warpSize   (32 on NVIDIA, 64 on AMD)
+//   gridDim.x  = ceil(n_pairs / SW_WARPS_PER_BLOCK)
+//   dyn smem   = SW_WARPS_PER_BLOCK * sw_smem_ints_per_warp(max_pattern_len) * sizeof(int)
+//   arg smem_ints_per_warp = sw_smem_ints_per_warp(max_pattern_len)
 //
-// The reduction deliberately shares the dynamic allocation instead of declaring
-// `__shared__ int r[SW_BLOCK]`: in HIP/CUDA static and dynamic shared memory occupy the
-// same space, with the dynamic region starting AFTER the statics, so mixing them made
-// `smem[0]` no longer the dynamic base and the GPU faulted with a memory access error.
-//
-// Sizing belongs in ONE place (the Fase 6 lesson: a launch that re-derives buffer sizes
-// passes the wrong one).
+// where max_pattern_len is the largest pattern_len IN THE BATCH. Per-warp shared
+// usage is 2*(n+1) ints (previous H row and the F array); E needs no storage --
+// it lives inside the scan.
+inline int sw_smem_ints_per_warp(int max_pattern_len) { return 2 * (max_pattern_len + 1); }
+
+// Score only (no traceback), one warp per pair.
 __global__ void sw_score_kernel(const SWPairView* __restrict__ pairs,
                                 SWParams           params,
-                                SWResult* __restrict__ out);
+                                SWResult* __restrict__ out,
+                                int                n_pairs,
+                                int                smem_ints_per_warp);
 
 }  // namespace genoaligner
 

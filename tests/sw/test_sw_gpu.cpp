@@ -1,15 +1,17 @@
-// genoaligner — Smith-Waterman on GPU: correctness of the sequential row walk.
+// genoaligner — Smith-Waterman on GPU: the warp-per-row kernel.
 //
-// The CPU shim executes the kernel body but its __syncthreads is a no-op, so this is the
-// first run where the shared-memory row walk executes with real barriers. The claim
-// tested is narrow and stated: blockDim=1, one block per pair, and the score/end
-// coordinate must match the independent full-matrix reference.
+// What this run establishes, stated narrowly:
+//   * correctness of the shipped kernel at blockDim > 1 -- one warp per pair,
+//     columns tiled across lanes, the intra-row dependency carried by the scan
+//     described in include/genoaligner/backend/sw_kernel.hip;
+//   * with --bench, the determinism of its timing: 7 repetitions of IDENTICAL
+//     work, reported as a spread, because the WFA kernel failed exactly this
+//     check (2.5x between identical launches; docs/RESULTADO_B6_TCUPS.md).
 //
-// blockDim > 1 is NOT tested. The column grid-stride reads H[j-1]/E[j-1] written by
-// another thread in the same row, and one barrier per row does not establish visibility.
-// Until that is fixed the launch must stay at 1 thread per block -- slow, correct, and
-// labelled as such. A fast wrong answer would be worse than a slow right one here,
-// because the whole point of this library is that its results match a reference.
+// The CPU parity gate (tests/sw/test_sw_parity.cpp) already ran this same body
+// under real threaded emulation at warpSize 32 AND 64, so this job is the check
+// that nothing is lost in translation to a real device -- which is where both SW
+// GPU faults found so far lived.
 
 #include "genoaligner/backend/sw_kernel.hip"
 // The kernel BODY lives in the _impl header. hipLaunchKernelGGL needs both the
@@ -18,9 +20,12 @@
 #include "genoaligner/backend/sw_kernel_impl.hip"
 
 #include <cstdio>
+#include <cstring>
+#include <chrono>
 #include <hip/hip_runtime.h>
 #include <string>
 #include <vector>
+#include <random>
 
 using genoaligner::SWParams;
 using genoaligner::SWPairView;
@@ -57,9 +62,11 @@ static int ref_sw(const std::string& text, const std::string& pattern,
 
 struct Case { std::string text, pattern, label; };
 
-int main()
+int main(int argc, char** argv)
 {
-    printf("genoaligner — Smith-Waterman on GPU (blockDim=1, sequential row walk)\n");
+    const bool bench = (argc > 1 && std::strcmp(argv[1], "--bench") == 0);
+    printf("genoaligner — Smith-Waterman on GPU (warp-per-row)%s\n",
+           bench ? " [bench]" : "");
 
     int nsm = 0;
     hipDeviceProp_t prop{};
@@ -69,7 +76,9 @@ int main()
         printf("RESULT: SKIP -- needs a GPU (exit 77)\n");
         return 77;
     }
-    printf("  device: %s\n\n", prop.name);
+    int dev_warp = 0;
+    hipDeviceGetAttribute(&dev_warp, hipDeviceAttributeWarpSize, 0);
+    printf("  device: %s   warpSize=%d\n\n", prop.name, dev_warp);
 
     const SWParams P{1, -1, 2, 1};
 
@@ -80,16 +89,30 @@ int main()
         {"AAAAAAAA", "CCCCCCCC", "disjoint"},
         {"ACGTTTACGT", "ACGTACGT", "gap of 2 inside a match"},
         {std::string(10,'T') + "ACGTACGTACGT" + std::string(10,'G'),
-         std::string(10,'C') + "ACGTACGTACGT" + std::string(10,'A'),
+         std::string(10,'C') + "ACGTACGTACGT" + std::string(20,'A'),
          "core with divergent flanks"},
         {"ACACACAC", "ACAC", "tandem repeat"},
+        {std::string(33,'A'), std::string(33,'A'), "n=33 (crosses a 32-lane tile)"},
+        {std::string(65,'A'), std::string(65,'C'), "n=65 (crosses a 64-lane tile)"},
     };
-    // A longer case, to exercise the shared-memory row walk beyond trivial sizes.
+    // A longer case, to exercise the tiled row walk well past one warp tile.
     {
         std::string t, q;
         for (int i = 0; i < 400; ++i) { t.push_back("ACGT"[i % 4]); }
         q = std::string(20, 'T') + t.substr(100, 120) + std::string(20, 'G');
         cases.push_back({t, q, "400 x 160 embedded core"});
+    }
+    // Randomised batch (fixed seed): mixed sizes, some past two warp tiles.
+    {
+        std::mt19937 rng(20260912u);
+        const char* alpha = "ACGT";
+        for (int k = 0; k < 200; ++k) {
+            const int m = 1 + (int)(rng() % 200), n = 1 + (int)(rng() % 200);
+            std::string t, q;
+            for (int i = 0; i < m; ++i) t.push_back(alpha[rng() % 4]);
+            for (int i = 0; i < n; ++i) q.push_back(alpha[rng() % 4]);
+            cases.push_back({t, q, "random"});
+        }
     }
 
     const int N = (int)cases.size();
@@ -123,13 +146,25 @@ int main()
     hipMemcpy(d_pairs, hv.data(), (size_t)N * sizeof(SWPairView), hipMemcpyHostToDevice);
     hipMemset(d_res, 0, (size_t)N * sizeof(SWResult));
 
-    // Shared memory: the LARGEST pattern in the batch, so one launch config covers all.
+    // Launch contract (one place: sw_kernel.hip). Shared memory is sized by the
+    // LARGEST pattern in the batch, so one launch config covers all.
     int max_n = 0;
     for (const auto& c : cases) if ((int)c.pattern.size() > max_n) max_n = (int)c.pattern.size();
-    const size_t smem = ((size_t)(max_n + 1) * 3 + 3 * genoaligner::SW_BLOCK) * sizeof(int);
+    const int ints_per_w = genoaligner::sw_smem_ints_per_warp(max_n);
+    const int block      = genoaligner::SW_WARPS_PER_BLOCK * dev_warp;
+    const int grid       = (N + genoaligner::SW_WARPS_PER_BLOCK - 1)
+                           / genoaligner::SW_WARPS_PER_BLOCK;
+    const size_t smem    = (size_t)genoaligner::SW_WARPS_PER_BLOCK
+                           * (size_t)ints_per_w * sizeof(int);
+    printf("  launch: grid=%d block=%d (%d warps x %d lanes)  smem=%zu B\n\n",
+           grid, block, genoaligner::SW_WARPS_PER_BLOCK, dev_warp, smem);
 
-    hipLaunchKernelGGL(sw_score_kernel, dim3((unsigned)N), dim3(1), smem,
-                       (hipStream_t)0, d_pairs, P, d_res);
+    auto launch = [&] {
+        hipLaunchKernelGGL(sw_score_kernel, dim3((unsigned)grid), dim3((unsigned)block),
+                           smem, (hipStream_t)0, d_pairs, P, d_res, N, ints_per_w);
+    };
+
+    launch();
     hipError_t le = hipGetLastError();
     if (le != hipSuccess) {
         printf("  LAUNCH FAILED: %s (smem=%zu B, max_n=%d)\n", hipGetErrorString(le), smem, max_n);
@@ -140,24 +175,51 @@ int main()
     hipMemcpy(hr.data(), d_res, (size_t)N * sizeof(SWResult), hipMemcpyDeviceToHost);
 
     printf("-- kernel vs independent reference --\n");
+    int shown = 0;
     for (int i = 0; i < N; ++i) {
         int ri, rj;
         const int ref = ref_sw(cases[(size_t)i].text, cases[(size_t)i].pattern, P, &ri, &rj);
         const SWResult& r = hr[(size_t)i];
         const bool ok = (r.score == ref);
-        printf("  %-32s ref=%4d kernel=%4d  %s\n",
-               cases[(size_t)i].label.c_str(), ref, r.score, ok ? "ok" : "MISMATCH");
+        if (!ok || shown < 12) {
+            printf("  %-38s ref=%4d kernel=%4d  %s\n",
+                   cases[(size_t)i].label.c_str(), ref, r.score, ok ? "ok" : "MISMATCH");
+            ++shown;
+        }
         if (!ok) ++g_fail;
+    }
+    printf("  (%d/%d agree)\n", N - g_fail, N);
+
+    if (bench && g_fail == 0) {
+        // Determinism: the standard B6 set for this kernel's failure mode. Seven
+        // reps of IDENTICAL work; the spread is the claim, so it is printed as a
+        // spread rather than hidden inside a mean.
+        printf("\n-- determinism: 7 identical launches --\n");
+        double mn = 1e30, mx = 0, sum = 0;
+        for (int rep = 0; rep < 7; ++rep) {
+            const auto t0 = std::chrono::steady_clock::now();
+            launch();
+            hipDeviceSynchronize();
+            const double ms = std::chrono::duration<double, std::milli>(
+                                  std::chrono::steady_clock::now() - t0).count();
+            printf("  rep %d: %.3f ms\n", rep, ms);
+            if (ms < mn) mn = ms;
+            if (ms > mx) mx = ms;
+            sum += ms;
+        }
+        const double spread = (mn > 0) ? (mx - mn) / mn : 0.0;
+        printf("  min=%.3f ms  max=%.3f ms  mean=%.3f ms  spread=%.1f%%\n",
+               mn, mx, sum / 7, 100.0 * spread);
+        printf("  criterion (B6): spread < 5%%  ->  %s\n",
+               spread < 0.05 ? "PASS" : "FAIL");
+        if (spread >= 0.05) ++g_fail;
     }
 
     for (int i = 0; i < N; ++i) { hipFree(d_txt[(size_t)i]); hipFree(d_pat[(size_t)i]); }
     hipFree(d_pairs); hipFree(d_res);
     printf("\n");
     if (g_fail == 0) {
-        printf("RESULT: PASS -- SW kernel matches the reference on GPU at blockDim=1\n");
-        printf("  SCOPE: 1 thread per block only. blockDim > 1 is UNSAFE (column\n");
-        printf("         dependency across threads, not covered by a per-row barrier)\n");
-        printf("         and is not claimed. Performance is therefore not measured.\n");
+        printf("RESULT: PASS -- SW warp-per-row kernel matches the reference on GPU\n");
         return 0;
     }
     printf("RESULT: FAIL (%d)\n", g_fail);

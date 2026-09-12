@@ -16,7 +16,7 @@
 #include "include/genoaligner/backend/wfa_score_flat.hip"
 #include "src/reference/edit_distance_cpu.hpp"
 
-uint3 threadIdx{0, 0, 0};
+thread_local uint3 threadIdx{0, 0, 0};
 uint3 blockIdx{0, 0, 0};
 dim3  blockDim{1, 1, 1};
 dim3  gridDim{1, 1, 1};

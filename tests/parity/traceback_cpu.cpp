@@ -63,7 +63,7 @@ using namespace genoaligner;
 
 // Shim launch-configuration globals (the kernel references them; we never
 // launch it here, but the symbols must resolve).
-uint3 threadIdx{0,0,0};
+thread_local uint3 threadIdx{0,0,0};
 uint3 blockIdx{0,0,0};
 dim3  blockDim{1,1,1};
 dim3  gridDim{1,1,1};

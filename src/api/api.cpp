@@ -34,7 +34,7 @@
 // is the "launch owner", so it defines them -- required for the link to succeed even
 // though the shim branch below never launches. Same arrangement as
 // tests/parity/wfa_parity.cpp.
-uint3 threadIdx{0, 0, 0};
+thread_local uint3 threadIdx{0, 0, 0};
 uint3 blockIdx{0, 0, 0};
 dim3  blockDim{1, 1, 1};
 dim3  gridDim{1, 1, 1};

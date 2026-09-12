@@ -93,6 +93,28 @@ run_pass() {
             pass_fail=1
         fi
     fi
+
+    # --- the SW kernel, exercised through the shim's warp emulation -----------
+    # test_sw_parity runs the SHIPPED kernel body under shim::run_block: real
+    # threads, real __shfl exchanges, at BOTH emulated warp widths (32 and 64).
+    # This is what covers blockDim > 1 on a GPU-less host. -pthread is required:
+    # the emulation is one std::thread per lane.
+    local swsrc="$REPO_ROOT/tests/sw/test_sw_parity.cpp"
+    local swbin="$BUILD_DIR/test_sw_parity"
+    echo "--- [${label}] build test_sw_parity (shim, warp emulation) ---"
+    # shellcheck disable=SC2086
+    if ! "$CXX" $extra -std=c++17 -pthread -DGENOALIGNER_HIP_SHIM \
+            -I"$SHIM_DIR" -I"$REPO_ROOT" -I"$REPO_ROOT/include" \
+            -o "$swbin" "$swsrc"; then
+        echo "BUILD FAILED (${label}): test_sw_parity.cpp (shim)"
+        pass_fail=1
+    else
+        echo "--- [${label}] run test_sw_parity ---"
+        if ! "$swbin"; then
+            echo "RUN FAILED (${label}): test_sw_parity (shim, warp emulation)"
+            pass_fail=1
+        fi
+    fi
     echo
     return $pass_fail
 }
