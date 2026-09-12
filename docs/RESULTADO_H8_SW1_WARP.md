@@ -96,8 +96,25 @@ la medida lo confirma: el schedule del kernel es estable al 0.2%.
 | paridad exacta con `blockDim > 1` | ✅ CPU (110/110 × warpSize 32 y 64) + GPU (210/210 × 3 jobs) |
 | el gate falla sin la sincronización | ✅ control negativo: 100/110 fallan con exchange desactivado |
 | determinismo, 7 corridas | ✅ dev spread 0.2% en GPU exclusiva |
-| speedup con diseño intercalado B6 | ⏳ pendiente — próximo trabajo |
+| speedup con diseño intercalado B6 | ✅ 4.93x — ver §6 |
+
+## 6. Speedup: secuencial vs warp-per-row (job 29227132, nodo exclusivo)
+
+`bench/sw_ab.cpp` corre ambos kernels dentro de UN job, 7 reps intercalados
+A,B — la versión A es el kernel de `ba795db` embebido verbatim (1 bloque por
+par, 1 hilo). Mismo workload de 203 pares (≤ ~530 columnas).
+
+    A (seq)  dev: mean=46.433 ms  sd=0.329  spread=1.5%
+    B (warp) dev: mean= 9.411 ms  sd=0.008  spread=0.3%
+    speedup A/B = 4.93x   (min/min 4.91x, max/max 4.97x)
+    A vs B outputs: 203/203 agree
+
+El número es lo que es: ~5x, no ~64x. La mayoría de los pares del batch son
+cortos (≤200 columnas ⇒ 3-4 tiles por fila), así que el paralelismo intra-par
+tiene poco donde morder, y la versión A ya repartía un bloque por par. El
+speedup crece con patrones más largos — eso quedaría para medirse con un
+workload representativo si importa; no se afirma aquí.
 
 Nota de operación: los jobs de bench que dependan de tiempo deben correr en
 nodo sin co-tenants (o medir con hipEvent y reportar ambos relojes, como hace
-`test_sw_gpu --bench` ahora).
+`test_sw_gpu --bench` y `bench/sw_ab.cpp`).

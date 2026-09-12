@@ -88,7 +88,9 @@ del propio proyecto, y A1 ataca la dependencia real (intra-fila) sin barreras ex
    En nodo compartido los stalls del vecino llegan a 400x — ver
    RESULTADO_H8_SW1_WARP.md §3: las GPUs se comparten por shards.
 4. Speedup medido con el **diseño intercalado** de B6, no cruzando jobs.
-   → pendiente.
+   → ✅ 4.93x (46.4ms → 9.4ms) sobre el kernel de 1 hilo, job 29227132,
+   nodo exclusivo, ambos kernels estables (<1.5% spread). Número honesto:
+   el batch es de pares cortos; con patrones largos sería mayor.
 
 ---
 
