@@ -142,12 +142,23 @@ static LaunchCfg cfg_for(int smax, bool flat)
     const int need = 2 * smax + 1;
     int b = 1;
     while (b < need) b <<= 1;
+    // DO NOT clamp silently. The kernel maps diagonal k = threadIdx.x - s, so a
+    // block smaller than 2*smax+1 skips diagonals WITHOUT RAISING AN ERROR -- the
+    // kernel header says so explicitly. Clamping here (the first version did) would
+    // therefore turn a legitimate request for a large smax into quietly wrong
+    // alignments. smax is validated in align_batch before this is reached; the
+    // capping branch survives only as a defensive assertion that must never fire.
     if (b > 1024) b = 1024;
     c.block = b;
     if (flat) c.block = WFA_FLAT_BLOCK;
     c.shmem = (size_t)2 * (2 * smax + 3) * sizeof(int);
     return c;
 }
+
+// The largest smax the score kernel can cover with a 1024-thread block. Above this
+// the thread-to-diagonal mapping cannot cover [0, 2s] and the kernel silently skips
+// diagonals, so the API REFUSES rather than degrading. 511 = (1024 - 1) / 2.
+static constexpr int kMaxSmax = 511;
 
 }  // namespace
 
@@ -161,6 +172,32 @@ BatchResult align_batch(const std::vector<AlignRequest>& reqs)
     if (reqs.empty()) return out;
 
     const int N = (int)reqs.size();
+
+    // ---- input validation. Refuse; do not degrade silently. --------------
+    // Each of these would otherwise produce a plausible-looking wrong answer, which
+    // is the one outcome this library must never produce.
+    out.results.assign((size_t)N, AlignResult{});
+    for (int i = 0; i < N; ++i) {
+        const AlignRequest& r = reqs[(size_t)i];
+        if ((r.pattern_len > 0 && r.pattern == nullptr) ||
+            (r.text_len    > 0 && r.text    == nullptr)) {
+            out.status = BatchResult::Status::invalid_argument;
+            out.error  = "null pointer with non-zero length";
+            return out;
+        }
+        if (r.pattern_len < 0 || r.text_len < 0) {
+            out.status = BatchResult::Status::invalid_argument;
+            out.error  = "negative length";
+            return out;
+        }
+        if (r.smax < 0 || r.smax > kMaxSmax) {
+            // See kMaxSmax: above this the thread-to-diagonal mapping skips diagonals
+            // silently, so an out-of-range smax yields WRONG ALIGNMENTS, not an error.
+            out.status = BatchResult::Status::invalid_argument;
+            out.error  = "smax out of range [0, 511]";
+            return out;
+        }
+    }
 
     // One smax for the whole batch. The kernels take a single smax, and mixing them
     // in one launch would silently use the wrong bound for some pairs, so the batch

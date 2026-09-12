@@ -221,6 +221,38 @@ int main()
         printf("  ok=%d error=%s\n", (int)b.ok(), b.error ? b.error : "(null)");
     }
 
+    // ---- input validation: bad input must be REFUSED, not degraded ------
+    // smax > 511 makes the kernel skip diagonals silently, so the API must not
+    // accept it: an out-of-range bound would produce wrong alignments, not an error.
+    printf("\n-- input validation --\n");
+    {
+        AlignRequest r;
+        r.pattern = "ACGT"; r.pattern_len = 4;
+        r.text    = "ACGT"; r.text_len    = 4;
+
+        r.smax = 512;
+        BatchResult b1 = align_batch({r});
+        check(b1.status == BatchResult::Status::invalid_argument, "smax=512 refused");
+        printf("  smax=512   : ok=%d error=%s\n", (int)b1.ok(), b1.error ? b1.error : "(null)");
+
+        r.smax = 511;
+        BatchResult b2 = align_batch({r});
+        check(b2.ok(), "smax=511 accepted (the documented maximum)");
+        printf("  smax=511   : ok=%d\n", (int)b2.ok());
+
+        r.smax = -1;
+        BatchResult b3 = align_batch({r});
+        check(b3.status == BatchResult::Status::invalid_argument, "negative smax refused");
+        printf("  smax=-1    : ok=%d error=%s\n", (int)b3.ok(), b3.error ? b3.error : "(null)");
+
+        AlignRequest nullp;
+        nullp.pattern = nullptr; nullp.pattern_len = 5;
+        nullp.text = "ACGT"; nullp.text_len = 4; nullp.smax = 8;
+        BatchResult b4 = align_batch({nullp});
+        check(b4.status == BatchResult::Status::invalid_argument, "null pointer refused");
+        printf("  null ptr   : ok=%d error=%s\n", (int)b4.ok(), b4.error ? b4.error : "(null)");
+    }
+
     printf("\n");
     if (g_fail == 0) {
 #ifndef GENOALIGNER_HIP_SHIM

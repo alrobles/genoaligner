@@ -167,5 +167,32 @@ else
     done
 fi
 
+# --- Stage 5: the PUBLIC API ------------------------------------------------
+# The gate above verifies the KERNELS. This stage verifies the code a user would
+# actually call, because those are not the same thing: the API owns the buffer
+# sizing, the batch packing and the input validation, and it has already shipped one
+# real bug in each (a CIGAR cap sized from the first request, and a silently clamped
+# smax). A gate that does not exercise the public surface cannot catch those.
 echo
-echo "=== CPU GATE COMPLETE — score, memory and traceback verified ==="
+echo "--- [shim] build and run the public API test ---"
+if g++ -O2 -std=c++17 -DGENOALIGNER_HIP_SHIM -I"$SHIM_DIR" -I"$REPO_ROOT" \
+       -o "$BUILD_DIR/test_api" \
+       "$REPO_ROOT/tests/api/test_api.cpp" "$REPO_ROOT/src/api/api.cpp" 2>"$BUILD_DIR/api_build.log"; then
+    if ! "$BUILD_DIR/test_api" | tee "$BUILD_DIR/api_test.out" | tail -20; then
+        echo
+        echo "=== CPU GATE FAILED (public API) — do not submit to the cluster ==="
+        exit 1
+    fi
+    # A run that reports nothing must not read as a pass (same rule as the CIGAR stage).
+    if ! grep -q "RESULT: PASS" "$BUILD_DIR/api_test.out"; then
+        echo "  !!! API test produced no PASS verdict — treating as FAILURE."
+        exit 1
+    fi
+else
+    echo "  !!! API test failed to BUILD:"
+    sed -n '1,20p' "$BUILD_DIR/api_build.log"
+    exit 1
+fi
+
+echo
+echo "=== CPU GATE COMPLETE — score, memory, traceback and public API verified ==="

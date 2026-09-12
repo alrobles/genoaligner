@@ -105,7 +105,7 @@ struct BatchResult {
     // "true distance exceeded smax", so a caller could not tell a broken run from a
     // legitimate one. That is the failure mode this project spent a phase learning
     // to make visible, so the API reports it explicitly.
-    enum class Status { ok, device_error };
+    enum class Status { ok, invalid_argument, device_error };
     Status status = Status::ok;
     const char* error = nullptr;   // static string, non-null iff status != ok
 
