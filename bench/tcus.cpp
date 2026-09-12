@@ -164,6 +164,23 @@ int main(int argc, char** argv)
     }
     const double pack_ms = ms_since(t0);
 
+    // ---- phase 2b: device CONTEXT warm-up, measured separately ------------
+    // Every run reported memset ~= 460-480 ms REGARDLESS of buffer size (8 KB
+    // and 8 MB cost the same). A memset whose cost does not track its size is
+    // not a memset: it is the one-time cost of bringing the HIP context up,
+    // which lands on whichever device call happens to be first. Attributing it
+    // requires doing a throwaway device call BEFORE the timed section and seeing
+    // whether the cost moves with it.
+    t0 = std::chrono::steady_clock::now();
+    {
+        void* probe = nullptr;
+        hipMalloc(&probe, 4096);
+        hipMemset(probe, 0, 4096);
+        hipDeviceSynchronize();
+        hipFree(probe);
+    }
+    const double warmup_ms = ms_since(t0);
+
     // ---- phase 3: device allocation + zeroing -----------------------------
     PairView* d_pairs   = nullptr;
     char*     d_text    = nullptr;
@@ -337,6 +354,8 @@ int main(int argc, char** argv)
     const double tcus_e2e = (e2e_ms > 0.0) ? cells_resolved / (e2e_ms / 1000.0) / 1e12 : 0.0;
 
     printf("PHASE BREAKDOWN (ms, per full run)\n");
+    printf("  context warm-up (1x)    : %10.3f         (one-time per process, NOT in e2e)\n",
+           warmup_ms);
     printf("  generate cases (host)   : %10.3f  %5.1f%%\n", gen_ms, 100.0 * gen_ms / e2e_ms);
     printf("  pack to device layout   : %10.3f  %5.1f%%\n", pack_ms, 100.0 * pack_ms / e2e_ms);
     printf("  hipMalloc + memset      : %10.3f  %5.1f%%\n", alloc_ms, 100.0 * alloc_ms / e2e_ms);
