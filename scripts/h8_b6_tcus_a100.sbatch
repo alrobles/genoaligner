@@ -64,14 +64,50 @@ echo "BUILD_RC=$RC"
 echo
 echo "device: $("$BIN" --len 256 --pairs 64 --ident 99 --smax 64 --reps 1 --verify 5 2>&1 | grep -m1 'device')"
 
-# Extract the kernel-only TCUPS from one run. Returns empty if the run did not verify
-# (exit 5/6) -- a throughput from an unverified run is not a throughput.
+# Extract the kernel-only TCUPS from one run.
+#
+# WHY THIS WRITES TO A FILE INSTEAD OF USING $( )
+# ----------------------------------------------
+# The first version did `out=$(BIN ... 2>&1)` and grepped the variable. On one rep in
+# seven that captured a value roughly HALF the others (0.212 against 0.421 x6), which
+# looked like a bimodal kernel. A clean re-run of the same configuration gave 0.421
+# seven times out of seven, and the arithmetic identified it exactly:
+#     (0.421*6 + 0.212) / 7 = 0.3911  -- precisely the "mean" that was printed.
+# So one rep was corrupt, and the harness could not tell corruption from a real
+# measurement. It now writes each run to its own file and parses the file, and refuses
+# to return anything unless the throughput line, the resolved count and the cells
+# count are all present and the resolved count matches the request.
+#
+# A benchmark harness that silently averages a corrupt sample publishes a false error
+# bar, which is worse than publishing none.
 kernel_tcus() {
-    local out rc
-    out=$("$BIN" "$@" --reps 20 --verify 50 2>&1)
-    rc=$?
-    if [ "$rc" -ne 0 ]; then echo ""; return; fi
-    echo "$out" | grep -E 'kernel-only' | sed 's/.*: *//; s/ *TCUPS.*//'
+    local outfile="$1"; shift
+    : > "$outfile"
+    "$BIN" "$@" --reps 20 --verify 50 > "$outfile" 2>&1
+    local rc=$?
+    [ "$rc" -ne 0 ] && { echo ""; return; }
+
+    local tcus nline cres
+    tcus=$(grep -cE '^  kernel-only' "$outfile")
+    nline=$(grep -cE '^  resolved /' "$outfile")
+    cres=$(grep -cE '^  cells actually resolved' "$outfile")
+    # Exactly one of each. More than one means the output shape changed and the parse
+    # would be ambiguous; zero means the run did not get far enough.
+    if [ "$tcus" -ne 1 ] || [ "$nline" -ne 1 ] || [ "$cres" -ne 1 ]; then
+        echo ""; return
+    fi
+
+    local res abd want
+    res=$(grep -E '^  resolved /' "$outfile" | sed 's/.*: *//' | awk '{print $1}')
+    abd=$(grep -E '^  resolved /' "$outfile" | sed 's/.*: *//' | awk '{print $3}')
+    want=$(grep -E '^  pairs   :' "$outfile" | sed 's/.*: *//' | awk '{print $1}')
+    # Every pair must resolve, or the throughput is diluted by abandonment (the Fase 6
+    # trap). Refuse rather than report a number that measures something else.
+    if [ -n "$want" ] && [ "$res" != "$want" ]; then
+        echo ""; return
+    fi
+
+    grep -E '^  kernel-only' "$outfile" | sed 's/.*: *//; s/ *TCUPS.*//'
 }
 
 # Stats over a whitespace-separated list on stdin: n mean sd min max
@@ -106,14 +142,15 @@ for R in "${REGIMES[@]}"; do
     LEN=$1; PAIRS=$2; IDENT=$3; SMAX=$4
     echo
     echo "######## $LABEL"
-    D_LIST=""; F_LIST=""
+    D_LIST=""; F_LIST=""; NREF=0
 
     printf "%6s %14s %14s %10s\n" "rep" "default TCUPS" "flat TCUPS" "ratio"
     for ((i=1;i<=REPS;i++)); do
-        D=$(kernel_tcus --len $LEN --pairs $PAIRS --ident $IDENT --smax $SMAX --kernel default)
-        F=$(kernel_tcus --len $LEN --pairs $PAIRS --ident $IDENT --smax $SMAX --kernel flat)
+        D=$(kernel_tcus /tmp/b6_rep_d.txt --len $LEN --pairs $PAIRS --ident $IDENT --smax $SMAX --kernel default)
+        F=$(kernel_tcus /tmp/b6_rep_f.txt --len $LEN --pairs $PAIRS --ident $IDENT --smax $SMAX --kernel flat)
         if [ -z "$D" ] || [ -z "$F" ]; then
-            printf "%6d %14s %14s %10s\n" "$i" "VERIFY-FAIL" "VERIFY-FAIL" "-"
+            printf "%6d %14s %14s %10s\n" "$i" "REFUSED" "REFUSED" "-"
+            NREF=$((NREF+1))
             continue
         fi
         RAT=$(awk -v d="$D" -v f="$F" 'BEGIN{ if(f>0) printf "%.3f", d/f; else print "n/a" }')
@@ -128,11 +165,13 @@ for R in "${REGIMES[@]}"; do
         for(i=1;i<=length(D)&&i<=length(F);i++) if(D[i]!=""&&F[i]>0){printf "%.4f ", D[i]/F[i]; n++}
     }')
     echo "  ratio   : $(echo $RATIOS | stats)"
+    echo "  refused runs: $NREF of $REPS (a refused run is not averaged in)"
     {
         echo "### $LABEL"
         echo "default:$D_LIST"
         echo "flat:$F_LIST"
         echo "ratio:$RATIOS"
+        echo "refused:$NREF"
     } >> "$RESULT"
 done
 
