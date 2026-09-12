@@ -40,8 +40,10 @@ run_pass() {
     local extra="$1"; shift
     local pass_fail=0
 
-    # traceback_cpu is included: Fase 4's CIGAR reconstruction must clear the
-    # same gate as the score kernel before anything touches the GPU.
+    # traceback_cpu is the Fase 4 PROTOTYPE (standalone walk). trace_back_kernel
+    # is the REAL kernel: tests/parity/wfa_parity.cpp built against the shim,
+    # which calls wfa_trace_kernel's body directly. Both are gated, because the
+    # prototype passing does not say the kernel passes.
     for test_src in r1_check wfa_diag traceback_cpu; do
         local src="$REPO_ROOT/tests/parity/${test_src}.cpp"
         local bin="$BUILD_DIR/${test_src}"
@@ -67,6 +69,31 @@ run_pass() {
         fi
         echo
     done
+
+    # --- the real kernel, exercised through the CPU shim ----------------------
+    # wfa_parity.cpp with -DGENOALIGNER_HIP_SHIM calls wfa_trace_kernel's body
+    # with host memory (one "block" per pair). This is the check that says the
+    # SHIPPED kernel is correct, not a prototype of it -- see §11 of the
+    # ku-hpc-gpu-toolchain skill.
+    local tsrc="$REPO_ROOT/tests/parity/wfa_parity.cpp"
+    local tbin="$BUILD_DIR/wfa_parity_shim"
+    echo "--- [${label}] build wfa_parity (shim, trace-kernel) ---"
+    # shellcheck disable=SC2086
+    if ! "$CXX" $extra -std=c++17 -DGENOALIGNER_HIP_SHIM \
+            -I"$SHIM_DIR" -I"$REPO_ROOT" \
+            -o "$tbin" "$tsrc"; then
+        echo "BUILD FAILED (${label}): wfa_parity.cpp (shim)"
+        pass_fail=1
+    else
+        echo "--- [${label}] run wfa_parity --traceback ---"
+        # 207 random + 7 adversarial = the same control set the GPU harness uses.
+        # Emits CIGARs so the external edlib check below scores THIS run's pairs.
+        if ! "$tbin" 207 --traceback --emit "$BUILD_DIR/cigars_kernel.tsv"; then
+            echo "RUN FAILED (${label}): wfa_parity (shim, trace-kernel)"
+            pass_fail=1
+        fi
+    fi
+    echo
     return $pass_fail
 }
 
@@ -112,23 +139,32 @@ echo "=== CPU GATE PASSED — algebra + memory indexing verified, cleared for MI
 # not be reported as a defect (the same rule as the sanitizer probe).
 echo
 echo "--- Fase 4: external CIGAR comparison (edlib) ---"
-CIGARS="$BUILD_DIR/cigars.tsv"
 
 if ! command -v python3 >/dev/null 2>&1; then
     echo "!!! python3 unavailable — external CIGAR check SKIPPED."
     echo "!!! The CIGARs have NOT been compared against an independent implementation."
-elif [ ! -s "$CIGARS" ]; then
-    echo "!!! no CIGAR emit file at $CIGARS — external check SKIPPED."
 elif ! python3 -c "import edlib" >/dev/null 2>&1; then
     echo "!!! edlib unavailable — external CIGAR check SKIPPED."
     echo "!!! pip install -r tests/parity/requirements-oracle.txt"
     echo "!!! The CIGARs have NOT been compared against an independent implementation."
 else
-    if ! python3 "$REPO_ROOT/tests/parity/check_cigar.py" "$CIGARS"; then
+    # BOTH sources are checked, and each must be non-empty. A single empty file
+    # must not read as a pass: check_cigar.py exits 2 (INCONCLUSIVE) on no input
+    # precisely so that silence cannot masquerade as agreement.
+    for CIGARS in "$BUILD_DIR/cigars.tsv" "$BUILD_DIR/cigars_kernel.tsv"; do
         echo
-        echo "=== CPU GATE FAILED (external CIGAR) — do not submit to the cluster ==="
-        exit 1
-    fi
+        echo "  --- $CIGARS ---"
+        if [ ! -s "$CIGARS" ]; then
+            echo "  !!! no emit file at $CIGARS — external check SKIPPED for this source."
+            echo "  !!! Those CIGARs have NOT been compared against edlib."
+            continue
+        fi
+        if ! python3 "$REPO_ROOT/tests/parity/check_cigar.py" "$CIGARS"; then
+            echo
+            echo "=== CPU GATE FAILED (external CIGAR) — do not submit to the cluster ==="
+            exit 1
+        fi
+    done
 fi
 
 echo

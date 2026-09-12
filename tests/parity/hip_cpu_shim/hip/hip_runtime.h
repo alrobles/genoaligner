@@ -34,6 +34,25 @@ typedef int hipError_t;
 enum { hipSuccess = 0 };
 inline const char* hipGetErrorString(hipError_t) { return "ok"; }
 
+// The Fase 4 trace kernel is launched by the harness under the shim, so the
+// launch surface must exist here too. Under the shim the "device" is the host,
+// which lets the GATE exercise the shipped kernel body -- not a paraphrased
+// copy of the walk. See tests/parity/wfa_parity.cpp.
+//
+// hipFuncSetAttribute is the runtime call that raises a block's dynamic shared
+// memory past the 48 KB default on NVIDIA. Accepted, never enforced: there is
+// no shared memory on the host to exceed.
+typedef void* hipStream_t;
+enum { hipFuncAttributeMaxDynamicSharedMemorySize = 8 };
+inline hipError_t hipFuncSetAttribute(const void*, int, int) { return hipSuccess; }
+
+// No-op launch. Calling it does NOT run the kernel; the harness calls the
+// kernel body directly. Declared so the same harness source also compiles for
+// a real backend, where it IS the launch.
+inline hipError_t hipLaunchKernelGGLInternal(void (*)(), int, int, size_t,
+                                             hipStream_t, const void*, ...)
+{ return hipSuccess; }
+
 // Host backing store standing in for `extern __shared__ int smem[];`
 namespace shim {
     inline std::vector<int>& smem_vec() { static std::vector<int> v; return v; }
