@@ -55,6 +55,8 @@
 
 #include "include/genoaligner/backend/wfa_kernel.hip"
 
+using namespace genoaligner;
+
 // ---------------------------------------------------------------------------
 // Case generation — same RNG discipline as the parity harness (mt19937 in C++),
 // so the sequences here are exactly the kind the kernel was validated on.
