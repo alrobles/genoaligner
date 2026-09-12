@@ -1,64 +1,61 @@
 # Fase 6 — Benchmark honesto
 
-> **Medido:** 2026-09-11 · **Backend:** ROCm 6.4.3 / hipcc · **GPU:** AMD Instinct MI210
-> **Jobs:** 29210654 (fallido, ver §4), 29210656, 29210657
-> **Herramienta:** `bench/tcus.cpp` · **Job:** `scripts/h6_bench.sbatch`
+> **Medido:** 2026-09-11 · **Backend:** ROCm 6.4.3/hipcc y CUDA 12.4/nvcc
+> **GPUs:** AMD Instinct MI210, Quadro RTX 6000
+> **Jobs:** 29210654 (inválido), 29210656/57, 29210658, 29210660/61 (finales)
+> **Herramienta:** `bench/tcus.cpp` · **Jobs:** `scripts/h6_bench{,_cuda}.sbatch`
+> **HEAD medido:** 69a1603
 
 ## 0. Qué se afirma y qué no
 
-**Se afirma:** el kernel de score WFA corre en el MI210 y rinde **0.39-0.47 TCUPS**
-en el régimen donde el trabajo se resuelve completo (pares de 256-1024 bp con la
-distancia real por debajo de `smax`), verificado contra el DP de CPU sobre una
-muestra de pares.
+**Se afirma:** el kernel de score WFA corre en el MI210 y en el RTX 6000 desde la
+misma fuente, y rinde **0.32-0.47 TCUPS** en los regímenes donde el trabajo se
+resuelve completo (pares de 256-1024 bp con la distancia real por debajo de
+`smax`), verificado contra el DP de CPU sobre una muestra de pares en cada corrida.
 
 **No se afirma:** que genoaligner sea competitivo con Accelign (9-16 TCUPS en RTX
 PRO 6000) ni con MMseqs2-GPU (~102 TCUPS en 8x L40S). Estamos 1-2 órdenes por
-debajo. El objetivo del proyecto es portabilidad, no récord de TCUPS, y esta fase
-mide lo primero sin disfrazarlo de lo segundo.
+debajo. El objetivo del proyecto es portabilidad, no récord de TCUPS.
 
-## 1. Resultados (job 29210657 MI210, 29210658 RTX 6000)
+## 1. Resultados (jobs 29210660 MI210, 29210661 RTX 6000)
 
 `kernel-only` = celdas de los pares RESUELTOS / tiempo del kernel.
-`end-to-end` = lo que ve un usuario, mismo proceso, sin el warm-up de contexto.
+`end-to-end` = lo que ve un usuario: empaquetado + alloc + transferencias + kernel,
+**sin** el warm-up de contexto ni la generación de casos (ver §2 y §4).
 Ambos usan 1 TCUPS = 1e12 celdas/s.
 
-    régimen                            resol.  kernel-only  end-to-end  kernel% de e2e
-    len=256,  smax=64,  8000 pares, 90%   8000/8000   0.387 TCUPS  0.019 TCUPS   5.0%
-    len=1024, smax=256, 2000 pares, 90%   2000/2000   0.418 TCUPS  0.086 TCUPS  20.5%
-    len=1024, smax=256, 2000 pares, 70%   2000/2000   0.469 TCUPS  0.078 TCUPS  16.7%
-    len=1024, smax=64,  2000 pares, 90%     55/2000     (inválido, ver §3)
+    régimen                          resol.   kernel-only        end-to-end
+    len=256,  smax=64,  8000 pares    8000/8000   0.387 TCUPS     0.035 TCUPS
+    len=1024, smax=256, 2000 pares    2000/2000   0.419 TCUPS     0.164 TCUPS
+    len=1024, smax=256, 2000 pares    2000/2000   0.469 TCUPS     0.165 TCUPS   (ident=70%)
+    len=1024, smax=64,  2000 pares      55/2000     (inválido, ver §3)
 
-Verificación: en cada régimen resuelto, los primeros 25 pares coinciden con el DP
-de CPU O(nm) — 25/25 en los tres. En el régimen abandonado se compararon 3/3 (los
-pares resueltos disponibles).
+Verificación: 25/25 pares contra el DP de CPU en cada régimen resuelto (3/3 en el
+régimen abandonado, que es todo lo que hay para comparar).
 
 ### 1a. Los dos backends (H6 del masterplan: ¿la abstracción cuesta rendimiento?)
 
-El MISMO `bench/tcus.cpp` bajo nvcc y bajo hipcc, mismos regímenes (jobs 29210657
-y 29210658). Esta es la medición que convierte H6 de aserción en dato:
+El MISMO `bench/tcus.cpp` bajo hipcc y nvcc, mismos regímenes:
 
-    régimen                            MI210 (hipcc)   RTX 6000 (nvcc)   diff
-    len=256,  smax=64,  90%              0.387            0.339          -12%
-    len=1024, smax=256, 90%              0.418            0.334          -20%
-    len=1024, smax=256, 70%              0.469            0.431           -8%
-    verificación vs DP de CPU            25/25            25/25
+    régimen                    MI210/hipcc   RTX 6000/nvcc   diff
+    len=256,  smax=64,  90%      0.387          0.339        -12%
+    len=1024, smax=256, 90%      0.419          0.316        -25%
+    len=1024, smax=256, 70%      0.469          0.431         -8%
+    verificación vs DP de CPU    25/25          25/25
 
-**Lectura:** los dos backends quedan dentro del ~20% entre sí. Es la diferencia
-esperada entre un MI210 y un RTX 6000 (silicio y compiladores distintos), no una
-penalización de la capa de portabilidad: la fuente es la misma y el número no
-colapsa en ningún lado. "Una fuente, dos backends, rendimiento comparable" queda
-medido — con la salvedad de que son GPUs distintas, así que esto NO es un
-aislamiento del costo de la capa. Aislarlo requeriría el mismo silicio con ambos
-toolchains, que no está disponible.
+**Lectura:** dentro del ~25%, que es diferencia de silicio y compilador, no un
+colapso de la capa de portabilidad — la fuente es la misma y ninguno de los dos
+lados se despeña. **Advertencia:** son GPUs distintas, así que esto NO aísla el
+costo de la capa. Aislarlo exigiría el mismo silicio bajo ambos toolchains, que no
+está disponible aquí. Decir "la capa cuesta X%" con estos datos sería inventarlo.
 
 Comparación con la literatura, en el hardware donde SÍ corren (no medido aquí):
 
     Accelign ......... 9-16 TCUPS en RTX PRO 6000     -> ~20-40x por encima
     MMseqs2-GPU ..... ~102 TCUPS en 8x L40S           -> ~250x por encima
 
-Estamos 1-2 órdenes por debajo y eso es esperado: el criterio del proyecto es
-portabilidad, no récord de TCUPS. Un kernel optimizado (vectorización de la
-extensión, layout de memoria, occupancy) es trabajo de una fase posterior.
+Esperado: 0.4 TCUPS es un kernel correcto y portable, no uno optimizado.
+
 
 
 ## 2. El reparto de fases cambia la conclusión
