@@ -48,14 +48,24 @@ usuarios. El desarrollo sigue en `-devel`.
 Cada bandera es un comando que se puede correr y un criterio que se puede fallar.
 **Todas deben estar en verde antes de tocar el repo público.**
 
-### B1 — IO FASTA
-- [ ] `src/io/fasta.cpp` lee FASTA (multi-registro, multilínea, CRLF).
-- [ ] Test con un FASTA real de ≥3 registros, uno de ellos multilínea.
-- [ ] Criterio: el número de registros leídos y sus longitudes coinciden con
-      `grep -c '^>'` y el conteo de bases.
+### B1 — IO FASTA ✅ COMPLETA
+- [x] `include/genoaligner/io/fasta.hpp` (header-only, sin dependencia de link).
+- [x] Test con multilínea, CRLF, líneas en blanco, descripción, y 4 entradas
+      malformadas que deben fallar.
+- [x] Criterio cumplido: el caso multilínea da **24 bases donde un lector ingenuo da
+      10** — el bug que un test de conteo habría dejado pasar.
 
-**Por qué:** sin IO, un usuario no puede pasarle un archivo. Hoy la API solo acepta
-`const char*` + longitud; eso sirve a un integrador, no a un usuario.
+**De paso, tres defectos encontrados y arreglados** (todos del mismo tipo: confundir
+"no puede correr aquí" con "está roto"):
+1. `test_api.cpp` decidía `gpu` en COMPILACIÓN; un binario hipcc en un nodo sin
+   device fallaba 10 checks de corrección y anunciaba librería rota.
+2. `probe.hip` abortaba con error HIP por lo mismo. Ahora sale 77 ("skipped").
+3. Los checks que dependen de ejecución se gatean todos con `check_exec()` y un flag
+   `g_dont_care`; los de rechazo de entrada siguen corriendo en cualquier host.
+
+Resultado: en un host sin GPU, `ctest` reporta **Skipped** (no Failed) y `fasta_runs`
+pasa. En MI210 (job 29213875) la API da **PASS**. El CI no tendrá un build rojo falso.
+
 
 ### B2 — Test con secuencias biológicas reales
 - [ ] Un test que corra sobre secuencias **reales** (no sintéticas): p. ej. un gen
