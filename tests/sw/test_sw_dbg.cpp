@@ -46,8 +46,29 @@ static bool run_one(const std::string& text, const std::string& pattern,
     std::fflush(stdout);
 
     SWPairView hv;
-    hv.text = text.data();       hv.text_len = m;
-    hv.pattern = pattern.data(); hv.pattern_len = n;
+    // POINTERS, NOT COPIES -- the bug this job was written to find.
+    //
+    // SWPairView holds `const char*`. Copying the STRUCT to the device copies the
+    // POINTERS, which still refer to host stack/heap, so the kernel dereferences host
+    // memory from the GPU: "Memory access fault ... on address 0x7ffee043a000" -- an
+    // address in the host stack, which is the signature of exactly this mistake. It
+    // faulted on m=1,n=1 because it is structural, not size-dependent.
+    //
+    // The sequence bytes must be copied to the device FIRST, and the views built from
+    // the DEVICE pointers. This project already documented and fixed this for WFA's
+    // PairView (bench/tcus.cpp); the SW path repeated it.
+    char* d_text = nullptr;
+    char* d_pat  = nullptr;
+    if (hipMalloc(&d_text, text.size()    ? text.size()    : 1) != hipSuccess ||
+        hipMalloc(&d_pat,  pattern.size() ? pattern.size() : 1) != hipSuccess) {
+        std::printf("hipMalloc(chars) FAILED\n");
+        return false;
+    }
+    hipMemcpy(d_text, text.data(),    text.size(),    hipMemcpyHostToDevice);
+    hipMemcpy(d_pat,  pattern.data(), pattern.size(), hipMemcpyHostToDevice);
+
+    hv.text = d_text;        hv.text_len = m;
+    hv.pattern = d_pat;      hv.pattern_len = n;
 
     SWPairView* d_pairs = nullptr;
     SWResult*   d_res   = nullptr;
@@ -64,20 +85,20 @@ static bool run_one(const std::string& text, const std::string& pattern,
     hipError_t le = hipGetLastError();
     if (le != hipSuccess) {
         std::printf("LAUNCH ERROR: %s\n", hipGetErrorString(le));
-        hipFree(d_pairs); hipFree(d_res);
+        hipFree(d_text); hipFree(d_pat); hipFree(d_pairs); hipFree(d_res);
         return false;
     }
     hipError_t se = hipDeviceSynchronize();
     if (se != hipSuccess) {
         std::printf("SYNC ERROR: %s\n", hipGetErrorString(se));
-        hipFree(d_pairs); hipFree(d_res);
+        hipFree(d_text); hipFree(d_pat); hipFree(d_pairs); hipFree(d_res);
         return false;
     }
 
     SWResult r{-1,-1,-1};
     hipMemcpy(&r, d_res, sizeof(SWResult), hipMemcpyDeviceToHost);
     std::printf("AFTER  score=%d end=(%d,%d)\n", r.score, r.end_i, r.end_j);
-    hipFree(d_pairs); hipFree(d_res);
+    hipFree(d_text); hipFree(d_pat); hipFree(d_pairs); hipFree(d_res);
     return true;
 }
 
