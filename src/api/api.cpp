@@ -335,13 +335,19 @@ BatchResult align_batch(const std::vector<AlignRequest>& reqs)
                 hipFuncAttributeMaxDynamicSharedMemorySize, chunk_bytes);
             if (as != hipSuccess) {
                 hipFree(d_ws);
-                // Ask the device what it can actually do, so the message is actionable
+                // Ask the device for the limit that DOES exist in ROCm 6.4.3
+                // (MaxSharedMemoryPerBlockOptin is CUDA-only there -- referencing it
+                // did not compile, which is how this branch was found to be broken
+                // in the first place) and report it, so the message is actionable
                 // instead of "invalid argument".
                 int max_smem = 0;
-                hipDeviceGetAttribute(&max_smem, hipDeviceAttributeMaxSharedMemoryPerBlockOptin, 0);
-                (void)max_smem;
-                return fail("shared memory for this smax exceeds the device limit "
-                            "(lower smax, or use with_cigar=false to score only)");
+                hipDeviceGetAttribute(&max_smem, hipDeviceAttributeMaxSharedMemoryPerBlock, 0);
+                std::fprintf(stderr,
+                             "[genoaligner] smem request %d B exceeds what the device "
+                             "accepts (%d B per block). Lower smax, or pass "
+                             "with_cigar=false to score only.\n",
+                             chunk_bytes, max_smem);
+                return fail("shared memory for this smax exceeds the device limit");
             }
         }
 
