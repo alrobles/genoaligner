@@ -1,7 +1,8 @@
 # Fase 7 — Plan de optimización y siguientes pasos
 
-> **Estado:** diagnóstico COMPLETO y medido. Primera optimización implementada,
-> gate CPU en verde, verificación GPU **en curso** (job 29210729).
+> **Estado:** diagnóstico COMPLETO y medido. Primera optimización implementada y
+> **verificada en GPU** (job 29210729): 1.06-1.65x. El residuo de escalado con
+> `smax` está en atribución (job 29210731, ocupación).
 > **Fecha:** 2026-09-11 · **Base:** `docs/BENCHMARK_FASE6.md`
 
 ---
@@ -77,12 +78,45 @@ cambio de layout invalidaría la evidencia de paridad, y el defecto es ocupació
 Está en **archivo separado** para no tocar el kernel validado: si no gana, se
 descarta sin daño.
 
-### Verificación en curso
+### Verificación
 
-- **Gate CPU** (`bench/h7_flat_parity.cpp`): **PASS** — 1225/1230 resueltos,
-  **0 desacuerdos** contra el DP de CPU.
-- **Job GPU 29210729**: verifica el remapping de hilos real (el gate CPU corre a
-  blockDim=1 y NO lo ejercita) + mide el barrido de smax contra la línea base.
+**Gate CPU** (`bench/h7_flat_parity.cpp`): **PASS** — 1225/1230 resueltos,
+**0 desacuerdos** contra el DP de CPU.
+
+**Gate GPU (job 29210729)**: remapping de hilos verificado — **500/500 contra el DP
+de CPU** en bloques 64, 128, 256 y 512. Ese es el chequeo que el gate CPU no puede
+hacer (a blockDim=1 el grid-stride interior degenera).
+
+### Resultado medido (job 29210729, MI210)
+
+Mismo régimen que la línea base (len=1024, ident=98%, distancia real ~15.2):
+
+    smax   default     flat(128)   mejora
+      32   0.966 ms   0.912 ms    1.06x
+      64   2.190 ms   1.794 ms    1.22x
+     128   4.835 ms   3.248 ms    1.49x
+     256  10.349 ms   6.286 ms    1.65x
+
+La mejora **crece con smax**, que es la firma del defecto: cuanto más
+desproporcionado `2*smax+1` respecto a las diagonales usadas, más gana el bloque fijo.
+
+**Y el tamaño de bloque dejó de importar:** 64/128/256/512 dan todos 2.48-2.55 ms
+(0.205-0.211 TCUPS) sobre la misma entrada. El bloque ya no es el cuello — que es
+justo lo que la desacoplación buscaba.
+
+### LO QUE FALTA EXPLICAR (no reportar como resuelto)
+
+El flat **sigue** escalando ~lineal con smax (`ms/smax` = .0285, .0280, .0254,
+.0246). Es decir: **~3x del 10.7x original quedan sin explicar por el tamaño de
+bloque.** Algo que crece con smax sigue costando, y no se ha identificado.
+
+Candidato principal: **`smem` por bloque = 2*(2*smax+3) ints**, que crece con smax
+y por tanto limita cuántos pares caben residentes por SM (1 bloque = 1 par). Con
+smax=256 son 4 KB/bloque; con smax=32, 0.5 KB. Menos bloques residentes = menos
+paralelismo entre pares.
+
+Se está midiendo con `hipOccupancyMaxActiveBlocksPerMultiprocessor` (job 29210731)
+en vez de razonarlo. **El 1.65x NO debe reportarse como el resultado completo.**
 
 ### Un error de mi propio gate, corregido
 
