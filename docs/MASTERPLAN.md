@@ -387,24 +387,31 @@ capa RECHAZA un compilador equivocado).
 
 **Criterio de fusión:** números publicables + manifiesto de replicabilidad.
 
-**Resultado (2026-09-11): MI210 y RTX 6000 medidos y verificados; A100 y PRO 6000
-pendientes. Ver `docs/BENCHMARK_FASE6.md`.**
+**Resultado (2026-09-11): MI210, RTX 6000 y A100 medidos y verificados; PRO 6000 no
+construible con el toolchain del sitio (ver `docs/BENCHMARK_FASE6.md` §8).**
 
-    kernel-only (TCUPS)    MI210/hipcc    RTX 6000/nvcc
-    len=256,  smax=64,90%     0.387           0.339
-    len=1024, smax=256,90%    0.418           0.334
-    len=1024, smax=256,70%    0.469           0.431
-    verificación vs DP CPU    25/25           25/25
+    kernel-only (TCUPS)     MI210/hipcc   RTX6000/nvcc   A100/nvcc
+    len=256,  smax=64,90%      0.387         0.339         0.446
+    len=1024, smax=256,90%     0.419         0.316         0.705
+    len=1024, smax=256,70%     0.469         0.431         0.725
+    verificación vs DP CPU     25/25         25/25         25/25
 
-Los dos backends quedan dentro del ~20%, que es la medición de H6 ("la abstracción
-no cuesta rendimiento"). Estamos 1-2 órdenes por debajo de Accelign (9-16 TCUPS) y
-MMseqs2-GPU (~102 TCUPS) — esperado, el criterio es portabilidad, no récord.
+Tres GPUs, misma fuente, ninguna se despeña: sostiene "una fuente, varios backends,
+rendimiento del mismo orden". Pero son GPUs DISTINTAS, así que esto mide silicio, no
+el costo de la capa de portabilidad — aislar eso exigiría el mismo silicio con ambos
+toolchains, imposible aquí. Estamos 1-2 órdenes por debajo de Accelign (9-16 TCUPS) y
+MMseqs2-GPU (~102 TCUPS); esperado, el criterio es portabilidad, no récord.
 
-Dos errores de medición corregidos en el proceso, ambos del mismo tipo (un número
-que parece resultado sobre una medición que no mide lo que dice): un TCUPS
-calculado sobre pares que el kernel abandonó, y un "memset de 475 ms" que era el
-bring-up del contexto HIP. La herramienta ahora se niega a reportar ambos casos
-(exit codes 5 y 6). `smax` está acotado a 511 por el mapeo de bloque del kernel.
+**PRO 6000:** CUDA 12.4 (el del repo) no soporta sm_120; CUDA 13.0 (que sí lo
+soporta) rompe la capa `nvidia_detail` de ROCm 6.4.3 con `cudaMemLocation`/`clockRate`.
+No hay CUDA 12.8+ en el sitio. Es una limitación del toolchain, no del kernel.
+
+Tres errores de medición corregidos en el proceso, todos del mismo tipo (un número
+que parece resultado sobre una medición que no mide lo que dice): un TCUPS calculado
+sobre pares abandonados, un "memset de 475 ms" que era el bring-up del contexto HIP, y
+la generación de casos en host contada como costo del producto. La herramienta ahora
+se niega a reportar los dos primeros (exit codes 5 y 6). `smax` está acotado a 511 por
+el mapeo de bloque del kernel.
 
 
 ### Fase 7 — Smith-Waterman (2 semanas, segundo método)
