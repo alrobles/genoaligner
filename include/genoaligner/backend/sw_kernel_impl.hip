@@ -52,6 +52,14 @@ __global__ void sw_score_kernel(const SWPairView* __restrict__ pairs,
         H[j] = 0; E[j] = 0; F[j] = 0;
     }
 
+    // The initialisation above must be VISIBLE to every thread before the first row is
+    // walked: thread t reads E[0] and F[0] (and H[j-1] across its stride), which other
+    // threads wrote. Without this barrier those reads race the writes -- a stale
+    // uninitialised value enters the DP. The GPU faulted on a later run for a related
+    // reason (see the reduction comment), but this missing barrier is a correctness bug
+    // in its own right and would have produced wrong scores even without a fault.
+    __syncthreads();
+
     // Best-so-far, reduced across the block at the end of each row. Kept per-thread so
     // no barrier is needed to update it, then combined once.
     int  my_best = 0;
