@@ -26,6 +26,7 @@
 #define __device__
 #define __host__
 #define __restrict__
+#define __shared__ static
 #define __syncthreads() ((void)0)
 
 struct uint3 { unsigned x, y, z; };
