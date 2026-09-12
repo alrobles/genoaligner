@@ -24,6 +24,18 @@
 #include <cstdio>
 #include <cstring>
 
+#ifdef GENOALIGNER_HIP_SHIM
+// The shim declares the launch-config globals extern and someone must define them.
+// On the GPU paths the runtime provides them; under the shim this translation unit
+// is the "launch owner", so it defines them -- required for the link to succeed even
+// though the shim branch below never launches. Same arrangement as
+// tests/parity/wfa_parity.cpp.
+uint3 threadIdx{0, 0, 0};
+uint3 blockIdx{0, 0, 0};
+dim3  blockDim{1, 1, 1};
+dim3  gridDim{1, 1, 1};
+#endif
+
 namespace genoaligner {
 
 // ---- op codes -> chars. Kept local so the public API does not depend on the test
