@@ -12,6 +12,10 @@
 // because the whole point of this library is that its results match a reference.
 
 #include "genoaligner/backend/sw_kernel.hip"
+// The kernel BODY lives in the _impl header. hipLaunchKernelGGL needs both the
+// declaration and the definition visible in the translation unit that launches it, or
+// the device stub is undefined at link time (which is how this line came to be needed).
+#include "genoaligner/backend/sw_kernel_impl.hip"
 
 #include <cstdio>
 #include <hip/hip_runtime.h>
