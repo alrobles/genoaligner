@@ -141,13 +141,31 @@ pasa. En MI210 (job 29213875) la API da **PASS**. El CI no tendrá un build rojo
    `invalid device function`. Arreglado con `-DGENOALIGNER_GPU_ARCH=gfx90a`.
 
 
-### B6 — Números de TCUPS con barras de error
-- [ ] Re-medir con el diseño **intercalado** (el validado en Fase 7).
-- [ ] Reportar media **y** dispersión, por GPU.
-- [ ] Criterio: ningún número sin su dispersión, ninguna comparación cruzando jobs.
+### B6 — Números de TCUPS con barras de error ✅ COMPLETA
+- [x] Medido con el diseño **intercalado** (7 reps por régimen, ambos kernels A/B, todo
+      dentro de un job por GPU): jobs 29226478 (MI210), 29226479 (A100), 29226480
+      (PRO 6000).
+- [x] **Media + sd + min + max + dispersión** por GPU y régimen; ningún número sin su
+      dispersión. Todos copiados de los logs.
+- [x] `README.md` y `docs/RESULTADO_B6_TCUPS.md` actualizados con la tabla.
+- [x] Runs que no verifican o no resuelven todos los pares se **rechazan**, no se
+      promedian (contados y reportados).
 
-**Por qué:** el README público citará estos números. Ya nos equivocamos una vez
-publicando un 1.93x medido cruzando jobs.
+**Hallazgo: el kernel `default` es no determinista.** Mismo trabajo en 7 corridas
+(idéntica distancia 74.8, wavefronts 74.8/128, 300/0 resueltos) y el tiempo varía
+**2.5x** (1.210 → 0.492). No es nodo, ni medición, ni abandonos: es el kernel, por
+`blockDim = 2·smax+1` con hilos ociosos en la barrera. El `flat` es estable (±0.2%).
+
+**Rangos publicados** (kernel-only TCUPS):
+`default`: PRO 6000 1.21-1.63 · A100 0.47-0.53 · MI210 0.39-0.47
+`flat`:    PRO 6000 2.58-5.46 · A100 0.76-1.34 · MI210 0.58-1.12
+
+**Tres bugs de harness corregidos** en el camino: un rep corrupto promediado como si
+fuera medición (`(0.421*6+0.212)/7 = 0.3911`, exactamente la media impresa), un
+`sed` greedy que tomaba el último campo en vez del primero (rechazó las 28 corridas,
+por la razón equivocada), y una cita de números de otro job en la primera versión del
+documento.
+
 
 ### B7 — Decisión sobre Smith-Waterman
 - [ ] Escribir SW, **o** declarar explícitamente en el README que solo hay WFA.

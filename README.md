@@ -161,25 +161,31 @@ cmake -S . -B build -DGENOALIGNER_BUILD_TESTS=ON ... && cmake --build build && c
 
 ## Measured performance
 
-Kernel throughput on six GPUs, same source, each verified against the CPU reference.
-Kernel-only = cells of resolved pairs / kernel time; end-to-end includes packing and
-transfers but excludes one-time context bring-up.
+Kernel-only throughput, measured with **all repetitions inside a single job per GPU**
+and the two kernels interleaved, because node-to-node variance on this cluster was
+measured at 3-4x and cross-job numbers are arithmetic on a moving baseline. Each figure
+is a mean over 7 runs with its spread; every run resolved 100% of its pairs.
 
-| GPU | arch | kernel-only (TCUPS) |
-|---|---|---|
-| RTX PRO 6000 | sm_120 | 1.21 - 1.63 |
-| L40 | sm_89 | 1.01 - 1.48 |
-| A100 | sm_80 | 0.45 - 0.73 |
-| V100 | sm_70 | 0.53 - 0.68 |
-| MI210 | gfx90a | 0.39 - 0.47 |
-| RTX 6000 | sm_75 | 0.32 - 0.43 |
+| GPU | arch | `default` kernel (TCUPS) | `flat` kernel (TCUPS) |
+|---|---|---|---|
+| RTX PRO 6000 | sm_120 | 1.21 - 1.63 (±0.2-0.5%) | 2.58 - 5.46 (±0.2-0.5%) |
+| A100 | sm_80 | 0.47 - 0.53 (±10-37%) | 0.76 - 1.34 (±10-34%) |
+| MI210 | gfx90a | 0.39 - 0.47 (±0-1.2%) | 0.58 - 1.12 (±0.5-1.2%) |
 
-These are honest ranges across three regimes, not best cases. On the same card
-(RTX PRO 6000) a CUDA-only state-of-the-art aligner reports 9-16 TCUPS, so this is
-**2-3x below it after optimisation** — portability is the contribution, not
-throughput. Numbers, regimes and the measurement method (interleaved A/B, because
-node variance here is 3-4x): [docs/BENCHMARK_FASE6.md](docs/BENCHMARK_FASE6.md) and
-[docs/RESULTADO_FASE7_OPTIMIZACION.md](docs/RESULTADO_FASE7_OPTIMIZACION.md).
+Ranges span four regimes (len 256-2048, smax 64-256), not best cases. The `flat` kernel
+is 1.4-4.4x faster than the default and, unlike it, has no non-deterministic mode: the
+default kernel was measured varying **2.5x between launches doing identical work**
+(verified: same distance, same wavefronts walked, same resolved count). The A100 spread
+is not attributed — it is indistinguishable from a busy node with these data.
+
+On the same card (RTX PRO 6000) a CUDA-only state-of-the-art aligner reports 9-16
+TCUPS, so this is **2-3x below it** with the default kernel and **~1.7-3.7x below** with
+the flat one. That comparison uses the published figure, not a measurement of their
+binary. Portability is the contribution, not throughput.
+
+Full method, the non-determinism evidence, and what these numbers do *not* support:
+[docs/RESULTADO_B6_TCUPS.md](docs/RESULTADO_B6_TCUPS.md). Earlier, cross-job
+measurements (superseded for comparison purposes): [docs/BENCHMARK_FASE6.md](docs/BENCHMARK_FASE6.md).
 
 ## Documentation
 
