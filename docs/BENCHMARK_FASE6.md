@@ -1,88 +1,100 @@
 # Fase 6 — Benchmark honesto
 
-> **Medido:** 2026-09-11 · **Backends:** ROCm 6.4.3/hipcc, CUDA 12.4/nvcc
-> **GPUs:** MI210, RTX 6000, A100, V100, L40. PRO 6000 no construible (§8)
+> **Medido:** 2026-09-11 · **Backends:** ROCm 6.4.3/hipcc, CUDA 12.4 y 12.8/nvcc
+> **GPUs:** MI210, RTX 6000, A100, V100, L40, RTX PRO 6000 — seis, dos vendors
 > **Jobs:** 29210654 (inválido), 29210660/61 (MI210/q6000), 29210662 (A100),
->            29210664 (V100), 29210665 (L40)
-> **Herramienta:** `bench/tcus.cpp` · `scripts/h6_bench{,_cuda,_a100,_v100,_l40}.sbatch`
-> **HEAD medido:** ea2f9ac
+>            29210664 (V100), 29210665 (L40), 29210709 (PRO 6000)
+> **Herramienta:** `bench/tcus.cpp` · `scripts/h6_bench{,_cuda,_a100,_v100,_l40,_pro6000}.sbatch`
+> **HEAD medido:** 6d27737
 
 ## 0. Qué se afirma y qué no
 
-**Se afirma:** el kernel de score WFA corre desde una sola fuente en **cinco GPUs de
-dos vendors** (MI210, RTX 6000, A100, V100, L40), y rinde **0.32-1.48 TCUPS** en los
-regímenes donde el trabajo se resuelve completo, verificado contra el DP de CPU sobre
-una muestra de pares en cada corrida y en cada GPU.
+**Se afirma:** el kernel de score WFA corre desde una sola fuente en **seis GPUs de
+dos vendors** (MI210, RTX 6000, A100, V100, L40, RTX PRO 6000), y rinde
+**0.32-1.63 TCUPS** en los regímenes donde el trabajo se resuelve completo, verificado
+contra el DP de CPU sobre una muestra de pares en cada corrida y en cada GPU.
 
-**No se afirma:** que genoaligner sea competitivo con Accelign (9-16 TCUPS en RTX
-PRO 6000) ni con MMseqs2-GPU (~102 TCUPS en 8x L40S). Seguimos ~1 orden por debajo.
-El objetivo del proyecto es portabilidad, no récord de TCUPS. Tampoco se afirma que
-la capa de portabilidad sea gratis: la matriz mide silicio, no la capa (§1a).
+**No se afirma:** que genoaligner sea competitivo con Accelign. Medido **en la misma
+GPU** (RTX PRO 6000): Accelign 9-16 TCUPS vs nosotros 1.21-1.63 → seguimos ~6-13x por
+debajo (§1b). El objetivo del proyecto es portabilidad, no récord de TCUPS. Tampoco se
+afirma que la capa de portabilidad sea gratis: la matriz mide silicio, no la capa (§1a).
 
-## 1. Resultados — matriz de 5 GPUs (jobs 29210660/61/62/64/65)
+## 1. Resultados — matriz de 6 GPUs (jobs 29210660/61/62/64/65/29210709)
 
 `kernel-only` = celdas de los pares RESUELTOS / tiempo del kernel. 1 TCUPS = 1e12
 celdas/s. `end-to-end` excluye el warm-up de contexto y la generación de casos (§2, §4).
 
     kernel-only (TCUPS)
-    régimen (resueltos)          MI210/hipcc  RTX6000/nvcc  A100/nvcc  V100/nvcc  L40/nvcc
-    len=256,  smax=64,  90%        0.387        0.339       0.446     0.539     1.477
-    len=1024, smax=256, 90%        0.419        0.316       0.705     0.530     1.014
-    len=1024, smax=256, 70%        0.469        0.431       0.725     0.676     1.079
-    len=1024, smax=64,  90%       (inválido: 1945/2000 pares abandonados — ver §3)
+    régimen                  MI210  RTX6000  A100   V100   L40    PRO6000
+    len=256,  smax=64,  90%  0.387   0.339  0.446  0.539  1.477   1.629
+    len=1024, smax=256, 90%  0.419   0.316  0.705  0.530  1.014   1.208
+    len=1024, smax=256, 70%  0.469   0.431  0.725  0.676  1.079   1.314
+    len=1024, smax=64,  90%  (inválido: 1945/2000 pares abandonados — ver §3)
 
     end-to-end (TCUPS)
-    régimen                      MI210   RTX6000   A100    V100    L40
-    len=256,  smax=64,  90%      0.035    0.105    0.107   0.115   0.213
-    len=1024, smax=256, 90%      0.164    0.208    0.333   0.282   0.499
-    len=1024, smax=256, 70%      0.165     —       0.333   0.320   0.528
+    régimen                  MI210  RTX6000  A100   V100   L40    PRO6000
+    len=256,  smax=64,  90%  0.035   0.105  0.107  0.115  0.213   0.212
+    len=1024, smax=256, 90%  0.164   0.208  0.333  0.282  0.499   0.572
+    len=1024, smax=256, 70%  0.165    —     0.333  0.320  0.528   0.632
 
-Verificación: **25/25 pares contra el DP de CPU en cada régimen resuelto, en las
-cinco GPUs** (3/3 en el régimen abandonado, que es todo lo que hay para comparar).
+Verificación: **25/25 pares contra el DP de CPU en cada régimen resuelto, en las seis
+GPUs** (3/3 en el régimen abandonado, que es todo lo que hay para comparar).
 
-**Lectura de la matriz:**
+**Lectura de la matriz (ordenada):**
 
-    L40  (Ada, sm_89) ...... 1.01-1.48 TCUPS   <- la más rápida, por 1.4-4x
-    A100 (Ampere, sm_80) ... 0.45-0.73
-    RTX 6000 (Turing, sm_75) 0.32-0.43
-    MI210 (AMD, gfx90a) .... 0.39-0.47
-    V100 (Volta, sm_70) .... 0.53-0.68         <- el "suelo" NO es el más lento
+    PRO6000 (Blackwell, sm_120) 1.21-1.63 TCUPS   <- la más rápida
+    L40     (Ada, sm_89) ....... 1.01-1.48
+    A100    (Ampere, sm_80) .... 0.45-0.73
+    V100    (Volta, sm_70) ..... 0.53-0.68
+    MI210   (AMD, gfx90a) ...... 0.39-0.47
+    RTX6000 (Turing, sm_75) .... 0.32-0.43
 
-El V100 supera al RTX 6000 y al MI210 pese a ser la arquitectura más vieja: tiene
-mucho más ancho de banda (HBM2, ~900 GB/s vs GDDR6 del q6000). El orden sigue el
-ancho de banda de memoria, no la edad ni el vendor — que es lo esperado en un kernel
-que es esencialmente una caminata por memoria. El L40 (GDDR6 ~864 GB/s pero
-arquitectura Ada y cachés mucho mayores) duplica al A100, así que el ancho de banda
-solo no lo explica todo: la arquitectura también pesa. No se afirma una causa única.
+El orden sigue el ancho de banda de memoria, no la edad ni el vendor: el V100
+(HBM2) adelanta al RTX 6000 y al MI210 pese a ser la arquitectura más vieja. Pero el
+L40 duplica al A100 con ancho de banda similar, y el PRO 6000 solo adelanta al L40
+por ~1.2-1.6x pese a tener mucho más ancho de banda (GDDR7). Así que **el ancho de
+banda ordena la tabla pero no la explica sola**: la arquitectura y las cachés también
+pesan. Se reporta como observación, sin atribuir una causa única.
 
 ### 1a. Los backends entre sí (H6: ¿la abstracción cuesta rendimiento?)
 
-El MISMO `bench/tcus.cpp`, cinco GPUs, dos toolchains:
+El MISMO `bench/tcus.cpp`, seis GPUs, dos toolchains (hipcc / nvcc 12.4 y 12.8):
 
-    régimen                 MI210/hipcc  RTX6000/nvcc  A100/nvcc  V100/nvcc  L40/nvcc
-    len=256,  smax=64, 90%     0.387        0.339        0.446     0.539      1.477
-    len=1024, smax=256,90%     0.419        0.316        0.705     0.530      1.014
-    len=1024, smax=256,70%     0.469        0.431        0.725     0.676      1.079
-    verificación vs DP CPU     25/25        25/25        25/25     25/25      25/25
+    régimen                  MI210  RTX6000  A100   V100   L40    PRO6000
+    len=256,  smax=64, 90%   0.387   0.339  0.446  0.539  1.477   1.629
+    len=1024, smax=256,90%   0.419   0.316  0.705  0.530  1.014   1.208
+    len=1024, smax=256,70%   0.469   0.431  0.725  0.676  1.079   1.314
+    verificación vs DP CPU   25/25   25/25  25/25  25/25  25/25   25/25
 
-**Lectura, con su límite explícito:** las cinco corren la misma fuente, verifican
-idéntico, y ninguna se despeña — el rango entero es 0.32-1.48, menos de 5x entre la
-más lenta y la más rápida de cinco arquitecturas distintas de dos vendors. Eso
-sostiene "una fuente, cinco GPUs, rendimiento del mismo orden".
+**Lectura, con su límite explícito:** las seis corren la misma fuente, verifican
+idéntico, y el rango entero es 0.32-1.63 — ~5x entre la más lenta y la más rápida de
+seis arquitecturas de dos vendors. Ninguna se despeña. Eso sostiene "una fuente, seis
+GPUs, rendimiento del mismo orden".
 
-Pero **estas son GPUs distintas**, así que la tabla mide silicio, no el costo de la
-capa de portabilidad. Aislar la capa exigiría la misma GPU bajo ambos toolchains —
-imposible en este sitio (la flota NVIDIA no tiene HIP nativo y la AMD no tiene CUDA).
-Decir "la capa cuesta X%" con estos datos sería inventarlo, y no se hace.
+Pero **son GPUs distintas**, así que la tabla mide silicio, no el costo de la capa de
+portabilidad. Aislar la capa exigiría la misma GPU bajo ambos toolchains — imposible
+en este sitio (la flota NVIDIA no tiene HIP nativo, la AMD no tiene CUDA). Decir "la
+capa cuesta X%" con estos datos sería inventarlo, y no se hace.
 
-Comparación con la literatura, en el hardware donde SÍ corren (no medido aquí):
+### 1b. Comparación directa con Accelign (mismo hardware, por fin)
 
-    Accelign ......... 9-16 TCUPS en RTX PRO 6000     -> ~6-16x sobre nuestro L40
-    MMseqs2-GPU ..... ~102 TCUPS en 8x L40S           -> ~250x por encima
+Accelign reporta **9-16 TCUPS en RTX PRO 6000** (BMC Bioinformatics 2026). Nosotros
+medimos el PRO 6000 en **1.21-1.63 TCUPS**. Es la primera comparación **en el mismo
+hardware** de todo el proyecto, y no necesita la salvedad de "otra GPU":
 
-La brecha con Accelign es menor de lo que sugerían las primeras dos GPUs, pero sigue
-siendo un orden de magnitud. Esperado: 0.4-1.5 TCUPS es un kernel correcto y
-portable, no uno optimizado — y la optimización es trabajo que NO se ha intentado.
+    Accelign (PRO 6000)  .......... 9-16 TCUPS
+    genoaligner (PRO 6000) ........ 1.21-1.63 TCUPS
+    ------------------------------------------------
+    factor ........................ ~6-13x
+
+El orden de magnitud se mantiene, ahora medido contra la misma tarjeta. Es esperado:
+Accelign es un kernel optimizado años; el nuestro es correcto y portable, y **la
+optimización no se ha intentado**. Esta es la línea base contra la que medir cualquier
+trabajo de optimización futuro — y por primera vez, es una línea base válida.
+
+MMseqs2-GPU (~102 TCUPS en 8x L40S) sigue sin ser comparable directamente: es un
+banco de 8 GPUs, no una GPU.
+
 
 
 
@@ -160,44 +172,52 @@ La configuración correcta está en el harness de paridad
 validado. **Regla:** la herramienta de banco debe copiar la configuración de
 lanzamiento del sitio validado, no reconstruirla.
 
-## 8. PRO 6000 (sm_120): por qué NO hay número
+## 8. PRO 6000: el negativo que era falso (y cómo se corrigió)
 
-El masterplan lista la PRO 6000. **No se puede medir con este toolchain, y la razón
-es de versión de CUDA, no de código.** Dos intentos, ambos con evidencia:
+Esta sección existía para documentar por qué la PRO 6000 no era construible. **Era
+falso, y la corrección vale más que el error.**
 
-    CUDA 12.4 (el que usa todo el repo)   NO soporta sm_120
-        nvcc 12.4 --list-gpu-arch -> ...compute_89, compute_90   (máximo sm_90)
+**Lo que afirmé:** "no hay CUDA 12.8+ en el sitio; PRO 6000 no es construible con
+este toolchain." Con dos datos reales de respaldo:
 
-    CUDA 13.0 (el que sí soporta sm_120)  ROMPE la capa nvidia_detail de ROCm 6.4.3
-        error: no suitable constructor to convert from "int" to "cudaMemLocation"
-        error: class "cudaDeviceProp" has no member "clockRate"
-        error: class "cudaDeviceProp" has no member "computeMode"
-        ... (12+ errores en nvidia_hip_runtime_api.h)
+    CUDA 12.4 --list-gpu-arch  -> termina en compute_90   (sm_120 no existe)
+    CUDA 13.0 + capa ROCm 6.4.3 -> 12+ errores en nvidia_hip_runtime_api.h
+                                   (cudaMemLocation, cudaDeviceProp::clockRate, ...)
 
-El nvcc 13.0 del sitio sí tiene `compute_120` en su lista de arquitecturas, pero la
-capa que traduce HIP→CUDA es de la era 12.x y no compila contra los headers de 13.0.
-Es exactamente la restricción ya documentada (CUDA 12.4, no 13.0) mordiendo en la
-dirección opuesta: 12.4 no llega a la arquitectura, 13.0 no llega a la capa.
+**Lo que hice mal:** busqué CUDA en `/kuhpc/sw/cuda-toolkit/` (solo 12.4) y en los
+dos directorios nvhpc *por defecto* (`2024`→12.4, `2025`→13.0). **No recorrí las
+instalaciones nvhpc versionadas.** Una de ellas, `25.3`, tiene CUDA **12.8**:
 
-**No hay CUDA 12.8+ en el sitio** (verificado: solo 12.4 en `/kuhpc/sw/cuda-toolkit/`
-y en nvhpc 2024/2025). Una 12.8/12.9 cerraría ambas condiciones a la vez y es la
-ruta a probar si el sitio la instala.
+    /kuhpc/sw/nvhpc/Linux_x86_64/25.3/cuda/12.8/bin/nvcc
+      --list-gpu-arch  -> ... compute_89, compute_90, compute_120   (¡sm_120!)
+      + capa ROCm 6.4.3 -> compila limpio, RC=0
 
-**Lo que esto NO significa:** que el código no corra en sm_120. Significa que no se
-puede *construir* para sm_120 con lo que hay aquí. La conclusión es sobre el
-toolchain del sitio, no sobre el kernel.
+12.8 es la única versión que satisface **ambas** restricciones a la vez: conoce
+sm_120, y sigue siendo 12.x así que la capa `nvidia_detail` compila. Exactamente la
+condición que §8 decía que no existía. Recorrer las versiones fue un comando.
+
+**Lección, la tercera vez en este proyecto:** un negativo deducido de una búsqueda
+parcial es una hipótesis, no un hecho — y aquí lo escribí en el doc como hecho, con
+la frase "verificado". El skill ya lo dice (*"when a skill says X is impossible,
+re-test X"*); lo que faltaba era aplicarlo a mi propia conclusión del párrafo
+anterior. Ahora: **recorrer cada instalación versionada, no solo los paths con
+nombre.**
+
+Resultado del job 29210709: medido y verificado 25/25 por régimen. Ver §1 y §1b — y esta
+es además la primera comparación directa contra Accelign **en el mismo hardware**.
 
 ## 9. Manifiesto de replicabilidad
 
     repo      alrobles/genoaligner-devel (privado)
-    commit    ea2f9ac  (código medido: bench + jobs)
+    commit    6d27737  (código medido: bench + jobs)
     jobs      29210660 (MI210), 29210661 (RTX 6000), 29210662 (A100),
-              29210664 (V100), 29210665 (L40)
-    comando   sbatch scripts/h6_bench.sbatch        # MI210, hipcc
-              sbatch scripts/h6_bench_cuda.sbatch   # RTX 6000, nvcc sm_75
-              sbatch scripts/h6_bench_a100.sbatch   # A100, nvcc sm_80
-              sbatch scripts/h6_bench_v100.sbatch   # V100, nvcc sm_70
-              sbatch scripts/h6_bench_l40.sbatch    # L40,  nvcc sm_89
+              29210664 (V100), 29210665 (L40), 29210709 (PRO 6000)
+    comando   sbatch scripts/h6_bench.sbatch          # MI210, hipcc
+              sbatch scripts/h6_bench_cuda.sbatch     # RTX 6000, nvcc 12.4 sm_75
+              sbatch scripts/h6_bench_a100.sbatch     # A100,     nvcc 12.4 sm_80
+              sbatch scripts/h6_bench_v100.sbatch     # V100,     nvcc 12.4 sm_70
+              sbatch scripts/h6_bench_l40.sbatch      # L40,      nvcc 12.4 sm_89
+              sbatch scripts/h6_bench_pro6000.sbatch  # PRO 6000, nvcc 12.8 sm_120
 
     herramienta   bench/tcus.cpp
     build ROCm    /kuhpc/sw/rocm/6.4.3/bin/hipcc -O2 -std=c++17 -I. \
@@ -211,28 +231,29 @@ toolchain del sitio, no sobre el kernel.
 
     toolchain     ROCm 6.4.3, hipcc 6.4.43484, AMD clang 19
     device 1      AMD Instinct MI210, gfx90a:sramecc+:xnack-
-    toolchain     nvcc 12.4 (nvhpc 2024)
+    toolchain     nvcc 12.4 (nvhpc 2024) para sm_70..sm_89
     device 2      Quadro RTX 6000,  sm_75   (Turing)
     device 3      NVIDIA A100-PCIE-40GB, sm_80   (Ampere)
     device 4      Tesla V100S-PCIE-32GB, sm_70   (Volta)
     device 5      NVIDIA L40,        sm_89   (Ada)
+    toolchain     nvcc 12.8 (/kuhpc/sw/nvhpc/Linux_x86_64/25.3/cuda/12.8) para sm_120
+    device 6      NVIDIA RTX PRO 6000 Blackwell Server Edition, sm_120  (Blackwell)
 
 Los jobs reconstruyen el binario desde el fuente versionado antes de correr, así que
 el artefacto medido es el commit, no un binario suelto. Los números se escriben a
-`/beegfs/.../bench/`, durables y con job id en el nombre. Los cinco sbatch comparten
+`/beegfs/.../bench/`, durables y con job id en el nombre. Los seis sbatch comparten
 los mismos cuatro regímenes byte a byte (mismo orden, mismos flags), para que la
 comparación no sea de erratas.
 
 ## 10. Pendiente (no medido — no reportar como hecho)
 
-- **PRO 6000 (sm_120).** No construible con el toolchain del sitio; ver §8.
-- **Optimización.** 0.32-1.48 TCUPS es un kernel correcto y portable, no uno rápido.
+- **Optimización.** 0.32-1.63 TCUPS es un kernel correcto y portable, no uno rápido.
   Las palancas (extensión vectorizada, layout de memoria, occupancy) **no se han
-  tocado** y es el mayor salto disponible. El kernel es esencialmente una caminata
-  por memoria y el throughput sigue el ancho de banda, así que ahí está el trabajo.
+  tocado**. Con §1b hay por fin una línea base válida contra la cual medir el salto:
+  Accelign en la misma GPU, 9-16 TCUPS.
 - **Regímenes más allá de smax=511** requieren otro mapeo de bloque.
 - **`len` > 4096 / ident < 70%** (distancia alta) no se midieron: fuera del régimen
   filogenético que el proyecto apunta, pero es un hueco declarado.
-- **Comparación directa con Accelign/WFA-GPU en el mismo hardware.** No corren en
-  MI210, así que la comparación es contra números publicados en otra GPU.
+- **V100 en modo no-S (sm_70 puro)**: el nodo reportó un V100S (sm_70 compilado corre,
+  pero es la variante S). No cambia la conclusión, se anota por completitud.
 

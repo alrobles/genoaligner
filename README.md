@@ -18,7 +18,8 @@ on both CUDA and ROCm, so the AMD fleet stops being idle for this workload.
 
 The goal is NOT to beat Accelign on raw TCUPS. The goal is to produce results
 identical to a CPU reference (SeqAn/Parasail) while running on hardware no
-existing tool supports.
+existing tool supports. Measured on the same GPU (RTX PRO 6000): Accelign 9-16
+TCUPS, genoaligner 1.2-1.6 TCUPS — portability is the claim, not throughput.
 
 ## Verified environment (KU HPC, 2026-09-10)
 

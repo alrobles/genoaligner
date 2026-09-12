@@ -43,7 +43,7 @@ nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null || ec
 cd "$ROOT" || exit 1
 
 echo
-echo "--- build (nvcc 12.4, $ARCH) ---"
+echo "--- build (nvcc 12.8, $ARCH) ---"
 "$C/bin/nvcc" -w -D__HIP_PLATFORM_NVIDIA__ -std=c++17 \
     -gencode arch=$ARCH \
     -DGENOALIGNER_BENCH_BACKEND='"cuda"' \

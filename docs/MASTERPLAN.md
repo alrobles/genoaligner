@@ -387,25 +387,30 @@ capa RECHAZA un compilador equivocado).
 
 **Criterio de fusión:** números publicables + manifiesto de replicabilidad.
 
-**Resultado (2026-09-11): cinco GPUs de dos vendors medidas y verificadas; PRO 6000
-no construible con el toolchain del sitio (ver `docs/BENCHMARK_FASE6.md` §8).**
+**Resultado (2026-09-11): SEIS GPUs de dos vendors medidas y verificadas, incluida la
+PRO 6000. Ver `docs/BENCHMARK_FASE6.md`.**
 
-    kernel-only (TCUPS)      MI210   RTX6000   A100    V100    L40
-    len=256,  smax=64,90%    0.387    0.339   0.446   0.539   1.477
-    len=1024, smax=256,90%   0.419    0.316   0.705   0.530   1.014
-    len=1024, smax=256,70%   0.469    0.431   0.725   0.676   1.079
-    verificación vs DP CPU   25/25    25/25   25/25   25/25   25/25
+    kernel-only (TCUPS)      MI210  RTX6000  A100   V100   L40    PRO6000
+    len=256,  smax=64,90%    0.387   0.339  0.446  0.539  1.477   1.629
+    len=1024, smax=256,90%   0.419   0.316  0.705  0.530  1.014   1.208
+    len=1024, smax=256,70%   0.469   0.431  0.725  0.676  1.079   1.314
+    verificación vs DP CPU   25/25   25/25  25/25  25/25  25/25   25/25
 
-Cinco arquitecturas (Volta, Turing, Ampere, Ada, gfx90a), una fuente, verificación
-idéntica, y el rango entero 0.32-1.48 TCUPS: ninguna se despeña. El orden sigue el
-ancho de banda de memoria (el V100 adelanta al RTX 6000 y al MI210), no la edad ni el
-vendor. Esto mide silicio, no el costo de la capa de portabilidad — aislar eso
-exigiría el mismo silicio con ambos toolchains, imposible aquí. Seguimos ~1 orden por
-debajo de Accelign (9-16 TCUPS); esperado, el criterio es portabilidad, no récord.
+Seis arquitecturas (Volta, Turing, Ampere, Ada, Blackwell, gfx90a), una fuente,
+verificación idéntica, rango 0.32-1.63 TCUPS: ninguna se despeña. El orden sigue el
+ancho de banda de memoria, no la edad ni el vendor (el V100 adelanta al RTX 6000 y al
+MI210), pero el ancho de banda ordena la tabla sin explicarla sola. Esto mide silicio,
+no el costo de la capa de portabilidad.
 
-**PRO 6000:** CUDA 12.4 (el del repo) no soporta sm_120; CUDA 13.0 (que sí lo
-soporta) rompe la capa `nvidia_detail` de ROCm 6.4.3 con `cudaMemLocation`/`clockRate`.
-No hay CUDA 12.8+ en el sitio. Es una limitación del toolchain, no del kernel.
+**Comparación directa con Accelign, por fin en el MISMO hardware (RTX PRO 6000):**
+Accelign 9-16 TCUPS vs nosotros 1.21-1.63 → ~6-13x por debajo. Sin la salvedad de
+"otra GPU" que aplicaba antes. Esa es la línea base válida para medir optimización.
+
+**PRO 6000:** requirió nvcc **12.8** (`/kuhpc/sw/nvhpc/Linux_x86_64/25.3/cuda/12.8`),
+la única versión que conoce sm_120 y sigue compilando la capa `nvidia_detail`. Un
+"no hay CUDA 12.8+ en el sitio" que había escrito antes era **falso**: salió de mirar
+solo `cuda-toolkit/` y los dos dirs nvhpc por defecto, sin recorrer las instalaciones
+versionadas. Corregido en el doc (§8) y en el skill.
 
 Tres errores de medición corregidos en el proceso, todos del mismo tipo (un número
 que parece resultado sobre una medición que no mide lo que dice): un TCUPS calculado
