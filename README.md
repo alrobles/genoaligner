@@ -2,7 +2,10 @@
 
 Hardware-agnostic (CUDA + ROCm) sequence alignment library.
 
-**Status:** development (private). Phase 0 feasibility verified; design decision pending.
+**Status:** development (private). Phases 1-5 complete: WFA score and traceback
+(CIGAR) verified at 100% on CPU, MI210 (hipcc) and RTX 6000 (nvcc) from one
+source. Phase 6 (benchmark) measured on MI210 and RTX 6000, verified against the
+CPU reference — see [docs/BENCHMARK_FASE6.md](docs/BENCHMARK_FASE6.md).
 
 ## Why this exists
 

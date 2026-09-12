@@ -16,13 +16,13 @@ PRO 6000) ni con MMseqs2-GPU (~102 TCUPS en 8x L40S). Estamos 1-2 órdenes por
 debajo. El objetivo del proyecto es portabilidad, no récord de TCUPS, y esta fase
 mide lo primero sin disfrazarlo de lo segundo.
 
-## 1. Resultados (job 29210657, MI210, gfx90a)
+## 1. Resultados (job 29210657 MI210, 29210658 RTX 6000)
 
 `kernel-only` = celdas de los pares RESUELTOS / tiempo del kernel.
 `end-to-end` = lo que ve un usuario, mismo proceso, sin el warm-up de contexto.
 Ambos usan 1 TCUPS = 1e12 celdas/s.
 
-    régimen                              resol.  kernel-only  end-to-end  kernel% de e2e
+    régimen                            resol.  kernel-only  end-to-end  kernel% de e2e
     len=256,  smax=64,  8000 pares, 90%   8000/8000   0.387 TCUPS  0.019 TCUPS   5.0%
     len=1024, smax=256, 2000 pares, 90%   2000/2000   0.418 TCUPS  0.086 TCUPS  20.5%
     len=1024, smax=256, 2000 pares, 70%   2000/2000   0.469 TCUPS  0.078 TCUPS  16.7%
@@ -31,6 +31,35 @@ Ambos usan 1 TCUPS = 1e12 celdas/s.
 Verificación: en cada régimen resuelto, los primeros 25 pares coinciden con el DP
 de CPU O(nm) — 25/25 en los tres. En el régimen abandonado se compararon 3/3 (los
 pares resueltos disponibles).
+
+### 1a. Los dos backends (H6 del masterplan: ¿la abstracción cuesta rendimiento?)
+
+El MISMO `bench/tcus.cpp` bajo nvcc y bajo hipcc, mismos regímenes (jobs 29210657
+y 29210658). Esta es la medición que convierte H6 de aserción en dato:
+
+    régimen                            MI210 (hipcc)   RTX 6000 (nvcc)   diff
+    len=256,  smax=64,  90%              0.387            0.339          -12%
+    len=1024, smax=256, 90%              0.418            0.334          -20%
+    len=1024, smax=256, 70%              0.469            0.431           -8%
+    verificación vs DP de CPU            25/25            25/25
+
+**Lectura:** los dos backends quedan dentro del ~20% entre sí. Es la diferencia
+esperada entre un MI210 y un RTX 6000 (silicio y compiladores distintos), no una
+penalización de la capa de portabilidad: la fuente es la misma y el número no
+colapsa en ningún lado. "Una fuente, dos backends, rendimiento comparable" queda
+medido — con la salvedad de que son GPUs distintas, así que esto NO es un
+aislamiento del costo de la capa. Aislarlo requeriría el mismo silicio con ambos
+toolchains, que no está disponible.
+
+Comparación con la literatura, en el hardware donde SÍ corren (no medido aquí):
+
+    Accelign ......... 9-16 TCUPS en RTX PRO 6000     -> ~20-40x por encima
+    MMseqs2-GPU ..... ~102 TCUPS en 8x L40S           -> ~250x por encima
+
+Estamos 1-2 órdenes por debajo y eso es esperado: el criterio del proyecto es
+portabilidad, no récord de TCUPS. Un kernel optimizado (vectorización de la
+extensión, layout de memoria, occupancy) es trabajo de una fase posterior.
+
 
 ## 2. El reparto de fases cambia la conclusión
 
@@ -107,30 +136,41 @@ lanzamiento del sitio validado, no reconstruirla.
 ## 6. Manifiesto de replicabilidad
 
     repo      alrobles/genoaligner-devel (privado)
-    commit    ef55f44
-    job       29210657   (MI210)
-    comando   sbatch scripts/h6_bench.sbatch
+    commit    1c8b71a
+    jobs      29210657 (MI210), 29210658 (RTX 6000)
+    comando   sbatch scripts/h6_bench.sbatch        # MI210, hipcc
+              sbatch scripts/h6_bench_cuda.sbatch   # RTX 6000, nvcc
 
     herramienta   bench/tcus.cpp
-    build         /kuhpc/sw/rocm/6.4.3/bin/hipcc -O2 -std=c++17 -I. \
+    build ROCm    /kuhpc/sw/rocm/6.4.3/bin/hipcc -O2 -std=c++17 -I. \
                   -DGENOALIGNER_BENCH_BACKEND='"rocm"' -o tcus bench/tcus.cpp
-    output        /beegfs/a474r867/genoaligner/bench/h6_rocm_<jobid>.txt
+    build CUDA    nvcc -w -D__HIP_PLATFORM_NVIDIA__ -std=c++17 \
+                  -gencode arch=compute_75,code=sm_75 \
+                  -I <rocm>/include -I <cuda>/include \
+                  -I <cuda>/targets/x86_64-linux/include -I . -lcuda \
+                  -x cu -o tcus_cuda bench/tcus.cpp
+    output        /beegfs/a474r867/genoaligner/bench/h6_{rocm,cuda}_<jobid>.txt
 
     toolchain     ROCm 6.4.3, hipcc 6.4.43484, AMD clang 19
-    device        AMD Instinct MI210, gfx90a:sramecc+:xnack-
+    device 1      AMD Instinct MI210, gfx90a:sramecc+:xnack-
+    toolchain     nvcc 12.4.131 (nvhpc 2024)
+    device 2      Quadro RTX 6000, sm_75
 
-El job reconstruye el binario desde el fuente versionado antes de correr, así que
-el artefacto medido es el commit, no un binario suelto. Los números se escriben a
-`/beegfs/.../bench/`, durables y con job id en el nombre.
+Ambos jobs reconstruyen el binario desde el fuente versionado antes de correr, así
+que el artefacto medido es el commit, no un binario suelto. Los números se escriben
+a `/beegfs/.../bench/`, durables y con job id en el nombre.
 
 ## 7. Pendiente (no medido — no reportar como hecho)
 
-- **CUDA.** Ni q6000, ni A100, ni PRO 6000. La aserción "la abstracción no cuesta
-  rendimiento" (H6 del masterplan) necesita el mismo banco en nvcc.
-- **Generación de casos fuera del cronómetro.** Hoy el 48% del end-to-end es
-  generar los pares; el banco debe pregenerarlos para medir lo que al usuario le
-  importa.
+- **A100 y PRO 6000.** El masterplan los lista; solo se midieron MI210 y RTX 6000.
+  Ambos nodos existen en el cluster (verificado con `scontrol`), el job solo cambia
+  el `--gres` y el `-gencode` (a100 = sm_80, pro6000 = sm_120).
+- **Generación de casos fuera del cronómetro.** Hoy ~50% del end-to-end es generar
+  los pares en host; el banco debe pregenerarlos para medir lo que al usuario le
+  importa. Es un artefacto del banco, no del producto.
 - **`smax` > 511** no es alcanzable con este mapeo de bloque.
-- **Sin comparación directa con Accelign/WFA-GPU en el mismo hardware.** No corren
-  en MI210, así que la comparación es contra sus números publicados en otra GPU, y
-  así se declara.
+- **Optimización.** 0.4 TCUPS es un kernel correcto y portable, no uno rápido. Las
+  palancas (extensión vectorizada, layout, occupancy) no se han tocado.
+- **Comparación directa con Accelign/WFA-GPU en el mismo hardware.** No corren en
+  MI210, así que la comparación es contra números publicados en otra GPU.
+

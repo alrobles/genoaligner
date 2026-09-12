@@ -6,7 +6,8 @@
 > **Complementa:** `docs/MASTERPLAN.md` (v1.0). No lo reemplaza.
 > **Estado:** Fases 1-5 COMPLETAS. WFA score y traceback (CIGAR) al 100% en CPU y
 > en ambos backends (MI210/hipcc y RTX 6000/nvcc), con gate externo (edlib) sobre
-> la salida de GPU. Próxima: Fase 6 (benchmark honesto).
+> la salida de GPU. Fase 6 (benchmark) medida en MI210 y RTX 6000, verificada
+> contra el DP de CPU. Próxima: A100/PRO 6000 y optimización del kernel.
 
 ---
 
@@ -433,6 +434,7 @@ por bloque.
     R5  capa NVIDIA         HECHO — 100% CUDA, job 29199289
     R6  Fase 3 externa      HECHO — 100% vs 3 oráculos, job 29201335
     R7  Fase 4 traceback    HECHO — CPU + ambos backends; gate externo en GPU
+    R8  Fase 6 benchmark    PARCIAL — MI210 + RTX 6000, verificados (0.34-0.47 TCUPS)
 
 ### R7 — Fase 4: reconstrucción de CIGAR ✅ CERRADA
 

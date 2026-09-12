@@ -378,7 +378,7 @@ hipcc), `scripts/build_rocm.sh`, `scripts/f5_portability{,_cuda}.sbatch` y
 `tests/parity/validate_fase5.sh` (validador sin GPU que además comprueba que la
 capa RECHAZA un compilador equivocado).
 
-### Fase 6 — Benchmark honesto (1 semana)
+### Fase 6 — Benchmark honesto (1 semana) ⏳ PARCIAL
 
 - TCUPS en MI210, q6000, A100, pro6000.
 - Speedup vs referencia CPU (SeqAn).
@@ -386,6 +386,26 @@ capa RECHAZA un compilador equivocado).
   que no corren en MI210).
 
 **Criterio de fusión:** números publicables + manifiesto de replicabilidad.
+
+**Resultado (2026-09-11): MI210 y RTX 6000 medidos y verificados; A100 y PRO 6000
+pendientes. Ver `docs/BENCHMARK_FASE6.md`.**
+
+    kernel-only (TCUPS)    MI210/hipcc    RTX 6000/nvcc
+    len=256,  smax=64,90%     0.387           0.339
+    len=1024, smax=256,90%    0.418           0.334
+    len=1024, smax=256,70%    0.469           0.431
+    verificación vs DP CPU    25/25           25/25
+
+Los dos backends quedan dentro del ~20%, que es la medición de H6 ("la abstracción
+no cuesta rendimiento"). Estamos 1-2 órdenes por debajo de Accelign (9-16 TCUPS) y
+MMseqs2-GPU (~102 TCUPS) — esperado, el criterio es portabilidad, no récord.
+
+Dos errores de medición corregidos en el proceso, ambos del mismo tipo (un número
+que parece resultado sobre una medición que no mide lo que dice): un TCUPS
+calculado sobre pares que el kernel abandonó, y un "memset de 475 ms" que era el
+bring-up del contexto HIP. La herramienta ahora se niega a reportar ambos casos
+(exit codes 5 y 6). `smax` está acotado a 511 por el mapeo de bloque del kernel.
+
 
 ### Fase 7 — Smith-Waterman (2 semanas, segundo método)
 
