@@ -211,8 +211,17 @@ install(FILES include/genoaligner/io/fasta.hpp DESTINATION include/genoaligner/i
 
 if(GENOALIGNER_BUILD_TESTS)
     enable_testing()
+    # These two need a GPU. On a host without one they exit 77 (the conventional
+    # "skipped" code) rather than failing, because "no accelerator here" is not a
+    # defect in the software. Without these properties a CPU-only CI runner reports
+    # a green build as broken.
     add_test(NAME probe_runs COMMAND genoaligner_probe)
+    set_tests_properties(probe_runs PROPERTIES SKIP_RETURN_CODE 77)
+
     add_test(NAME api_runs   COMMAND genoaligner_api_test)
+    set_tests_properties(api_runs PROPERTIES SKIP_RETURN_CODE 77)
+
+    # Pure host code: must pass everywhere, so no skip code.
     add_test(NAME fasta_runs COMMAND genoaligner_fasta_test)
 endif()
 

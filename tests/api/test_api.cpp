@@ -67,13 +67,25 @@ int main()
     printf("  device  : %s\n", device_name());
     printf("  available : %s\n\n", device_available() ? "yes" : "no");
 
-#ifndef GENOALIGNER_HIP_SHIM
-    const bool gpu = true;
-#else
-    const bool gpu = false;
+    // "Is this a GPU build" is a COMPILE-TIME question; "can I score here" is a
+    // RUNTIME one. The first version conflated them: a hipcc-built binary run on a
+    // node with no device (the login node, or a CI runner) set gpu = true and then
+    // failed 10 correctness checks that could not possibly have run -- reporting a
+    // broken library when the truth was "no accelerator present". Both conditions
+    // must hold for the correctness checks to be meaningful.
+#ifdef GENOALIGNER_HIP_SHIM
+    const bool gpu_build = false;
     printf("  NOTE: CPU-shim build. This path verifies API SHAPE only -- the shim\n");
     printf("        cannot score through the kernel. Correctness is the GPU path.\n\n");
+#else
+    const bool gpu_build = true;
 #endif
+    const bool gpu = gpu_build && device_available();
+    if (gpu_build && !gpu) {
+        printf("  NOTE: GPU build, but no device is visible here. Correctness checks\n");
+        printf("        are SKIPPED (they would fail for the wrong reason). Run on a\n");
+        printf("        node with a GPU to verify scores and CIGARs.\n\n");
+    }
 
     run_documented_example();
 
@@ -255,11 +267,16 @@ int main()
 
     printf("\n");
     if (g_fail == 0) {
-#ifndef GENOALIGNER_HIP_SHIM
-        printf("RESULT: PASS -- API verified on the GPU path against the CPU DP.\n");
-#else
+        if (gpu) {
+            printf("RESULT: PASS -- API verified on the GPU path against the CPU DP.\n");
+            return 0;
+        }
+        if (gpu_build) {
+            printf("RESULT: PASS (shape only) -- GPU build, no device visible here; "
+                   "correctness NOT verified.\n");
+            return 77;   // skipped: ctest treats 77 as skipped, not failed
+        }
         printf("RESULT: PASS (shape only) -- shim path; correctness requires the GPU build.\n");
-#endif
         return 0;
     }
     printf("RESULT: FAIL (%d)\n", g_fail);

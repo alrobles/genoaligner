@@ -36,6 +36,19 @@ __global__ void vector_sub(const float* a, const float* b, float* c, int n) {
 
 int main() {
     int dev = 0;
+
+    // No device is not a failure of this software. The login node and CI runners
+    // have no GPU, and a probe that aborts there is indistinguishable from a broken
+    // build. Skip deliberately, with a non-zero-but-distinct exit so callers can
+    // tell "skipped" from "passed" instead of guessing.
+    {
+        int ndev = 0;
+        if (hipGetDeviceCount(&ndev) != hipSuccess || ndev == 0) {
+            printf("SKIP: no HIP device visible on this host (build OK, runtime not tested).\n");
+            return 77;   // 77 is the conventional "skipped" code
+        }
+    }
+
     HIP_CHECK(hipGetDevice(&dev));
 
     hipDeviceProp_t prop;
