@@ -38,13 +38,21 @@ ml load compiler/gcc/14.2 >/dev/null 2>&1
 ml load cmake/3.30.3 >/dev/null 2>&1
 ml load rocm/6.4.3 >/dev/null 2>&1
 BD=/beegfs/a474r867/binst_h8b5
+LOGD=/beegfs/a474r867/genoaligner/logs
+mkdir -p "$LOGD"
 rm -rf "$BD" "$GAINST"
 cmake -S . -B "$BD" -DCMAKE_CXX_COMPILER="$(command -v hipcc)" \
-      -DGENOALIGNER_BACKEND=rocm -DCMAKE_INSTALL_PREFIX="$GAINST" > /tmp/b5_cm.log 2>&1
+      -DGENOALIGNER_BACKEND=rocm -DCMAKE_INSTALL_PREFIX="$GAINST" > "$LOGD/b5_cm.log" 2>&1
 echo "cmake rc=$?"
-cmake --build "$BD" -j8 > /tmp/b5_bd.log 2>&1
-echo "build rc=$?"
-cmake --install "$BD" > /tmp/b5_in.log 2>&1
+cmake --build "$BD" -j8 > "$LOGD/b5_bd.log" 2>&1
+RC_BD=$?
+echo "build rc=$RC_BD"
+if [ "$RC_BD" -ne 0 ]; then
+    echo "--- build errors (tail) ---"
+    grep -iE "error|Error" "$LOGD/b5_bd.log" | head -15
+    echo "H8-B5: BUILD OF THE LIBRARY FAILED"; exit 1
+fi
+cmake --install "$BD" > "$LOGD/b5_in.log" 2>&1
 echo "install rc=$?"
 echo "HEAD: $(git rev-parse --short HEAD)"
 
