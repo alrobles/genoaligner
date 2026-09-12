@@ -50,7 +50,7 @@ run_pass() {
         echo "--- [${label}] build ${test_src} ---"
         # shellcheck disable=SC2086
         if ! "$CXX" $extra -std=c++17 \
-                -I"$SHIM_DIR" -I"$REPO_ROOT" \
+                -I"$SHIM_DIR" -I"$REPO_ROOT" -I"$REPO_ROOT/include" \
                 -o "$bin" "$src"; then
             echo "BUILD FAILED (${label}): $test_src"
             pass_fail=1
@@ -80,7 +80,7 @@ run_pass() {
     echo "--- [${label}] build wfa_parity (shim, trace-kernel) ---"
     # shellcheck disable=SC2086
     if ! "$CXX" $extra -std=c++17 -DGENOALIGNER_HIP_SHIM \
-            -I"$SHIM_DIR" -I"$REPO_ROOT" \
+            -I"$SHIM_DIR" -I"$REPO_ROOT" -I"$REPO_ROOT/include" \
             -o "$tbin" "$tsrc"; then
         echo "BUILD FAILED (${label}): wfa_parity.cpp (shim)"
         pass_fail=1
@@ -175,7 +175,7 @@ fi
 # smax). A gate that does not exercise the public surface cannot catch those.
 echo
 echo "--- [shim] build and run the public API test ---"
-if g++ -O2 -std=c++17 -DGENOALIGNER_HIP_SHIM -I"$SHIM_DIR" -I"$REPO_ROOT" \
+if g++ -O2 -std=c++17 -DGENOALIGNER_HIP_SHIM -I"$SHIM_DIR" -I"$REPO_ROOT" -I"$REPO_ROOT/include" \
        -o "$BUILD_DIR/test_api" \
        "$REPO_ROOT/tests/api/test_api.cpp" "$REPO_ROOT/src/api/api.cpp" 2>"$BUILD_DIR/api_build.log"; then
     if ! "$BUILD_DIR/test_api" | tee "$BUILD_DIR/api_test.out" | tail -20; then
@@ -196,7 +196,7 @@ fi
 
 echo
 echo "--- [host] build and run the FASTA reader test ---"
-if g++ -O2 -std=c++17 -I"$REPO_ROOT" -o "$BUILD_DIR/test_fasta" \
+if g++ -O2 -std=c++17 -I"$REPO_ROOT" -I"$REPO_ROOT/include" -o "$BUILD_DIR/test_fasta" \
        "$REPO_ROOT/tests/io/test_fasta.cpp" 2>"$BUILD_DIR/fasta_build.log"; then
     if ! "$BUILD_DIR/test_fasta" | tee "$BUILD_DIR/fasta_test.out" | tail -12; then
         echo
@@ -233,7 +233,7 @@ if [ -z "$HIPCC" ]; then
     echo "  Real-sequence correctness NOT verified here. Set HIPCC= to override."
 else
 echo "  hipcc: $HIPCC"
-if "$HIPCC" -O2 -std=c++17 -I"$REPO_ROOT" \
+if "$HIPCC" -O2 -std=c++17 -I"$REPO_ROOT" -I"$REPO_ROOT/include" \
        -o "$BUILD_DIR/test_real" \
        "$REPO_ROOT/tests/real/test_real_sequences.cpp" "$REPO_ROOT/src/api/api.cpp" \
        2>"$BUILD_DIR/real_build.log"; then
@@ -255,7 +255,7 @@ if "$HIPCC" -O2 -std=c++17 -I"$REPO_ROOT" \
         # --- above). Both need a device, so they live inside this branch.
         echo
         echo "--- [gpu] concurrency test (B3) ---"
-        if "$HIPCC" -O2 -std=c++17 -pthread -I"$REPO_ROOT" -o "$BUILD_DIR/test_conc" \
+        if "$HIPCC" -O2 -std=c++17 -pthread -I"$REPO_ROOT" -I"$REPO_ROOT/include" -o "$BUILD_DIR/test_conc" \
                "$REPO_ROOT/tests/concurrency/test_concurrency.cpp" \
                "$REPO_ROOT/src/api/api.cpp" 2>"$BUILD_DIR/conc_build.log"; then
             "$BUILD_DIR/test_conc" | tee "$BUILD_DIR/conc_test.out" | tail -8
@@ -269,7 +269,7 @@ if "$HIPCC" -O2 -std=c++17 -I"$REPO_ROOT" \
 
         echo
         echo "--- [gpu] batch smax semantics (B4) ---"
-        if "$HIPCC" -O2 -std=c++17 -I"$REPO_ROOT" -o "$BUILD_DIR/test_batch" \
+        if "$HIPCC" -O2 -std=c++17 -I"$REPO_ROOT" -I"$REPO_ROOT/include" -o "$BUILD_DIR/test_batch" \
                "$REPO_ROOT/tests/api/test_batch_semantics.cpp" \
                "$REPO_ROOT/src/api/api.cpp" 2>"$BUILD_DIR/batch_build.log"; then
             "$BUILD_DIR/test_batch" | tee "$BUILD_DIR/batch_test.out" | tail -8
