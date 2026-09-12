@@ -54,6 +54,7 @@
 #include <hip/hip_runtime.h>
 
 #include "include/genoaligner/backend/wfa_kernel.hip"
+#include "include/genoaligner/backend/wfa_score_flat.hip"
 #include "src/reference/edit_distance_cpu.hpp"
 
 using namespace genoaligner;
@@ -112,6 +113,7 @@ int main(int argc, char** argv)
     int    ident   = 90;
     int    verify  = 25;   // sample pairs scored against the CPU DP reference
     bool   time_gen = false;  // include host case generation in end-to-end?
+    bool   use_flat = false;  // run the fixed-block variant instead of the default
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -123,6 +125,12 @@ int main(int argc, char** argv)
         else if (a == "--reps")   reps    = next(reps);
         else if (a == "--verify") verify  = next(verify);
         else if (a == "--time-gen") time_gen = true;
+        else if (a == "--kernel" && i + 1 < argc) {
+            const std::string k = argv[++i];
+            if      (k == "flat") use_flat = true;
+            else if (k == "default") use_flat = false;
+            else { printf("FATAL: --kernel takes 'flat' or 'default', got '%s'\n", k.c_str()); return 2; }
+        }
         else if (a == "--seed")   seed    = (uint32_t)next((int)seed);
     }
 
@@ -251,20 +259,28 @@ int main(int argc, char** argv)
     hipDeviceSynchronize();
 
     // ---- phase 5: the kernel, timed in isolation --------------------------
-    // LAUNCH CONFIG MUST MATCH THE KERNEL'S OWN ASSUMPTIONS. The score kernel
-    // maps diagonal k = threadIdx.x - s, so the block must cover 2*smax+1
-    // diagonals; a smaller block silently misses diagonals. And it declares
-    // `extern __shared__ int smem[]` sized 2 wavefronts x (2*smax+3) ints --
-    // passing 0 here makes every read land on unallocated memory, so every pair
-    // returns -1 and the timing measures a faulting guard, not the algorithm.
-    // (Both numbers are copied from the parity harness, which is the launch site
-    // that was validated: tests/parity/wfa_parity.cpp, near line 429.)
+    // LAUNCH CONFIG MUST MATCH THE KERNEL'S OWN ASSUMPTIONS.
+    //
+    // default kernel: maps diagonal k = threadIdx.x - s, so blockDim must be
+    // 2*smax+1 (rounded up to a power of two) or it silently misses diagonals.
+    //
+    // flat kernel: blockDim is DELIBERATELY INDEPENDENT of smax (WFA_FLAT_BLOCK)
+    // and the wavefront is swept with an interior grid-stride loop. That is the
+    // whole point of the variant: at small real distance the old block was 76-97%
+    // idle and paid __syncthreads() over warps doing nothing.
+    //
+    // Both declare `extern __shared__ int smem[]` sized 2*(2*smax+3) ints; passing 0
+    // makes every read land on unallocated memory and the timing measures a faulting
+    // guard instead of the algorithm (that was Fase 6 job 29210654).
     const int need_diag = 2 * smax + 1;
     int block = 1;
     while (block < need_diag) block <<= 1;
     if (block > 1024) block = 1024;
+    if (use_flat) block = WFA_FLAT_BLOCK;
     const size_t shmem = (size_t)2 * (2 * smax + 3) * sizeof(int);
 
+    printf("  kernel  : %s\n", use_flat ? "flat (fixed block)" : "default (block=2*smax+1)");
+    if (use_flat) printf("  WFA_FLAT_BLOCK : %d\n", WFA_FLAT_BLOCK);
     printf("  launch  : block=%d threads, smem=%zu B (%.1f KB)\n",
            block, shmem, shmem / 1024.0);
 
@@ -272,8 +288,12 @@ int main(int argc, char** argv)
     // loading, and folding that into the average would understate throughput
     // by an amount that depends on how many reps you chose. That is a
     // measurement artefact, not a property of the kernel.
-    hipLaunchKernelGGL(wfa_score_kernel, dim3((unsigned)n_pairs), dim3(block), shmem,
-                       (hipStream_t)0, d_pairs, d_scores, smax);
+    if (use_flat)
+        hipLaunchKernelGGL(wfa_score_kernel_flat, dim3((unsigned)n_pairs), dim3(block), shmem,
+                           (hipStream_t)0, d_pairs, d_scores, smax);
+    else
+        hipLaunchKernelGGL(wfa_score_kernel, dim3((unsigned)n_pairs), dim3(block), shmem,
+                           (hipStream_t)0, d_pairs, d_scores, smax);
     hipError_t le = hipGetLastError();
     if (le != hipSuccess) {
         printf("FATAL: launch failed (%s)\n", hipGetErrorString(le));
@@ -286,8 +306,12 @@ int main(int argc, char** argv)
     hipEventCreate(&ev_stop);
     hipEventRecord(ev_start, (hipStream_t)0);
     for (int r = 0; r < reps; ++r) {
-        hipLaunchKernelGGL(wfa_score_kernel, dim3((unsigned)n_pairs), dim3(block),
-                           shmem, (hipStream_t)0, d_pairs, d_scores, smax);
+        if (use_flat)
+            hipLaunchKernelGGL(wfa_score_kernel_flat, dim3((unsigned)n_pairs), dim3(block),
+                               shmem, (hipStream_t)0, d_pairs, d_scores, smax);
+        else
+            hipLaunchKernelGGL(wfa_score_kernel, dim3((unsigned)n_pairs), dim3(block),
+                               shmem, (hipStream_t)0, d_pairs, d_scores, smax);
     }
     hipEventRecord(ev_stop, (hipStream_t)0);
     hipEventSynchronize(ev_stop);
