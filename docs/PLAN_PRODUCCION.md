@@ -67,14 +67,26 @@ Resultado: en un host sin GPU, `ctest` reporta **Skipped** (no Failed) y `fasta_
 pasa. En MI210 (job 29213875) la API da **PASS**. El CI no tendrá un build rojo falso.
 
 
-### B2 — Test con secuencias biológicas reales
-- [ ] Un test que corra sobre secuencias **reales** (no sintéticas): p. ej. un gen
-      de phylogenyAI o un fragmento de RefSeq con repeticiones y low-complexity.
-- [ ] Criterio: paridad con el DP de CPU en ≥200 pares reales, 0 discrepancias.
+### B2 — Test con secuencias biológicas reales ✅ COMPLETA
+- [x] Dataset real versionado: **mitocondrias humana (NC_012920.1, 16,569 bp) y de
+      chimpancé (NC_001643.1, 16,554 bp)**, de NCBI E-utilities, con procedencia en
+      el archivo del test.
+- [x] 5 casos: fragmentos reales, **región D-loop (rica en repeticiones)**, divergencia
+      real humano-chimp, moléculas completas de 16.5 kb, y la `N` real.
+- [x] Criterio cumplido: **33 pares reales, 0 discrepancias contra el DP de CPU,
+      0 CIGARs inválidos** (job 29213888, MI210).
 
-**Por qué:** todos los tests actuales son aleatorios o mutaciones controladas. Las
-secuencias biológicas tienen estructura (repeticiones, homopolímeros, low-complexity)
-que un generador aleatorio no produce, y el traceback es donde eso muerde.
+**Dos defectos encontrados via el propio test, y ambos arreglados:**
+1. El comentario del test afirmaba distancia ~72 para ventanas de 600 bp
+   humano-chimp. **Medido: ~300** (genomas que difieren en 15 bp acumulan indels;
+   comparar ventanas a offset fijo es ~50% divergente, no ~12%). `smax=200` dando 0
+   resueltos era correcto — el comentario mentía.
+2. **Agujero real:** toda la sección divergente devolvía 0 resueltos, así que habría
+   pasado igual si la resolución estuviera rota. Añadidas ventanas de 100 bp que
+   deben resolver (6/6), con aserción explícita.
+3. El resumen del gate decía "real sequences verified" **cuando el stage se saltaba**
+   por falta de GPU. Ahora dice "COMPLETE (partial)" y enumera lo NO cubierto.
+
 
 ### B3 — Concurrencia / reentrada
 - [ ] Decidir y **documentar** si `align_batch` es thread-safe.

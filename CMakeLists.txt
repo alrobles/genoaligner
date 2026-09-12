@@ -223,6 +223,16 @@ if(GENOALIGNER_BUILD_TESTS)
 
     # Pure host code: must pass everywhere, so no skip code.
     add_test(NAME fasta_runs COMMAND genoaligner_fasta_test)
+
+    # Real biological sequences (tests/data/mtdna_*.fa). Needs a GPU; exits 77 on a
+    # device-less host, so it is reported as skipped rather than failed.
+    add_executable(genoaligner_real_test tests/real/test_real_sequences.cpp)
+    target_link_libraries(genoaligner_real_test PRIVATE genoaligner)
+    genoaligner_configure_hip(genoaligner_real_test)
+    # Run from the repository root: the test reads tests/data/ by relative path.
+    add_test(NAME real_runs COMMAND genoaligner_real_test
+             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(real_runs PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 
 # --- Summary -----------------------------------------------------------

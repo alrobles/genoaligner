@@ -213,5 +213,59 @@ else
     exit 1
 fi
 
+# --- Stage 6: REAL biological sequences -------------------------------------
+# Stage 5 exercises the API. This stage changes the INPUT: real mtDNA instead of
+# generated bases, because repeats, low-complexity and structured regions are where
+# traceback implementations break, and a generator does not produce them.
+#
+# Needs a GPU, so it is skipped (77) on a device-less host -- "cannot run here" is
+# not "is broken". When it does run, the same rule as everywhere: no PASS verdict
+# means failure.
 echo
-echo "=== CPU GATE COMPLETE — score, memory, traceback, public API and FASTA verified ==="
+echo "--- [gpu] build and run the real-sequence test ---"
+# Find a HIP compiler without hardcoding this cluster's path: the gate must remain
+# runnable elsewhere (that is the whole point of the portability claim).
+HIPCC="${HIPCC:-$(command -v hipcc || true)}"
+[ -z "$HIPCC" ] && [ -x /kuhpc/sw/rocm/6.4.3/bin/hipcc ] && HIPCC=/kuhpc/sw/rocm/6.4.3/bin/hipcc
+[ -z "$HIPCC" ] && [ -x /opt/rocm/bin/hipcc ] && HIPCC=/opt/rocm/bin/hipcc
+if [ -z "$HIPCC" ]; then
+    echo "  (skipped: no hipcc on PATH and none at the usual locations)"
+    echo "  Real-sequence correctness NOT verified here. Set HIPCC= to override."
+else
+echo "  hipcc: $HIPCC"
+if "$HIPCC" -O2 -std=c++17 -I"$REPO_ROOT" \
+       -o "$BUILD_DIR/test_real" \
+       "$REPO_ROOT/tests/real/test_real_sequences.cpp" "$REPO_ROOT/src/api/api.cpp" \
+       2>"$BUILD_DIR/real_build.log"; then
+    "$BUILD_DIR/test_real" | tee "$BUILD_DIR/real_test.out" | tail -18
+    RC=${PIPESTATUS[0]}
+    if [ "$RC" -eq 77 ]; then
+        echo "  (skipped: no device visible — real-sequence correctness NOT verified here)"
+    elif [ "$RC" -ne 0 ]; then
+        echo
+        echo "=== CPU GATE FAILED (real sequences) — do not submit to the cluster ==="
+        exit 1
+    elif ! grep -q "RESULT: PASS" "$BUILD_DIR/real_test.out"; then
+        echo "  !!! real-sequence test produced no PASS verdict — treating as FAILURE."
+        exit 1
+    else
+        REAL_RAN=1
+    fi
+else
+    echo "  !!! real-sequence test failed to BUILD:"
+    sed -n '1,20p' "$BUILD_DIR/real_build.log"
+    exit 1
+fi
+fi
+
+echo
+# The summary must not claim what was skipped. A gate that ends with "verified" when
+# a stage did not run is the same class of lie this project keeps finding: a green
+# line that reads as coverage it does not have.
+if [ "${REAL_RAN:-0}" -eq 1 ]; then
+    echo "=== CPU GATE COMPLETE — score, memory, traceback, API, FASTA and real sequences verified ==="
+else
+    echo "=== CPU GATE COMPLETE (partial) — score, memory, traceback, API and FASTA verified."
+    echo "=== REAL-SEQUENCE STAGE DID NOT RUN on this host (no GPU/hipcc). ==="
+    echo "=== That stage is NOT covered by this run; run it on a GPU node. ==="
+fi
