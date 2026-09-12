@@ -250,6 +250,36 @@ if "$HIPCC" -O2 -std=c++17 -I"$REPO_ROOT" \
         exit 1
     else
         REAL_RAN=1
+
+        # --- Stage 7: concurrency and batch semantics (same compiler, already built
+        # --- above). Both need a device, so they live inside this branch.
+        echo
+        echo "--- [gpu] concurrency test (B3) ---"
+        if "$HIPCC" -O2 -std=c++17 -pthread -I"$REPO_ROOT" -o "$BUILD_DIR/test_conc" \
+               "$REPO_ROOT/tests/concurrency/test_concurrency.cpp" \
+               "$REPO_ROOT/src/api/api.cpp" 2>"$BUILD_DIR/conc_build.log"; then
+            "$BUILD_DIR/test_conc" | tee "$BUILD_DIR/conc_test.out" | tail -8
+            if [ "${PIPESTATUS[0]}" -ne 0 ] || ! grep -q "RESULT: PASS" "$BUILD_DIR/conc_test.out"; then
+                echo "  !!! concurrency test did not PASS — treating as FAILURE."
+                exit 1
+            fi
+        else
+            echo "  !!! concurrency test failed to BUILD:"; sed -n '1,15p' "$BUILD_DIR/conc_build.log"; exit 1
+        fi
+
+        echo
+        echo "--- [gpu] batch smax semantics (B4) ---"
+        if "$HIPCC" -O2 -std=c++17 -I"$REPO_ROOT" -o "$BUILD_DIR/test_batch" \
+               "$REPO_ROOT/tests/api/test_batch_semantics.cpp" \
+               "$REPO_ROOT/src/api/api.cpp" 2>"$BUILD_DIR/batch_build.log"; then
+            "$BUILD_DIR/test_batch" | tee "$BUILD_DIR/batch_test.out" | tail -8
+            if [ "${PIPESTATUS[0]}" -ne 0 ] || ! grep -q "RESULT: PASS" "$BUILD_DIR/batch_test.out"; then
+                echo "  !!! batch-semantics test did not PASS — treating as FAILURE."
+                exit 1
+            fi
+        else
+            echo "  !!! batch-semantics test failed to BUILD:"; sed -n '1,15p' "$BUILD_DIR/batch_build.log"; exit 1
+        fi
     fi
 else
     echo "  !!! real-sequence test failed to BUILD:"

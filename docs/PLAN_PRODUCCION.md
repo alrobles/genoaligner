@@ -88,22 +88,31 @@ pasa. En MI210 (job 29213875) la API da **PASS**. El CI no tendrá un build rojo
    por falta de GPU. Ahora dice "COMPLETE (partial)" y enumera lo NO cubierto.
 
 
-### B3 — Concurrencia / reentrada
-- [ ] Decidir y **documentar** si `align_batch` es thread-safe.
-- [ ] Si no lo es: decirlo en `api.hpp` (una línea basta, pero debe estar).
-- [ ] Si lo es: test con 2+ hilos llamando en paralelo.
+### B3 — Concurrencia / reentrada ✅ COMPLETA
+- [x] Contrato de thread-safety **medido, no afirmado**: 4 hilos, 48 pares reales,
+      todos correctos contra el DP de CPU (job 29226292, MI210).
+- [x] Defecto encontrado y arreglado: `device_name()` memoizaba en un
+      `static char buf[256]` con check-then-write **sin sincronización** — una
+      carrera de datos (benigna en efecto, pero "carrera benigna" no es una propiedad
+      en la que apoyarse). Ahora usa un static local de función, thread-safe por
+      garantía del lenguaje.
+- [x] `api.hpp` documenta las tres partes del contrato: **seguro** con entradas
+      disjuntas; **inseguro** compartir buffers que otro hilo muta (la API guarda
+      punteros, no copia — el mal uso más probable); **inseguro** depender del orden
+      de lanzamiento (todo va al stream por defecto).
 
-**Por qué:** estado global (`shim::smem_vec`, y el device en sí) hace que la
-respuesta no sea obvia. Un integrador necesita saberlo.
+### B4 — Semántica de batch ✅ COMPLETA
+- [x] Decidido y **razonado**: el batch usa el **mínimo** de los smax, nunca el
+      máximo. Un smax por petición es un límite que puso el llamador; dar más en
+      silencio resolvería pares que esperaba abandonados. El mínimo solo puede
+      servir de menos, y eso es visible (`resolved_count`), nunca incorrecto.
+- [x] Documentado en `api.hpp` como contrato, con su coste: **una petición estrecha
+      rebaja el límite de todo el batch**; agrupar por smax es la forma soportada.
+- [x] Pinneado con un test que distingue las dos semánticas: peticiones con smax=200
+      (d=20) y smax=8 mezcladas dan **0 resueltos** (mínimo); la de 200 sola resuelve
+      (1); agrupando por bound resuelven ambas (2). Un cambio a máximo rompería el
+      test.
 
-### B4 — Semántica de batch documentada y probada
-- [ ] Hoy el batch toma el **mínimo `smax`** de todas las peticiones y lo aplica a
-      todas. Está comentado en el código pero **no en la cabecera pública**.
-- [ ] Decidir: ¿mínimo, o agrupar por smax? Documentar en `api.hpp`.
-- [ ] Test que verifique el comportamiento elegido.
-
-**Por qué:** un usuario que pase peticiones con smax distintos debe poder predecir
-qué obtiene. Ahora mismo obtiene el mínimo, silenciosamente.
 
 ### B5 — README de usuario
 - [ ] Sección de instalación (CMake, ya verificado).

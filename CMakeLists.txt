@@ -233,6 +233,23 @@ if(GENOALIGNER_BUILD_TESTS)
     add_test(NAME real_runs COMMAND genoaligner_real_test
              WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
     set_tests_properties(real_runs PROPERTIES SKIP_RETURN_CODE 77)
+
+    # Concurrency (B3) and batch semantics (B4). Both need a device.
+    add_executable(genoaligner_conc_test tests/concurrency/test_concurrency.cpp)
+    target_link_libraries(genoaligner_conc_test PRIVATE genoaligner)
+    find_package(Threads REQUIRED)
+    target_link_libraries(genoaligner_conc_test PRIVATE Threads::Threads)
+    genoaligner_configure_hip(genoaligner_conc_test)
+    add_test(NAME conc_runs COMMAND genoaligner_conc_test
+             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(conc_runs PROPERTIES SKIP_RETURN_CODE 77)
+
+    add_executable(genoaligner_batch_test tests/api/test_batch_semantics.cpp)
+    target_link_libraries(genoaligner_batch_test PRIVATE genoaligner)
+    genoaligner_configure_hip(genoaligner_batch_test)
+    add_test(NAME batch_runs COMMAND genoaligner_batch_test
+             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(batch_runs PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 
 # --- Summary -----------------------------------------------------------
