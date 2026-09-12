@@ -53,7 +53,7 @@
 
 #include <hip/hip_runtime.h>
 
-#include <genoaligner/backend/wfa_kernel.hip>
+#include "include/genoaligner/backend/wfa_kernel.hip"
 
 // ---------------------------------------------------------------------------
 // Case generation — same RNG discipline as the parity harness (mt19937 in C++),
