@@ -236,6 +236,13 @@ int main()
     // ---- input validation: bad input must be REFUSED, not degraded ------
     // smax > 511 makes the kernel skip diagonals silently, so the API must not
     // accept it: an out-of-range bound would produce wrong alignments, not an error.
+    //
+    // NOTE these only assert on the accept path. The REJECT paths are checked on
+    // every build (they return before touching a device), but "smax=511 is accepted"
+    // requires a working device: without one the call fails at allocation for an
+    // unrelated reason, and asserting acceptance there would report a device's
+    // absence as a validation bug. That is exactly the confusion this file was
+    // already fixed for once.
     printf("\n-- input validation --\n");
     {
         AlignRequest r;
@@ -246,11 +253,6 @@ int main()
         BatchResult b1 = align_batch({r});
         check(b1.status == BatchResult::Status::invalid_argument, "smax=512 refused");
         printf("  smax=512   : ok=%d error=%s\n", (int)b1.ok(), b1.error ? b1.error : "(null)");
-
-        r.smax = 511;
-        BatchResult b2 = align_batch({r});
-        check(b2.ok(), "smax=511 accepted (the documented maximum)");
-        printf("  smax=511   : ok=%d\n", (int)b2.ok());
 
         r.smax = -1;
         BatchResult b3 = align_batch({r});
@@ -263,6 +265,16 @@ int main()
         BatchResult b4 = align_batch({nullp});
         check(b4.status == BatchResult::Status::invalid_argument, "null pointer refused");
         printf("  null ptr   : ok=%d error=%s\n", (int)b4.ok(), b4.error ? b4.error : "(null)");
+
+        // The boundary itself needs a device to be meaningful.
+        r.smax = 511;
+        BatchResult b2 = align_batch({r});
+        if (gpu) {
+            check(b2.ok(), "smax=511 accepted (the documented maximum)");
+            printf("  smax=511   : ok=%d\n", (int)b2.ok());
+        } else {
+            printf("  smax=511   : (not asserted -- needs a device)\n");
+        }
     }
 
     printf("\n");
