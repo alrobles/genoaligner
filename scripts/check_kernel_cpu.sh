@@ -40,7 +40,9 @@ run_pass() {
     local extra="$1"; shift
     local pass_fail=0
 
-    for test_src in r1_check wfa_diag; do
+    # traceback_cpu is included: Fase 4's CIGAR reconstruction must clear the
+    # same gate as the score kernel before anything touches the GPU.
+    for test_src in r1_check wfa_diag traceback_cpu; do
         local src="$REPO_ROOT/tests/parity/${test_src}.cpp"
         local bin="$BUILD_DIR/${test_src}"
         echo "--- [${label}] build ${test_src} ---"
@@ -53,7 +55,13 @@ run_pass() {
             continue
         fi
         echo "--- [${label}] run ${test_src} ---"
-        if ! "$bin"; then
+        # The traceback binary writes its CIGARs for the external check below.
+        local run_args=""
+        if [ "$test_src" = "traceback_cpu" ]; then
+            run_args="--emit $BUILD_DIR/cigars.tsv"
+        fi
+        # shellcheck disable=SC2086
+        if ! "$bin" $run_args; then
             echo "RUN FAILED (${label}): $test_src"
             pass_fail=1
         fi
@@ -93,3 +101,35 @@ else
 fi
 
 echo "=== CPU GATE PASSED — algebra + memory indexing verified, cleared for MI210 ==="
+
+# --- stage 3: external CIGAR comparison (Fase 4) -----------------------------
+# The traceback's own checks (re-score, well-formedness) can both pass while the
+# CIGAR is wrong; three development versions did exactly that. This compares the
+# alignment score against edlib, an implementation we did not write.
+#
+# Optional dependency: if python3 or edlib is missing, say so loudly and do not
+# fail the gate -- the C++ checks above already passed, and a missing tool must
+# not be reported as a defect (the same rule as the sanitizer probe).
+echo
+echo "--- Fase 4: external CIGAR comparison (edlib) ---"
+CIGARS="$BUILD_DIR/cigars.tsv"
+
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "!!! python3 unavailable — external CIGAR check SKIPPED."
+    echo "!!! The CIGARs have NOT been compared against an independent implementation."
+elif [ ! -s "$CIGARS" ]; then
+    echo "!!! no CIGAR emit file at $CIGARS — external check SKIPPED."
+elif ! python3 -c "import edlib" >/dev/null 2>&1; then
+    echo "!!! edlib unavailable — external CIGAR check SKIPPED."
+    echo "!!! pip install -r tests/parity/requirements-oracle.txt"
+    echo "!!! The CIGARs have NOT been compared against an independent implementation."
+else
+    if ! python3 "$REPO_ROOT/tests/parity/check_cigar.py" "$CIGARS"; then
+        echo
+        echo "=== CPU GATE FAILED (external CIGAR) — do not submit to the cluster ==="
+        exit 1
+    fi
+fi
+
+echo
+echo "=== CPU GATE COMPLETE — score, memory and traceback verified ==="
