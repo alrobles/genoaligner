@@ -312,6 +312,23 @@ int main(int argc, char** argv)
     for (int i = 0; i < n_pairs; ++i) {
         if (scores[(size_t)i] < 0) ++abandoned; else ++resolved;
     }
+    // Solutions carry the score they terminated at, which IS the number of
+    // wavefronts the kernel actually walked (it returns at s == distance). The
+    // distribution of that value against smax says whether the run paid for the
+    // full sweep or stopped at the real distance -- the difference between the
+    // two is the single biggest cost in the kernel, so it must be visible.
+    int dmax = 0; double dsum = 0.0; int above_smax_half = 0;
+    for (int i = 0; i < n_pairs; ++i) {
+        const int d = scores[(size_t)i];
+        if (d < 0) continue;
+        if (d > dmax) dmax = d;
+        dsum += d;
+        if (d > smax / 2) ++above_smax_half;
+    }
+    const double dmean = resolved ? dsum / resolved : 0.0;
+    // wavefronts walked, averaged over ALL pairs: abandoned ones walk all smax.
+    const double wf_used = ((dsum + (double)abandoned * smax) / (double)n_pairs);
+    const double wf_offered = (double)smax;
     // Cells actually within the tool's regime: only pairs it resolved.
     double cells_resolved = 0.0;
     for (int i = 0; i < n_pairs; ++i) {
@@ -391,6 +408,14 @@ int main(int argc, char** argv)
            cells, n_pairs, len, len);
     printf("  resolved / abandoned    : %d / %d   (abandoned = true distance > smax=%d)\n",
            resolved, abandoned, smax);
+    printf("  distance (score) mean/max: %.1f / %d      <-- wavefronts actually walked\n",
+           dmean, dmax);
+    printf("  wavefronts walked/offered: %.1f / %d   (%.1f%% of the smax sweep)\n",
+           wf_used, smax, 100.0 * wf_used / wf_offered);
+    if (wf_used < 0.5 * wf_offered)
+        printf("  ^ ** the kernel walks the full sweep to smax but the real distance is\n"
+               "      far smaller: most of the barrier traffic is over empty wavefronts. **\n");
+    printf("  pairs with d > smax/2   : %d\n", above_smax_half);
     printf("  cells actually resolved : %.3e  (%.1f%% of the naive cell count)\n",
            cells_resolved, cells > 0.0 ? 100.0 * cells_resolved / cells : 0.0);
     if (abandoned == n_pairs) {

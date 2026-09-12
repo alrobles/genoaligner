@@ -51,7 +51,7 @@ probe() {
     local lab="$1"; shift
     echo
     echo "######## $lab"
-    "$BIN" "$@" --reps 30 2>&1 | grep -E 'pairs   :|KERNEL \(mean|kernel-only|resolved /|OK:|MISMATCH|>>>'
+    "$BIN" "$@" --reps 30 2>&1 | grep -E 'pairs   :|KERNEL \(mean|kernel-only|resolved /|distance \(score|wavefronts walked|\^ \*\*|pairs with d|OK:|MISMATCH|>>>'
 }
 
 echo
