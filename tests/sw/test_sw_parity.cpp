@@ -84,7 +84,7 @@ static void run_kernel(const std::string& text, const std::string& pattern,
     const int n = (int)pattern.size();
     // Size the host buffer to EXACTLY what a launch would request, so an undersized
     // request cannot hide inside a bigger allocation.
-    shim::smem_vec().assign((size_t)(n + 1) * 3, 0);
+    shim::smem_vec().assign((size_t)(n + 1) * 3 + 3 * genoaligner::SW_BLOCK, 0);
 
     blockDim  = dim3{1, 1, 1};
     threadIdx = uint3{0, 0, 0};

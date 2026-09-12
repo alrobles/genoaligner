@@ -106,11 +106,23 @@ __global__ void sw_score_kernel(const SWPairView* __restrict__ pairs,
         __syncthreads();
     }
 
-    // Reduce the per-thread maxima. Uses shared memory with a simple tree; the counts
-    // are small (blockDim) so this is negligible next to the DP itself.
-    __shared__ int r_best[SW_BLOCK];
-    __shared__ int r_i[SW_BLOCK];
-    __shared__ int r_j[SW_BLOCK];
+    // Reduce the per-thread maxima.
+    //
+    // WHY THIS USES THE DYNAMIC BUFFER AND NOT `__shared__ int r[SW_BLOCK]`
+    // ---------------------------------------------------------------------
+    // The first version declared static shared arrays here. In HIP/CUDA static and
+    // dynamic shared memory occupy the SAME space: statics get offsets from the start
+    // and the dynamic region begins AFTER them, so `smem[0]` is not the base of the
+    // dynamic allocation once statics exist -- and the H/E/F buffers written through
+    // `smem` collided with the reduction arrays. The GPU reported exactly that:
+    // "Memory access fault ... Reason: Unknown", core dumped.
+    //
+    // The reduction now reuses the tail of the dynamic buffer, whose size the launch
+    // already knows, so there is no second allocation to overlap with.
+    int* r_best = smem + 3 * (n + 1);
+    int* r_i    = r_best + SW_BLOCK;
+    int* r_j    = r_i + SW_BLOCK;
+
     r_best[threadIdx.x] = my_best;
     r_i[threadIdx.x]    = my_bi;
     r_j[threadIdx.x]    = my_bj;

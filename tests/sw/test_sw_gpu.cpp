@@ -114,7 +114,7 @@ int main()
     // Shared memory: the LARGEST pattern in the batch, so one launch config covers all.
     int max_n = 0;
     for (const auto& c : cases) if ((int)c.pattern.size() > max_n) max_n = (int)c.pattern.size();
-    const size_t smem = (size_t)(max_n + 1) * 3 * sizeof(int);
+    const size_t smem = ((size_t)(max_n + 1) * 3 + 3 * genoaligner::SW_BLOCK) * sizeof(int);
 
     hipLaunchKernelGGL(sw_score_kernel, dim3((unsigned)N), dim3(1), smem,
                        (hipStream_t)0, d_pairs, P, d_res);

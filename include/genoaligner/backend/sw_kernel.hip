@@ -83,9 +83,17 @@ static constexpr int SW_BLOCK = 128;
 // Score only (no traceback), one block per pair.
 //
 // Shared memory the caller must provide, in bytes:
-//     (pattern_len + 3) * 3 * sizeof(int)
-// for the previous H row and the E/F gap arrays. Sizing belongs in ONE place (the Fase 6
-// lesson: a launch that re-derives buffer sizes passes the wrong one).
+//     ((pattern_len + 1) * 3 + 3 * SW_BLOCK) * sizeof(int)
+//   = (n+1)*3  for the previous H row and the E/F gap arrays
+//   + 3*SW_BLOCK for the block-wide max reduction
+//
+// The reduction deliberately shares the dynamic allocation instead of declaring
+// `__shared__ int r[SW_BLOCK]`: in HIP/CUDA static and dynamic shared memory occupy the
+// same space, with the dynamic region starting AFTER the statics, so mixing them made
+// `smem[0]` no longer the dynamic base and the GPU faulted with a memory access error.
+//
+// Sizing belongs in ONE place (the Fase 6 lesson: a launch that re-derives buffer sizes
+// passes the wrong one).
 __global__ void sw_score_kernel(const SWPairView* __restrict__ pairs,
                                 SWParams           params,
                                 SWResult* __restrict__ out);
