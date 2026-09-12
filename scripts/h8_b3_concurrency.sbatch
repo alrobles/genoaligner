@@ -42,8 +42,22 @@ echo "BUILD_RC=$RC_B"
 
 /tmp/test_conc | tee "$OUT_DIR/h8b3_${SLURM_JOB_ID}.txt"
 RC=${PIPESTATUS[0]}
+if [ "$RC" -ne 0 ]; then
+    echo "=== H8-B3/B4 RESULT ==="; echo "H8-B3/B4: FAIL (concurrency rc=$RC)"; exit "$RC"
+fi
+
+echo
+echo "=== B4: batch smax semantics ==="
+/kuhpc/sw/rocm/6.4.3/bin/hipcc -O2 -std=c++17 -I. \
+    -o /tmp/test_batch tests/api/test_batch_semantics.cpp src/api/api.cpp
+RC_B4=$?
+echo "BUILD_RC=$RC_B4"
+[ "$RC_B4" -ne 0 ] && { echo "H8-B4: BUILD FAILED"; exit 1; }
+
+/tmp/test_batch | tee -a "$OUT_DIR/h8b3_${SLURM_JOB_ID}.txt"
+RC=${PIPESTATUS[0]}
 
 echo
 echo "=== H8-B3/B4 RESULT ==="
-if [ "$RC" -eq 0 ]; then echo "H8-B3/B4: PASS"; else echo "H8-B3/B4: FAIL (rc=$RC)"; fi
+if [ "$RC" -eq 0 ]; then echo "H8-B3/B4: PASS"; else echo "H8-B4: FAIL (rc=$RC)"; fi
 exit "$RC"
