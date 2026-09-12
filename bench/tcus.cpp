@@ -169,15 +169,29 @@ int main(int argc, char** argv)
 
     t0 = std::chrono::steady_clock::now();
     hipError_t st = hipMalloc(&d_pairs,  (size_t)n_pairs * sizeof(PairView));
+    if (st != hipSuccess) { printf("FATAL: hipMalloc(d_pairs) failed (%s)\n", hipGetErrorString(st)); return 3; }
+    const double alloc_pairs_ms = ms_since(t0);
+
+    t0 = std::chrono::steady_clock::now();
     if (st == hipSuccess) st = hipMalloc(&d_text,   text_store.size());
+    const double alloc_text_ms = ms_since(t0);
+    t0 = std::chrono::steady_clock::now();
     if (st == hipSuccess) st = hipMalloc(&d_pat,    pat_store.size());
+    const double alloc_pat_ms = ms_since(t0);
+    t0 = std::chrono::steady_clock::now();
     if (st == hipSuccess) st = hipMalloc(&d_scores, (size_t)n_pairs * sizeof(int));
+    const double alloc_sc_ms = ms_since(t0);
+    t0 = std::chrono::steady_clock::now();
     if (st == hipSuccess) st = hipMemset(d_scores, 0, (size_t)n_pairs * sizeof(int));
+    const double memset_ms = ms_since(t0);
     if (st != hipSuccess) {
         printf("FATAL: allocation failed (%s)\n", hipGetErrorString(st));
         return 3;
     }
-    const double alloc_ms = ms_since(t0);
+    const double alloc_ms = alloc_pairs_ms + alloc_text_ms + alloc_pat_ms
+                          + alloc_sc_ms + memset_ms;
+    printf("  alloc detail: pairs=%.1f text=%.1f pat=%.1f scores=%.1f memset=%.1f ms\n",
+           alloc_pairs_ms, alloc_text_ms, alloc_pat_ms, alloc_sc_ms, memset_ms);
 
     // ---- phase 4: host -> device transfer ---------------------------------
     t0 = std::chrono::steady_clock::now();
@@ -235,6 +249,24 @@ int main(int argc, char** argv)
     hipDeviceSynchronize();
     const double d2h_ms = ms_since(t0);
 
+    // ---- WHAT THE KERNEL ACTUALLY DID -------------------------------------
+    // Without this, a large TCUPS is meaningless: the kernel returns -1 for any
+    // pair whose true edit distance exceeds smax, WITHOUT visiting its
+    // wavefronts. A regime whose pairs are mostly above smax therefore reports a
+    // fast time for work it never did, and dividing full-DP cells by that time
+    // produces a number that is not a throughput at all.
+    int resolved = 0, abandoned = 0;
+    for (int i = 0; i < n_pairs; ++i) {
+        if (scores[(size_t)i] < 0) ++abandoned; else ++resolved;
+    }
+    // Cells actually within the tool's regime: only pairs it resolved.
+    double cells_resolved = 0.0;
+    for (int i = 0; i < n_pairs; ++i) {
+        if (scores[(size_t)i] < 0) continue;
+        cells_resolved += (double)views[(size_t)i].pattern_len
+                        * (double)views[(size_t)i].text_len;
+    }
+
     // ---- work accounting --------------------------------------------------
     // cells as full DP would see them: len * len per pair (pattern == text len here)
     double cells = 0.0;
@@ -242,10 +274,9 @@ int main(int argc, char** argv)
         cells += (double)pv.pattern_len * (double)pv.text_len;
 
     const double kern_s   = per_launch_ms / 1000.0;
-    const double tcus     = (kern_s > 0.0) ? cells / kern_s / 1e12 : 0.0;
     const double setup_ms = gen_ms + pack_ms + alloc_ms + h2d_ms;
     const double e2e_ms   = setup_ms + per_launch_ms + d2h_ms;
-    const double tcus_e2e = (e2e_ms > 0.0) ? cells / (e2e_ms / 1000.0) / 1e12 : 0.0;
+    const double tcus_e2e = (e2e_ms > 0.0) ? cells_resolved / (e2e_ms / 1000.0) / 1e12 : 0.0;
 
     printf("PHASE BREAKDOWN (ms, per full run)\n");
     printf("  generate cases (host)   : %10.3f  %5.1f%%\n", gen_ms, 100.0 * gen_ms / e2e_ms);
@@ -261,8 +292,24 @@ int main(int argc, char** argv)
     printf("THROUGHPUT (1 TCUPS = 1e12 cells/s)\n");
     printf("  cells per run           : %.3e  (%d pairs x %d x %d)\n",
            cells, n_pairs, len, len);
+    printf("  resolved / abandoned    : %d / %d   (abandoned = true distance > smax=%d)\n",
+           resolved, abandoned, smax);
+    printf("  cells actually resolved : %.3e  (%.1f%% of the naive cell count)\n",
+           cells_resolved, cells > 0.0 ? 100.0 * cells_resolved / cells : 0.0);
+    if (abandoned == n_pairs) {
+        printf("  *** EVERY PAIR WAS ABANDONED. The kernel returned early for all of\n");
+        printf("      them, so the timings below measure the guard, not the algorithm.\n");
+        printf("      Any TCUPS printed here is not a throughput. Lower the identity\n");
+        printf("      overlap or raise smax until pairs are actually resolved. ***\n");
+    } else if (abandoned > 0) {
+        printf("  NOTE: %d/%d pairs abandoned; the TCUPS below is computed over the\n",
+               abandoned, n_pairs);
+        printf("      CELLS OF RESOLVED PAIRS ONLY, so it is not diluted by pairs the\n");
+        printf("      kernel skipped. Kernel time still includes the skipped pairs'\n");
+        printf("      guard cost, which makes this a conservative estimate.\n");
+    }
     printf("  kernel-only ............ : %8.3f TCUPS   (comparable to Accelign/WFA-GPU)\n",
-           tcus);
+           (kern_s > 0.0) ? cells_resolved / kern_s / 1e12 : 0.0);
     printf("  end-to-end ............. : %8.3f TCUPS   (what a user sees; NOT comparable)\n",
            tcus_e2e);
     printf("  setup share of e2e ..... : %5.1f%%\n", 100.0 * setup_ms / e2e_ms);

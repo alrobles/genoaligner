@@ -62,10 +62,18 @@ run() {
 
 # ident 90% is the regime WFA is built for; 70% stresses a larger s and is the
 # case where the wavefront actually has to work rather than skim.
-run "len=256,  8000 pairs, ident=90%" --len 256  --pairs 8000 --ident 90  --reps 20
-run "len=1024, 2000 pairs, ident=90%" --len 1024 --pairs 2000 --ident 90  --reps 20
-run "len=1024, 2000 pairs, ident=70%" --len 1024 --pairs 2000 --ident 70  --reps 20
-run "len=4096, 500 pairs,  ident=90%" --len 4096 --pairs 500  --ident 90  --reps 15
+#
+# smax IS A REGIME PARAMETER, NOT A CONSTANT. At ident=90% over len=1024 the true
+# distance is ~100 substitutions, so smax=64 ABANDONS most pairs and the kernel
+# returns early -- measuring the guard, not the algorithm. The variants below set
+# smax above the expected distance so the pairs are actually resolved; the probe
+# now prints resolved/abandoned and refuses to present a TCUPS over abandoned-only
+# pairs.
+run "len=256,  smax=64,  8000 pairs, ident=90%"  --len 256  --pairs 8000 --ident 90 --smax 64  --reps 20
+run "len=1024, smax=64,  2000 pairs, ident=90%"  --len 1024 --pairs 2000 --ident 90 --smax 64  --reps 20
+run "len=1024, smax=256, 2000 pairs, ident=90%"  --len 1024 --pairs 2000 --ident 90 --smax 256 --reps 20
+run "len=1024, smax=256, 2000 pairs, ident=70%"  --len 1024 --pairs 2000 --ident 70 --smax 256 --reps 20
+run "len=4096, smax=1024, 500 pairs, ident=99%"  --len 4096 --pairs 500  --ident 99 --smax 1024 --reps 15
 
 echo
 echo "=== H6 RESULT ==="
