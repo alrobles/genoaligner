@@ -90,7 +90,7 @@ if [ -x /tmp/tcus_flat_128 ]; then
         echo
         echo "######## flat, len=1024 pairs=2000 ident=98 smax=$SM"
         /tmp/tcus_flat_128 --len 1024 --pairs 2000 --ident 98 --smax $SM --reps 30 --kernel flat \
-            | grep -E 'kernel  :|WFA_FLAT_BLOCK|launch  :|KERNEL \(mean|kernel-only|resolved /|OK:|>>>'
+            | grep -E 'kernel  :|WFA_FLAT_BLOCK|launch  :|occupancy|resident|KERNEL \(mean|kernel-only|resolved /|OK:|>>>'
     done
 else
     echo ">>> block=128 build missing"; rc_all=1

@@ -284,6 +284,33 @@ int main(int argc, char** argv)
     printf("  launch  : block=%d threads, smem=%zu B (%.1f KB)\n",
            block, shmem, shmem / 1024.0);
 
+    // ---- OCCUPANCY: the smem tier is per BLOCK, so it limits BLOCKS PER SM ----
+    // One block per pair means the number of resident pairs is set by how many
+    // blocks fit on an SM, and dynamic shared memory is a direct input to that.
+    // The flat kernel removed blockDim's dependence on smax, yet its time still
+    // scaled with smax -- so the remaining scaling has to be something else that
+    // grows with smax, and smem = 2*(2*smax+3) ints is the obvious candidate.
+    // Reported rather than reasoned about: hipOccupancyMaxActiveBlocksPerMultiprocessor
+    // answers it exactly, and the linear-scaling question hinges on the answer.
+    int blocks_per_sm = 0;
+    {
+        hipError_t os;
+        if (use_flat)
+            os = hipOccupancyMaxActiveBlocksPerMultiprocessor(
+                     &blocks_per_sm, (const void*)wfa_score_kernel_flat, block, shmem);
+        else
+            os = hipOccupancyMaxActiveBlocksPerMultiprocessor(
+                     &blocks_per_sm, (const void*)wfa_score_kernel, block, shmem);
+        if (os != hipSuccess) blocks_per_sm = -1;
+    }
+    int smem_per_sm = 0;
+    hipDeviceGetAttribute(&smem_per_sm, hipDeviceAttributeMaxSharedMemoryPerMultiprocessor, 0);
+    printf("  occupancy : %d blocks/SM  (smem/SM = %d B, smem/block = %zu B)\n",
+           blocks_per_sm, smem_per_sm, shmem);
+    if (blocks_per_sm > 0) {
+        printf("              -> %d pair(s) resident per SM\n", blocks_per_sm);
+    }
+
     // One untimed launch first: the first launch of a kernel pays module
     // loading, and folding that into the average would understate throughput
     // by an amount that depends on how many reps you chose. That is a
