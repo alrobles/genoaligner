@@ -387,20 +387,21 @@ capa RECHAZA un compilador equivocado).
 
 **Criterio de fusión:** números publicables + manifiesto de replicabilidad.
 
-**Resultado (2026-09-11): MI210, RTX 6000 y A100 medidos y verificados; PRO 6000 no
-construible con el toolchain del sitio (ver `docs/BENCHMARK_FASE6.md` §8).**
+**Resultado (2026-09-11): cinco GPUs de dos vendors medidas y verificadas; PRO 6000
+no construible con el toolchain del sitio (ver `docs/BENCHMARK_FASE6.md` §8).**
 
-    kernel-only (TCUPS)     MI210/hipcc   RTX6000/nvcc   A100/nvcc
-    len=256,  smax=64,90%      0.387         0.339         0.446
-    len=1024, smax=256,90%     0.419         0.316         0.705
-    len=1024, smax=256,70%     0.469         0.431         0.725
-    verificación vs DP CPU     25/25         25/25         25/25
+    kernel-only (TCUPS)      MI210   RTX6000   A100    V100    L40
+    len=256,  smax=64,90%    0.387    0.339   0.446   0.539   1.477
+    len=1024, smax=256,90%   0.419    0.316   0.705   0.530   1.014
+    len=1024, smax=256,70%   0.469    0.431   0.725   0.676   1.079
+    verificación vs DP CPU   25/25    25/25   25/25   25/25   25/25
 
-Tres GPUs, misma fuente, ninguna se despeña: sostiene "una fuente, varios backends,
-rendimiento del mismo orden". Pero son GPUs DISTINTAS, así que esto mide silicio, no
-el costo de la capa de portabilidad — aislar eso exigiría el mismo silicio con ambos
-toolchains, imposible aquí. Estamos 1-2 órdenes por debajo de Accelign (9-16 TCUPS) y
-MMseqs2-GPU (~102 TCUPS); esperado, el criterio es portabilidad, no récord.
+Cinco arquitecturas (Volta, Turing, Ampere, Ada, gfx90a), una fuente, verificación
+idéntica, y el rango entero 0.32-1.48 TCUPS: ninguna se despeña. El orden sigue el
+ancho de banda de memoria (el V100 adelanta al RTX 6000 y al MI210), no la edad ni el
+vendor. Esto mide silicio, no el costo de la capa de portabilidad — aislar eso
+exigiría el mismo silicio con ambos toolchains, imposible aquí. Seguimos ~1 orden por
+debajo de Accelign (9-16 TCUPS); esperado, el criterio es portabilidad, no récord.
 
 **PRO 6000:** CUDA 12.4 (el del repo) no soporta sm_120; CUDA 13.0 (que sí lo
 soporta) rompe la capa `nvidia_detail` de ROCm 6.4.3 con `cudaMemLocation`/`clockRate`.
