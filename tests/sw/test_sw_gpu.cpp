@@ -95,11 +95,23 @@ int main()
     const int N = (int)cases.size();
     std::vector<SWPairView> hv((size_t)N);
     std::vector<SWResult>   hr((size_t)N, SWResult{-1,-1,-1});
+
+    // POINTERS, NOT COPIES: SWPairView holds const char*. The struct must be built from
+    // DEVICE pointers, so the bytes go to the device first. This is the bug that
+    // faulted the first GPU run (see tests/sw/test_sw_dbg.cpp) and it is the same
+    // mistake the project already documented for WFA's PairView.
+    std::vector<char*> d_txt((size_t)N, nullptr), d_pat((size_t)N, nullptr);
     for (int i = 0; i < N; ++i) {
-        hv[(size_t)i].text = cases[(size_t)i].text.data();
-        hv[(size_t)i].text_len = (int)cases[(size_t)i].text.size();
-        hv[(size_t)i].pattern = cases[(size_t)i].pattern.data();
-        hv[(size_t)i].pattern_len = (int)cases[(size_t)i].pattern.size();
+        const std::string& t = cases[(size_t)i].text;
+        const std::string& q = cases[(size_t)i].pattern;
+        if (hipMalloc(&d_txt[(size_t)i], t.size() ? t.size() : 1) != hipSuccess ||
+            hipMalloc(&d_pat[(size_t)i], q.size() ? q.size() : 1) != hipSuccess) {
+            printf("  hipMalloc(chars) failed\n"); return 1;
+        }
+        hipMemcpy(d_txt[(size_t)i], t.data(), t.size(), hipMemcpyHostToDevice);
+        hipMemcpy(d_pat[(size_t)i], q.data(), q.size(), hipMemcpyHostToDevice);
+        hv[(size_t)i].text = d_txt[(size_t)i]; hv[(size_t)i].text_len = (int)t.size();
+        hv[(size_t)i].pattern = d_pat[(size_t)i]; hv[(size_t)i].pattern_len = (int)q.size();
     }
 
     SWPairView* d_pairs = nullptr;
@@ -138,6 +150,7 @@ int main()
         if (!ok) ++g_fail;
     }
 
+    for (int i = 0; i < N; ++i) { hipFree(d_txt[(size_t)i]); hipFree(d_pat[(size_t)i]); }
     hipFree(d_pairs); hipFree(d_res);
     printf("\n");
     if (g_fail == 0) {
