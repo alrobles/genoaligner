@@ -287,8 +287,18 @@ BatchResult align_batch(const std::vector<AlignRequest>& reqs)
         if (hipMemset(d_meta, 0, (size_t)N * 4 * sizeof(int)) != hipSuccess) return fail("hipMemset(d_meta)");
     }
 
-    hipMemcpy(d_pat, P.data(), P.size(), hipMemcpyHostToDevice);
-    hipMemcpy(d_tex, T.data(), T.size(), hipMemcpyHostToDevice);
+    hipError_t cpy;
+    cpy = hipMemcpy(d_pat, P.data(), P.size(), hipMemcpyHostToDevice);
+    if (cpy != hipSuccess) return fail("hipMemcpy(pattern)");
+    cpy = hipMemcpy(d_tex, T.data(), T.size(), hipMemcpyHostToDevice);
+    if (cpy != hipSuccess) return fail("hipMemcpy(text)");
+
+    // Drain any error latched by the setup above. Without this, a failure that
+    // happened BEFORE the launch is reported by the hipGetLastError() after it, and
+    // the error message blames the kernel for something it did not do. That is
+    // exactly what made "wfa_trace_kernel launch" appear on a call whose real
+    // problem was elsewhere.
+    (void)hipGetLastError();
 
     // Views carry DEVICE pointers -- built after the string copy, never memcpy'd
     // from host-built structs (that bug is documented in bench/tcus.cpp).
@@ -340,7 +350,17 @@ BatchResult align_batch(const std::vector<AlignRequest>& reqs)
                            (hipStream_t)0, d_pairs, d_scores, d_cg, d_meta, d_ws,
                            smax, wf_stride, wf_alloc_max, chunk_bytes, cigar_cap);
         hipError_t le = hipGetLastError();
-        if (le != hipSuccess) { hipFree(d_ws); return fail("wfa_trace_kernel launch"); }
+        if (le != hipSuccess) {
+            hipFree(d_ws);
+            // Report WHICH error, not just that there was one. The first version said
+            // "launch failed" for every cause and cost a debugging cycle.
+            std::fprintf(stderr,
+                         "[genoaligner] trace launch failed: %s (block=%u, smem=%d B, "
+                         "cigar_cap=%d, wf_alloc_max=%d, N=%u)\n",
+                         hipGetErrorString(le), 1u, chunk_bytes, cigar_cap, wf_alloc_max,
+                         (unsigned)N);
+            return fail(hipGetErrorString(le));
+        }
         hipDeviceSynchronize();
 
         std::vector<int> scores((size_t)N, -1), meta((size_t)N * 4, 0);
