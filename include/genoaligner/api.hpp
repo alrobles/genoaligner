@@ -99,6 +99,17 @@ struct BatchResult {
     std::vector<AlignResult> results;
     int resolved_count  = 0;
     int unresolved_count = 0;
+
+    // Failure is NOT the same as "unresolved", and the first version of this API
+    // conflated them: an allocation failure returned the same score = -1 that means
+    // "true distance exceeded smax", so a caller could not tell a broken run from a
+    // legitimate one. That is the failure mode this project spent a phase learning
+    // to make visible, so the API reports it explicitly.
+    enum class Status { ok, device_error };
+    Status status = Status::ok;
+    const char* error = nullptr;   // static string, non-null iff status != ok
+
+    bool ok() const { return status == Status::ok; }
 };
 BatchResult align_batch(const std::vector<AlignRequest>& reqs);
 

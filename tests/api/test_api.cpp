@@ -166,6 +166,61 @@ int main()
         check(b.resolved_count == resolved, "resolved_count matches the per-result flags");
     }
 
+    // ---- heterogeneous batch lengths: the case that broke cigar_cap ------
+    // The first version sized the CIGAR buffer from reqs[0] and applied it to the
+    // whole batch, so every pair longer than the first got a truncated (empty) CIGAR
+    // while its SCORE was correct. Scores right, CIGARs silently wrong is the most
+    // dangerous shape of bug this project has, so the case is pinned here.
+    printf("\n-- heterogeneous batch lengths (cigar_cap regression) --\n");
+    {
+        std::vector<AlignRequest> reqs;
+        std::vector<std::string> pats, texts;
+        const int lens[] = {8, 40, 120, 300, 55};
+        for (int L : lens) {
+            std::string t, p;
+            for (int i = 0; i < L; ++i) { t.push_back("ACGT"[i % 4]); p.push_back("ACGT"[i % 4]); }
+            p[L / 2] = (p[L / 2] == 'A') ? 'C' : 'A';   // exactly one substitution
+            pats.push_back(p); texts.push_back(t);
+        }
+        for (size_t i = 0; i < pats.size(); ++i) {
+            AlignRequest r;
+            r.pattern = pats[i].data(); r.pattern_len = (int)pats[i].size();
+            r.text    = texts[i].data(); r.text_len   = (int)texts[i].size();
+            r.smax    = 64;
+            reqs.push_back(r);
+        }
+        BatchResult b = align_batch(reqs);
+        check(b.ok(), "batch reported ok");
+        int bad = 0;
+        for (size_t i = 0; i < reqs.size(); ++i) {
+            const AlignResult& r = b.results[i];
+            if (!r.resolved) { ++bad; continue; }
+            if (r.score != 1) { ++bad; printf("  pair %zu: score=%d want 1\n", i, r.score); }
+            if (r.cigar.size() != (size_t)reqs[i].pattern_len) {
+                ++bad;
+                printf("  pair %zu: cigar len=%zu want %d\n", i, r.cigar.size(), reqs[i].pattern_len);
+            }
+            if (!r.rescore_ok || !r.wellformed_ok) { ++bad; printf("  pair %zu: validators failed\n", i); }
+        }
+        printf("  pairs=%zu bad=%d\n", reqs.size(), bad);
+        if (gpu) check(bad == 0, "heterogeneous batch: scores and CIGAR lengths all correct");
+        else     printf("  (shape only on the shim path: CIGARs are not produced here)\n");
+    }
+
+    // ---- status reporting: failure must not look like 'unresolved' -------
+    printf("\n-- status field --\n");
+    {
+        std::vector<AlignRequest> reqs(2);
+        for (auto& r : reqs) {
+            r.pattern = "AC"; r.pattern_len = 2;
+            r.text    = "AC"; r.text_len    = 2;
+            r.smax    = 8;
+        }
+        BatchResult b = align_batch(reqs);
+        check(b.ok() && b.error == nullptr, "success path leaves status ok and error null");
+        printf("  ok=%d error=%s\n", (int)b.ok(), b.error ? b.error : "(null)");
+    }
+
     printf("\n");
     if (g_fail == 0) {
 #ifndef GENOALIGNER_HIP_SHIM

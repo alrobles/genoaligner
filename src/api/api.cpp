@@ -204,7 +204,17 @@ BatchResult align_batch(const std::vector<AlignRequest>& reqs)
     int*      d_cg     = nullptr;
     int*      d_meta   = nullptr;
 
-    const int cigar_cap = (reqs[0].pattern_len + reqs[0].text_len + 2);
+    // CIGAR capacity must clear the WHOLE batch, not the first request. Sizing it
+    // from reqs[0] (the version that shipped) truncated every pair longer than the
+    // first one, and the truncation surfaced as an empty CIGAR -- which then failed
+    // validation for 190 of 200 pairs while the SCORES were perfect. A value derived
+    // from one element and applied to a collection is the same bug class this
+    // project keeps finding; here the test caught it on the first GPU run.
+    int cigar_cap = 1;
+    for (const auto& r : reqs) {
+        const int need = r.pattern_len + r.text_len + 2;
+        if (need > cigar_cap) cigar_cap = need;
+    }
     auto free_all = [&]() {
         if (d_pairs) hipFree(d_pairs);
         if (d_pat)   hipFree(d_pat);
@@ -213,15 +223,26 @@ BatchResult align_batch(const std::vector<AlignRequest>& reqs)
         if (d_cg)    hipFree(d_cg);
         if (d_meta)  hipFree(d_meta);
     };
+    // One place that turns a device failure into a REPORTED failure rather than a
+    // batch full of -1 that reads like a legitimate result.
+    auto fail = [&](const char* what) -> BatchResult {
+        free_all();
+        out.status = BatchResult::Status::device_error;
+        out.error  = what;
+        out.results.assign((size_t)N, AlignResult{});
+        out.resolved_count = 0;
+        out.unresolved_count = 0;
+        return out;
+    };
 
-    if (hipMalloc(&d_pairs, (size_t)N * sizeof(PairView)) != hipSuccess) { free_all(); return out; }
-    if (hipMalloc(&d_pat, P.size() ? P.size() : 1) != hipSuccess)        { free_all(); return out; }
-    if (hipMalloc(&d_tex, T.size() ? T.size() : 1) != hipSuccess)        { free_all(); return out; }
-    if (hipMalloc(&d_scores, (size_t)N * sizeof(int)) != hipSuccess)     { free_all(); return out; }
+    if (hipMalloc(&d_pairs, (size_t)N * sizeof(PairView)) != hipSuccess) return fail("hipMalloc(d_pairs)");
+    if (hipMalloc(&d_pat, P.size() ? P.size() : 1) != hipSuccess)        return fail("hipMalloc(d_pat)");
+    if (hipMalloc(&d_tex, T.size() ? T.size() : 1) != hipSuccess)        return fail("hipMalloc(d_tex)");
+    if (hipMalloc(&d_scores, (size_t)N * sizeof(int)) != hipSuccess)     return fail("hipMalloc(d_scores)");
     if (any_cigar) {
-        if (hipMalloc(&d_cg, (size_t)N * (size_t)cigar_cap * sizeof(int)) != hipSuccess) { free_all(); return out; }
-        if (hipMalloc(&d_meta, (size_t)N * 4 * sizeof(int)) != hipSuccess) { free_all(); return out; }
-        if (hipMemset(d_meta, 0, (size_t)N * 4 * sizeof(int)) != hipSuccess) { free_all(); return out; }
+        if (hipMalloc(&d_cg, (size_t)N * (size_t)cigar_cap * sizeof(int)) != hipSuccess) return fail("hipMalloc(d_cg)");
+        if (hipMalloc(&d_meta, (size_t)N * 4 * sizeof(int)) != hipSuccess) return fail("hipMalloc(d_meta)");
+        if (hipMemset(d_meta, 0, (size_t)N * 4 * sizeof(int)) != hipSuccess) return fail("hipMemset(d_meta)");
     }
 
     hipMemcpy(d_pat, P.data(), P.size(), hipMemcpyHostToDevice);
@@ -242,7 +263,7 @@ BatchResult align_batch(const std::vector<AlignRequest>& reqs)
         const int wf_alloc_max = (smax + 1) * wf_stride;
         int* d_ws = nullptr;
         if (hipMalloc(&d_ws, (size_t)wf_alloc_max * (size_t)N * sizeof(int)) != hipSuccess) {
-            free_all(); return out;
+            return fail("hipMalloc(d_ws)");
         }
         hipMemset(d_ws, 0, (size_t)wf_alloc_max * (size_t)N * sizeof(int));
 
@@ -251,7 +272,7 @@ BatchResult align_batch(const std::vector<AlignRequest>& reqs)
                            (hipStream_t)0, d_pairs, d_scores, d_cg, d_meta, d_ws,
                            smax, wf_stride, wf_alloc_max, (int)c.shmem, cigar_cap);
         hipError_t le = hipGetLastError();
-        if (le != hipSuccess) { hipFree(d_ws); free_all(); return out; }
+        if (le != hipSuccess) { hipFree(d_ws); return fail("wfa_trace_kernel launch"); }
         hipDeviceSynchronize();
 
         std::vector<int> scores((size_t)N, -1), meta((size_t)N * 4, 0);
@@ -287,7 +308,7 @@ BatchResult align_batch(const std::vector<AlignRequest>& reqs)
                            (hipStream_t)0, d_pairs, d_scores, smax);
 #endif
         hipError_t le = hipGetLastError();
-        if (le != hipSuccess) { free_all(); return out; }
+        if (le != hipSuccess) { return fail("wfa_score_kernel launch"); }
         hipDeviceSynchronize();
         std::vector<int> scores((size_t)N, -1);
         hipMemcpy(scores.data(), d_scores, (size_t)N * sizeof(int), hipMemcpyDeviceToHost);
