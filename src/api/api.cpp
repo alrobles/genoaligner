@@ -112,15 +112,20 @@ bool device_available()
 }
 const char* device_name()
 {
-    static char buf[256] = {0};
-    if (buf[0]) return buf;
-    hipDeviceProp_t p{};
-    if (hipGetDeviceProperties(&p, 0) != hipSuccess) {
-        std::snprintf(buf, sizeof(buf), "none");
-    } else {
-        std::snprintf(buf, sizeof(buf), "%s", p.name);
-    }
-    return buf;
+    // Thread-safe memoisation, because the first version was not: a bare
+    // `static char buf[256]` with `if (buf[0]) return buf;` is a check-then-write
+    // data race -- two threads can both see an empty buffer and both snprintf into
+    // it. The effect happened to be benign (both write the same string) but "benign
+    // race" is not a property to rely on, and a caller has no way to know.
+    //
+    // Function-local static initialisation in C++11+ is guaranteed thread-safe, so
+    // this fixes it with no lock and no ordering assumptions.
+    static const std::string name = [] {
+        hipDeviceProp_t p{};
+        if (hipGetDeviceProperties(&p, 0) != hipSuccess) return std::string("none");
+        return std::string(p.name);
+    }();
+    return name.c_str();
 }
 #endif
 

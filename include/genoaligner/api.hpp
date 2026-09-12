@@ -81,6 +81,29 @@ struct AlignRequest {
 };
 
 // ---------------------------------------------------------------------------
+// THREAD SAFETY — the measured contract
+// -------------------------------------
+// Verified by tests/concurrency/test_concurrency.cpp: concurrent align_batch()
+// calls on DISJOINT inputs return correct results (4 threads, 48 pairs, all checked
+// against the CPU DP). That is what was measured, and the limits are:
+//
+//   SAFE      concurrent calls with disjoint inputs, from different threads.
+//   UNSAFE    concurrent calls sharing a request buffer that another thread mutates.
+//             The API stores POINTERS (const char*), it does not copy them, so the
+//             caller must keep the input alive and unmodified until the call returns.
+//             This is the most likely way to misuse this API.
+//   UNSAFE    anything relying on launch ORDER. Kernels go to the default stream, so
+//             two concurrent calls are ordered arbitrarily with respect to each other.
+//             Correct results do not depend on order, but timing does -- do not read
+//             throughput numbers from concurrent calls.
+//
+// These are backed by the test above and by reading the implementation, not by
+// assumption. `device_name()` used to memoise through an unsynchronised
+// check-then-write on a static buffer; it now uses a thread-safe function-local
+// static, so calling it concurrently is fine.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // Single-pair entry point. Convenient; for bulk work use align_batch, which
 // amortises device setup across pairs.
 // ---------------------------------------------------------------------------
@@ -94,6 +117,26 @@ AlignResult align(const AlignRequest& req);
 // carry score = -1. Reporting that count is deliberate: a caller that only looks at
 // per-pair scores can miss that most of its input was abandoned, which is the
 // failure mode this project spent a phase learning to make visible.
+//
+// ONE smax FOR THE WHOLE BATCH, AND IT IS THE MINIMUM
+// ---------------------------------------------------
+// The kernel takes a single smax, so a batch cannot have per-request bounds. The
+// batch therefore uses the MINIMUM of the requests' smax values, and this is a
+// documented contract, not an implementation detail:
+//
+//   - Minimum, never maximum. A per-request smax is a limit the CALLER set. Silently
+//     granting more would resolve pairs the caller expected to be abandoned, which
+//     is a behaviour change they cannot see. Taking the minimum can only under-serve,
+//     which is visible (resolved_count drops) and never wrong.
+//   - The cost is real: ONE request with a small smax lowers the bound for every pair
+//     in the batch. If your batch mixes bounds, group by smax and make several calls
+//     -- that is the supported way to get different bounds.
+//   - If you want the widest bound, do not put a narrow request in the same batch.
+//
+// `smax` must be in [0, 511] (see kMaxSmax in the implementation); out-of-range
+// values on ANY request fail the whole batch with Status::invalid_argument rather
+// than being clamped, because clamping a bound silently skips diagonals in the
+// kernel and would return wrong alignments.
 // ---------------------------------------------------------------------------
 struct BatchResult {
     std::vector<AlignResult> results;
