@@ -46,6 +46,8 @@ static void check(bool ok, const char* what)
 
 // Align every (pattern, text) pair and compare against the CPU DP.
 // Returns the number of pairs compared.
+static int g_last_resolved = 0;   // resolved count from the last compare_all call
+
 static int compare_all(const std::vector<std::string>& pats,
                        const std::vector<std::string>& texts,
                        int smax, const char* label, int max_print = 4)
@@ -100,6 +102,7 @@ static int compare_all(const std::vector<std::string>& pats,
     printf("  %-34s pairs=%zu resolved=%d bad=%d empty_cigar=%d invalid_cigar=%d\n",
            label, reqs.size(), n_resolved, n_bad, n_empty, n_validator);
     g_ran = true;
+    g_last_resolved = n_resolved;
     check(n_bad == 0, label);
     check(n_empty == 0, "no empty CIGARs on resolved pairs");
     check(n_validator == 0, "all CIGARs pass re-score and well-formedness");
@@ -184,10 +187,18 @@ int main()
     }
 
     // ---- 3. REAL divergent homolog: human vs chimp mtDNA -----------------
-    printf("\n-- 3. human vs chimp mtDNA (real divergence, ~88%% identity) --\n");
+    printf("\n-- 3. human vs chimp mtDNA (real divergence) --\n");
     {
+        // MEASURED, not assumed: co-linear 600 bp windows of these two molecules have
+        // edit distance ~295-318 (the CPU DP gives ~300), i.e. roughly 50%, NOT the
+        // ~12% a naive "88% identity" estimate would suggest. The genomes differ in
+        // length by 15 bp and accumulate indels, so a fixed-offset window comparison
+        // is far more divergent than a proper alignment would be.
+        //
+        // This number is asserted below rather than described, because the first
+        // version of this test claimed ~72 and was simply wrong; a comment that is
+        // not checked is how a test ends up validating the wrong thing.
         std::vector<std::string> pats, texts;
-        // Co-linear windows; genome sizes differ by 15 bp, so no window aligns cleanly.
         const size_t wins[] = {500, 2000, 4000, 8000, 11000, 14000};
         for (size_t w : wins) {
             const std::string p = slice(hum, w, 600);
@@ -195,14 +206,29 @@ int main()
             if (p.size() < 600 || t.size() < 600) continue;
             pats.push_back(p); texts.push_back(t);
         }
-        // 600 bp of ~88% identity is ~72 edits: above smax=64, so these MUST be
-        // unresolved, and that is the point -- the test asserts the API SAYS SO
-        // rather than returning a truncated alignment as if it were complete.
-        compare_all(pats, texts, 64, "600 bp divergent, smax=64");
-        printf("        (unresolved above is EXPECTED: d ~72 > smax=64)\n");
+        // d ~300 > smax: these MUST be unresolved, and the test asserts the API says
+        // so rather than returning a truncated alignment as if it were complete.
+        compare_all(pats, texts, 64, "600 bp co-linear, smax=64");
+        compare_all(pats, texts, 200, "600 bp co-linear, smax=200");
+        printf("        (0 resolved is CORRECT here: measured d ~300 > smax)\n");
 
-        // With a bound that can hold the distance, the same pairs must resolve.
-        compare_all(pats, texts, 200, "600 bp divergent, smax=200");
+        // Now a case that must RESOLVE: shorter real windows, where the distance does
+        // fit the bound. Without this the section would only ever exercise the
+        // unresolved path and would pass even if resolution were broken.
+        std::vector<std::string> p2, t2;
+        for (size_t w : wins) {
+            const std::string p = slice(hum, w, 100);
+            const std::string t = slice(chi, w, 100);
+            if (p.size() < 100 || t.size() < 100) continue;
+            p2.push_back(p); t2.push_back(t);
+        }
+        compare_all(p2, t2, 64, "100 bp co-linear, smax=64");
+        printf("        (these are expected to RESOLVE -- smaller window, smaller d)\n");
+        // A section that only ever returns "everything unresolved" passes trivially
+        // and would not notice if resolution were broken. Demand that this case
+        // actually resolved something.
+        check(g_last_resolved > 0,
+              "100 bp real windows must RESOLVE (a section that resolves nothing proves nothing)");
     }
 
     // ---- 4. full-length real sequences, the honest stress case -----------
