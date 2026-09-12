@@ -427,6 +427,34 @@ el mapeo de bloque del kernel.
 
 **Criterio de fusión:** los mismos tests de paridad que WFA.
 
+### Fase 7-pre — Optimización del kernel WFA ✅ CERRADA
+
+Antes de escribir el segundo método, se cerró el costo de ocupación del kernel de
+score. Diagnóstico y resultado en `docs/PLAN_FASE7_OPTIMIZACION.md` y
+`docs/RESULTADO_FASE7_OPTIMIZACION.md`.
+
+**Causa raíz (medida):** `blockDim = 2*smax+1` deja 76-97% de los hilos ociosos en
+`__syncthreads()` cuando la distancia real es pequeña (lo normal en el régimen
+filogenético). No era el algoritmo: el early return ya funcionaba.
+
+**Corrección:** `wfa_score_flat.hip` — blockDim fijo (128) con grid-stride interior
+sobre las diagonales. **Misma álgebra**, archivo separado.
+
+    MI210 ...... 1.49x - 2.67x
+    PRO 6000 ... 1.58x - 4.41x     (en el régimen de Fase 6: 1.755 -> 0.399 ms)
+
+Y el flat **elimina la inestabilidad** del kernel actual (que oscila 4.4x entre
+lanzamientos del mismo proceso). Verificado: gate CPU 0 discrepancias, gate GPU
+500/500 vs el DP de CPU, ratios reproducibles al 0.5%.
+
+**Método:** la comparación se hizo **intercalada en un solo job** (A,B,A,B) porque
+se midió que la varianza entre nodos es 3-4x y domina cualquier efecto. Los ms
+absolutos no son comparables entre jobs; el ratio por ronda sí.
+
+No fusionado todavía: es score-only y la librería aún no expone API (Fase 8). El
+**hallazgo** (blockDim desproporcionado) se aplica al diseño de SW desde el inicio.
+
+
 ### Fase 8 — Integración en phylogenyAI + paper (2 semanas)
 
 - Enchufar genoaligner al pipeline (donde aporte).

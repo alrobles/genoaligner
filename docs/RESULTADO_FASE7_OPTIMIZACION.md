@@ -1,32 +1,28 @@
 # Fase 7 — Optimización: resultado verificado
 
-> **Cierre del Paso 1** · 2026-09-11 · job 29213844 (intercalado A/B, MI210)
+> **Estado: Pasos 0-3 COMPLETOS.** 2026-09-12 · jobs 29210734/29213840/29213844/29213845/29213846
 > **Método:** comparación intercalada en un solo job (el único diseño que sobrevive
-> a la varianza de nodo). Ver `docs/PLAN_FASE7_OPTIMIZACION.md` para el diagnóstico.
+> a la varianza de nodo). Diagnóstico completo en `docs/PLAN_FASE7_OPTIMIZACION.md`.
 
 ---
 
 ## 1. Resultado
 
-Comparación **intercalada** (default, flat, default, flat, …) en el MISMO job, 5
-rondas, mismo régimen (len=1024, 2000 pares, ident=98%). La métrica es el **ratio
-por ronda**, que cancela la deriva del nodo:
+Comparación **intercalada** (default, flat, default, flat, …) en el MISMO job, mismo
+régimen (len=1024, 2000 pares, ident=98%). La métrica es el **ratio por ronda**, que
+cancela la deriva del nodo (job 29213844, 5 rondas):
 
-    smax    ratio por ronda                          media    estabilidad del ratio
-      64    1.224  5.434  1.348  1.223  1.237        1.29     ±10%   (ver §2)
+    smax    ratio por ronda                          media    estabilidad
+      64    1.224  5.434  1.348  1.223  1.237        1.29     (±10%, ver §2)
      128    1.493  1.491  1.488  1.491  1.489        1.49     ±0.2%
      256    1.933  1.931  1.932  1.933  1.935        1.93     ±0.1%
 
-**El kernel flat es 1.22-1.93x más rápido, y la ganancia crece con smax.** En
-smax=128 y 256 el ratio es reproducible al 0.2%, que es lo que hace defendible el
-número: no depende de en qué nodo cayó el job.
+**El kernel flat es más rápido, y la ganancia crece con smax.** En smax≥128 el ratio
+es reproducible al 0.2%, que es lo que hace defendible el número.
 
-    smax=256:  default 10.29 ms  ->  flat 5.32 ms    1.93x
-    smax=128:  default  4.82 ms  ->  flat 3.23 ms    1.49x
+## 2. Hallazgo secundario: el flat es ESTABLE, el default no
 
-## 2. Un hallazgo secundario que vale tanto como el ratio: el flat es ESTABLE
-
-En smax=64 los milisegundos absolutos cuentan la historia real:
+Los milisegundos de la ronda en smax=64 cuentan la historia real:
 
     ronda   default_ms   flat_ms
       1        2.883      2.356
@@ -35,44 +31,16 @@ En smax=64 los milisegundos absolutos cuentan la historia real:
       4        2.179      1.782
       5        2.185      1.766
 
-**El kernel default oscila 2.179-9.619 ms (4.4x) dentro del mismo proceso; el flat
-se mueve 1.766-1.782 (±0.5%).** La ganancia real en smax=64 no es el ratio medio de
-1.29 — es que **el flat no tiene el modo malo**. Un kernel que a veces tarda 4x más
-es un problema para cualquier benchmark, y ese modo desaparece.
+**El default oscila 2.179-9.619 ms (4.4x) dentro del mismo proceso; el flat ±0.5%.**
+La ganancia real en smax=64 no es el ratio de 1.29 — es que **el flat no tiene modo
+malo**. Mecanismo: `blockDim = 2*smax+1` deja 76-97% de hilos ociosos en
+`__syncthreads()`; el planificador los coloca de forma no determinista y algunos
+lanzamientos cuestan 4x. El flat, con 128 hilos y trabajo balanceado, no tiene ese
+grado de libertad.
 
-Esto es coherente con el mecanismo: `blockDim = 2*smax+1` deja 76-97% de los hilos
-ociosos esperando en `__syncthreads()`; el planificador los coloca de forma no
-determinista, y en algunos lanzamientos eso cuesta 4x. El flat, con 128 hilos y
-trabajo balanceado, no tiene ese grado de libertad.
+## 3. Matriz de Fase 6 con el flat (jobs 29213845 MI210 / 29213846 PRO 6000)
 
-## 3. Qué se retracta y por qué
-
-**El "1.93x" que reporté el turno anterior se retractó, y ahora se vuelve a afirmar
-con base válida.** La primera versión se midió **cruzando jobs**, y el job 29213840
-demostró que la varianza entre nodos (3-4x) domina cualquier efecto:
-
-    misma config flat smax=256    job 29210734:  5.329 ms  (±0.1%)
-                                  job 29213840: 16.425 ms  (hasta 20.308)
-
-En aquel momento el número era aritmética sobre un baseline móvil — el mismo error
-que acababa de escribir como lección. La corrección no fue más análisis, fue
-**cambiar el diseño experimental**: ambos kernels en el mismo job, alternando.
-
-## 4. Qué sobrevive, con su evidencia
-
-| afirmación | evidencia | ¿depende del nodo? |
-|---|---|---|
-| flat es 1.22-1.93x más rápido | ratio intercalado, ±0.2% en smax≥128 | no (se cancela) |
-| el default es inestable (4.4x) | 2.179-9.619 ms intra-proceso | no (mismo proceso) |
-| el flat es estable (±0.5%) | 1.766-1.782 ms intra-proceso | no (mismo proceso) |
-| remapping de hilos correcto | 500/500 vs DP de CPU | no |
-| blockDim=2smax+1 deja 76-97% ocioso | aritmética + lectura del código | no |
-| "escalado lineal limpio con smax" | — | **RETRACTADO: era varianza de nodo** |
-
-## 4b. Matriz de Fase 6 con el flat (Paso 2, jobs 29213845 MI210 / 29213846 PRO 6000)
-
-Mismos regímenes de Fase 6, diseño **intercalado** (default, flat, default, flat) y
-el **ratio por ronda** como métrica. 4 rondas por régimen:
+Mismos regímenes de Fase 6, diseño intercalado, 4 rondas, ratio por ronda:
 
     MI210 (job 29213845)
     régimen                    default    flat      ratios (4 rondas)
@@ -86,40 +54,65 @@ el **ratio por ronda** como métrica. 4 rondas por régimen:
     len=1024 smax=256 ident=90% 1.755     0.399    4.398 4.407 4.410 4.407
     len=1024 smax=256 ident=70% 1.614     0.386    4.181 4.179 4.168 4.168
 
-**Ratios reproducibles al 0.5%** en casi todas las filas. La ganancia del flat:
+**Ratios reproducibles al 0.5%** en casi todas las filas:
 
     MI210 ...... 1.49x - 2.67x
     PRO 6000 ... 1.58x - 4.41x      <- mucho mayor en la GPU moderna
 
-El PRO 6000 gana más porque su `blockDim = 2*smax+1` desproporcionado pesa más con
-más capacidad de cómputo: el default tarda 1.755 ms donde el flat tarda 0.399 ms. En
-el régimen de Fase 6 (len=1024, smax=256, ident=90%) el flat lleva el PRO 6000 de
-**1.755 ms a 0.399 ms**, es decir de ~1.21 TCUPS a ~5.3 TCUPS.
+En el régimen de Fase 6 (len=1024, smax=256, ident=90%) el flat lleva el PRO 6000 de
+**1.755 ms a 0.399 ms** — de ~1.21 TCUPS a ~5.3 TCUPS. Sigue ~2-3x por debajo de
+Accelign (9-16 TCUPS) en la misma tarjeta, pero la brecha pasó de ~6-13x a ~2-3x
+**sin tocar la álgebra**.
 
-Sigue siendo ~2-3x por debajo de Accelign (9-16 TCUPS) en la misma tarjeta, pero la
-brecha se cerró de ~6-13x a ~2-3x — con una optimización que **no cambia la
-álgebra**.
+## 4. Qué se retractó y por qué
 
-Nota de honestidad: la fila `ident=70% smax=256` de MI210 tiene el default oscilando
-(4.442 → 6.604 ms entre rondas), que es el mismo modo inestable documentado en §2.
-El ratio de esa fila es por eso menos apretado (2.344-2.555) que en las demás.
+El "1.93x" del turno anterior se **retractó** al descubrir (job 29213840) que la
+varianza entre nodos es 3-4x:
 
-## 5. Estado del kernel y siguientes pasos
+    misma config flat smax=256    job 29210734:  5.329 ms  (±0.1%)
+                                  job 29213840: 16.425 ms  (hasta 20.308)
 
-El flat sigue en **archivo separado** (`wfa_score_flat.hip`), no fusionado. Con el
-Paso 1 cerrado, se desbloquean:
+Ese número era aritmética sobre un baseline móvil. La corrección **no fue más
+análisis, fue cambiar el diseño experimental**: ambos kernels en el mismo job
+alternando. Con ese diseño el 1.93x se **reconfirmó** (§1). Retractar y reconfirmar
+con el experimento correcto es la secuencia honesta.
 
-- **Paso 2:** re-medir la matriz de Fase 6 completa con el flat, **con el diseño
-  intercalado** (no comparaciones cruzadas), en MI210 y PRO 6000, + gate edlib sobre
-  la salida del flat.
-- **Paso 3:** siguientes palancas. La #1 (múltiples pares por bloque) ataca
-  directamente la causa de la inestabilidad del default: hilos ociosos.
-- **Paso 4:** Fase 7 real — Smith-Waterman.
+## 5. Decisión sobre el kernel (Paso 3)
 
-## 6. Regla de método (al skill)
+**El flat NO se fusiona todavía.** Razonamiento:
 
-**Para comparar dos kernels en hardware compartido: intercalar A,B,A,B en un mismo
-job y reportar el RATIO por ronda.** Los milisegundos absolutos no son comparables
-entre jobs (3-4x de varianza de nodo medida); el ratio intercalado sí. Y **reportar
-la dispersión junto a la media**: el hallazgo de que el default oscila 4.4x importa
-tanto como el speedup, y no habría aparecido en un promedio.
+1. No hay consumidor de producción: el repo es una librería en desarrollo y ambos
+   kernels se usan solo desde los harnesses. La integración es Fase 8.
+2. El flat es **score-only**. Fusionarlo dejaría la librería con un score optimizado
+   y un traceback sin optimizar — dos kernels con propiedades distintas.
+3. El traceback **no tiene el defecto**: se lanza con `dim3(1)` (un hilo por bloque,
+   serial por diseño). No hay hilos ociosos en barreras que corregir, así que la
+   corrección del flat no aplica ahí. Verificado antes de intentarlo.
+
+Por tanto el flat queda como **candidato medido y verificado**, en su archivo
+separado, listo para ser el kernel de score cuando la librería exponga API (Fase 8)
+o cuando el traceback tenga una versión optimizada.
+
+## 6. Reglas de método (al skill)
+
+1. **Para comparar dos kernels en hardware compartido: intercalar A,B,A,B en un
+   mismo job y reportar el RATIO por ronda.** Los ms absolutos no son comparables
+   entre jobs (3-4x de varianza de nodo medida); el ratio intercalado sí.
+2. **Reportar dispersión junto a la media.** Que el default oscile 4.4x importa
+   tanto como el speedup, y no habría aparecido en un promedio.
+3. **Retractar un número es parte del trabajo.** El 1.93x se retractó y se
+   reconfirmó; ambas versiones están en el historial a propósito.
+4. **Verificar que una corrección aplique antes de portarla.** Intenté llevar el
+   flat al traceback y lo descarté al leer que se lanza con `dim3(1)`: no tiene el
+   defecto. Una lectura de dos líneas evitó una reescritura inútil.
+
+## 7. Pendiente
+
+- **Fase 7 real — Smith-Waterman.** El masterplan la define como el segundo método.
+  El hallazgo del flat (blockDim desproporcionado) debe aplicarse desde el diseño.
+- **Optimizaciones adicionales** (no intentadas): múltiples pares por bloque,
+  extensión vectorizada (medir antes si domina), `smax` adaptativo.
+- **`smax > 511`** sigue sin ser alcanzable con este mapeo.
+- **Números de TCUPS del bench**: la conversión a TCUPS de §3 usa celdas de DP
+  completo sobre pares resueltos, la misma definición de Fase 6. No es comparable
+  con Accelign de forma directa porque el régimen de identidad difiere.
