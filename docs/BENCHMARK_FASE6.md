@@ -136,7 +136,8 @@ lanzamiento del sitio validado, no reconstruirla.
 ## 6. Manifiesto de replicabilidad
 
     repo      alrobles/genoaligner-devel (privado)
-    commit    1c8b71a
+    commit    1c8b71a  (código medido; HEAD al lanzar los jobs)
+              los docs de este archivo se commitearon en 2869821
     jobs      29210657 (MI210), 29210658 (RTX 6000)
     comando   sbatch scripts/h6_bench.sbatch        # MI210, hipcc
               sbatch scripts/h6_bench_cuda.sbatch   # RTX 6000, nvcc
