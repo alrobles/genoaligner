@@ -39,6 +39,14 @@ cd "$ROOT" || exit 1
 
 # sm_75 = Turing (q6000). Same flags as the H2-CUDA job, so a difference in the
 # outcome is a difference in the code, not the build.
+#
+# ONE FLAG THE H2-CUDA JOB DID NOT NEED: -lcuda. The trace kernel calls
+# hipDeviceGetAttribute, which the nvidia_detail layer maps to cuDeviceGetAttribute
+# -- a DRIVER-API symbol. The score kernel never queried a device attribute, so it
+# linked without the driver; the traceback cannot. Measured on the login node:
+# without -lcuda the link fails with "undefined reference to cuDeviceGetAttribute",
+# and the stubs dir is enough to resolve it at build time (the real libcuda comes
+# from the host driver at run time).
 echo
 echo "--- build harness (nvcc, __HIP_PLATFORM_NVIDIA__) ---"
 "$C/bin/nvcc" -w -D__HIP_PLATFORM_NVIDIA__ -std=c++17 \
@@ -47,6 +55,7 @@ echo "--- build harness (nvcc, __HIP_PLATFORM_NVIDIA__) ---"
     -I "$C/include" \
     -I "$C/targets/x86_64-linux/include" \
     -I . \
+    -lcuda -L "$C/lib64/stubs" \
     -x cu -o /tmp/wfa_parity_trace_cuda \
     tests/parity/wfa_parity.cpp
 RC_BUILD=$?
