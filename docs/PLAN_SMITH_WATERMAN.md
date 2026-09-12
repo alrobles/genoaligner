@@ -8,11 +8,13 @@
 >
 > Jobs: 29226683 (triaje), 29226704 (kernel correcto en GPU), 29226705 (test principal).
 >
-> **Actualización (2026-09-12, mismo día):** Fase A implementada — el kernel es ahora
-> warp-per-row con la dependencia intra-fila resuelta como scan de prefijos (ver
-> §A1 nota). Pasa el gate CPU en las DOS anchuras de warp emuladas (32 y 64),
-> 110/110 casos, con control negativo integrado. Falta la verificación en GPU
-> (correctitud + determinismo + speedup), que es el siguiente job.
+> **Actualización (2026-09-12, mismo día):** Fase A implementada Y VERIFICADA EN GPU —
+> el kernel es warp-per-row con la dependencia intra-fila resuelta como scan de
+> prefijos (ver §A1 nota). Gate CPU verde en las dos anchuras (110/110 a warpSize
+> 32 y 64, con control negativo). En MI210: 210/210 contra la referencia en 3 jobs,
+> y determinismo dev-time 0.2% en nodo exclusivo — docs/RESULTADO_H8_SW1_WARP.md
+> tiene los números y el hallazgo de que este cluster comparte GPUs por shards
+> (los benches wall-clock miden al vecino). Falta solo el speedup intercalado.
 
 ---
 
@@ -76,13 +78,15 @@ del propio proyecto, y A1 ataca la dependencia real (intra-fila) sin barreras ex
 
 **Criterio de éxito de la Fase A (todo obligatorio):**
 1. Paridad **exacta** contra la referencia en los 15 casos, con `blockDim > 1`.
-   → ✅ en CPU emulada: 110/110 a warpSize 32 y 64. GPU: pendiente.
+   → ✅ CPU emulada: 110/110 a warpSize 32 y 64. ✅ GPU: 210/210 en MI210,
+   `block=256` (4 warps × 64), 3 jobs.
 2. La paridad se rompe si se quita la sincronización (test que falla con el bug).
    → ✅ control negativo integrado: con el exchange desactivado fallan 100/110.
 3. **Determinismo**: 7 corridas de la misma entrada dan tiempos con dispersión < 5%
    (el estándar que B6 estableció, porque el kernel WFA falló ahí).
-   → pendiente de job GPU (`test_sw_gpu --bench`). Sin barreras, el modo de fallo
-   de B6 no tiene mecanismo — pero se mide, no se asume.
+   → ✅ dev-time (hipEvent) spread = 0.2% en nodo exclusivo (job 29227117).
+   En nodo compartido los stalls del vecino llegan a 400x — ver
+   RESULTADO_H8_SW1_WARP.md §3: las GPUs se comparten por shards.
 4. Speedup medido con el **diseño intercalado** de B6, no cruzando jobs.
    → pendiente.
 

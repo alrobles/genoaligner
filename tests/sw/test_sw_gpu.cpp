@@ -194,25 +194,51 @@ int main(int argc, char** argv)
         // Determinism: the standard B6 set for this kernel's failure mode. Seven
         // reps of IDENTICAL work; the spread is the claim, so it is printed as a
         // spread rather than hidden inside a mean.
+        //
+        // TWO clocks, because they measure different things:
+        //   * dev (hipEvent): time the kernel spends EXECUTING on the device.
+        //     This is what B6's criterion is about -- whether the kernel's own
+        //     schedule is stable.
+        //   * wall: host launch->sync. On this cluster GPUs are shared by Slurm
+        //     shards (gres shard:mi210), so another tenant's work can stall our
+        //     queue position by hundreds of ms. That is real, it is reported,
+        //     and it is NOT evidence about the kernel's determinism.
+        // One warmup launch first: rep 0 pays module-load/context costs that
+        // say nothing about steady-state scheduling.
+        hipEvent_t ev0, ev1;
+        hipEventCreate(&ev0); hipEventCreate(&ev1);
+        launch(); hipDeviceSynchronize();   // warmup, untimed
+
         printf("\n-- determinism: 7 identical launches --\n");
-        double mn = 1e30, mx = 0, sum = 0;
+        printf("   (dev = hipEvent device time; wall = host launch->sync;\n");
+        printf("    GPU may be shard-shared, so wall can include queue waits)\n");
+        double dmn = 1e30, dmx = 0, dsum = 0;
+        double wmn = 1e30, wmx = 0, wsum = 0;
         for (int rep = 0; rep < 7; ++rep) {
             const auto t0 = std::chrono::steady_clock::now();
+            hipEventRecord(ev0);
             launch();
+            hipEventRecord(ev1);
             hipDeviceSynchronize();
-            const double ms = std::chrono::duration<double, std::milli>(
+            const double wall = std::chrono::duration<double, std::milli>(
                                   std::chrono::steady_clock::now() - t0).count();
-            printf("  rep %d: %.3f ms\n", rep, ms);
-            if (ms < mn) mn = ms;
-            if (ms > mx) mx = ms;
-            sum += ms;
+            float devf = 0.0f;
+            hipEventElapsedTime(&devf, ev0, ev1);
+            const double dev = (double)devf;
+            printf("  rep %d: dev=%.3f ms  wall=%.3f ms\n", rep, dev, wall);
+            if (dev < dmn) dmn = dev;  if (dev > dmx) dmx = dev;  dsum += dev;
+            if (wall < wmn) wmn = wall; if (wall > wmx) wmx = wall; wsum += wall;
         }
-        const double spread = (mn > 0) ? (mx - mn) / mn : 0.0;
-        printf("  min=%.3f ms  max=%.3f ms  mean=%.3f ms  spread=%.1f%%\n",
-               mn, mx, sum / 7, 100.0 * spread);
-        printf("  criterion (B6): spread < 5%%  ->  %s\n",
-               spread < 0.05 ? "PASS" : "FAIL");
-        if (spread >= 0.05) ++g_fail;
+        hipEventDestroy(ev0); hipEventDestroy(ev1);
+        const double dsp = (dmn > 0) ? (dmx - dmn) / dmn : 0.0;
+        const double wsp = (wmn > 0) ? (wmx - wmn) / wmn : 0.0;
+        printf("  dev : min=%.3f max=%.3f mean=%.3f  spread=%.1f%%\n",
+               dmn, dmx, dsum / 7, 100.0 * dsp);
+        printf("  wall: min=%.3f max=%.3f mean=%.3f  spread=%.1f%%  (shared-queue noise, reported not judged)\n",
+               wmn, wmx, wsum / 7, 100.0 * wsp);
+        printf("  criterion (B6): dev spread < 5%%  ->  %s\n",
+               dsp < 0.05 ? "PASS" : "FAIL");
+        if (dsp >= 0.05) ++g_fail;
     }
 
     for (int i = 0; i < N; ++i) { hipFree(d_txt[(size_t)i]); hipFree(d_pat[(size_t)i]); }

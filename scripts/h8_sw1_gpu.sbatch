@@ -36,6 +36,12 @@ B=/beegfs/a474r867/sw_gpu
     -o "$B" tests/sw/test_sw_gpu.cpp || { echo "BUILD FAILED"; exit 1; }
 
 echo "=== host: $(hostname) ==="
+# This cluster shares GPUs through Slurm shards (gres shard:mi210:300 per
+# node). Record which device we got and who else is on it: if the bench shows
+# a stall, this is the evidence that it was queue contention, not the kernel.
+echo "ROCR_VISIBLE_DEVICES=${ROCR_VISIBLE_DEVICES:-<unset>}"
+echo "HIP_VISIBLE_DEVICES=${HIP_VISIBLE_DEVICES:-<unset>}"
+/kuhpc/sw/rocm/6.4.3/bin/rocm-smi --showpids 2>/dev/null || true
 echo "=== SW on GPU: warp-per-row correctness + determinism ==="
 echo
 "$B" --bench | tee "$LOGD/sw_gpu_${SLURM_JOB_ID}.txt"

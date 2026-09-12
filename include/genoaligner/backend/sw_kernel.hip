@@ -77,6 +77,17 @@
 #include <cstddef>
 #include <cstdint>
 
+// On ROCm >= 5.7 the CUDA-style *_sync warp builtins exist but are opt-in:
+// amd_warp_sync_functions.h only declares them when this macro is defined
+// before hip_runtime.h is included. __HIP_PLATFORM_AMD__ is itself defined by
+// the HIP headers (too late to test here); __HIPCC__ is the driver-defined
+// macro available at this point. On the NVIDIA path the amd_* headers are not
+// included at all, so the macro is a no-op there; the CPU shim compiles with a
+// plain host compiler (no __HIPCC__) and provides the names itself.
+#if defined(__HIPCC__) && !defined(HIP_ENABLE_WARP_SYNC_BUILTINS)
+#  define HIP_ENABLE_WARP_SYNC_BUILTINS
+#endif
+
 #include <hip/hip_runtime.h>
 
 namespace genoaligner {
