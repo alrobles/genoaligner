@@ -104,19 +104,63 @@ desproporcionado `2*smax+1` respecto a las diagonales usadas, más gana el bloqu
 (0.205-0.211 TCUPS) sobre la misma entrada. El bloque ya no es el cuello — que es
 justo lo que la desacoplación buscaba.
 
-### LO QUE FALTA EXPLICAR (no reportar como resuelto)
+### EL HALLAZGO REAL (job 29210734): el flat no solo es más rápido — es determinista
 
-El flat **sigue** escalando ~lineal con smax (`ms/smax` = .0285, .0280, .0254,
-.0246). Es decir: **~3x del 10.7x original quedan sin explicar por el tamaño de
-bloque.** Algo que crece con smax sigue costando, y no se ha identificado.
+Mismo régimen repetido 5× **en un solo proceso** (len=1024, 2000 pares, ident=98%):
 
-Candidato principal: **`smem` por bloque = 2*(2*smax+3) ints**, que crece con smax
-y por tanto limita cuántos pares caben residentes por SM (1 bloque = 1 par). Con
-smax=256 son 4 KB/bloque; con smax=32, 0.5 KB. Menos bloques residentes = menos
-paralelismo entre pares.
+    flat (block=128)          rep1    rep2    rep3    rep4    rep5      dispersión
+      smax= 64              1.794   1.771   1.781   1.771   1.774      ±0.5%
+      smax=128              3.229   3.228   3.226   3.230   3.234      ±0.1%
+      smax=256              5.329   5.332   5.334   5.335   5.323      ±0.1%
 
-Se está midiendo con `hipOccupancyMaxActiveBlocksPerMultiprocessor` (job 29210731)
-en vez de razonarlo. **El 1.65x NO debe reportarse como el resultado completo.**
+    default (block=2*smax+1)  rep1    rep2    rep3                      dispersión
+      smax= 64              8.722   2.871   5.470                      **3.0x**
+      smax=128              5.670   9.444   5.653                      **1.7x**
+      smax=256             15.766  10.295  10.287                      **1.5x**
+
+**El kernel original varía hasta 3x entre repeticiones del MISMO proceso.** Eso
+invalida parcialmente la línea base con la que trabajé:
+
+- los "0.966 / 2.190 / 4.835 / 10.349 ms" de la atribución son promedios de un
+  kernel que oscila; el "escalado limpio con smax" que intenté explicar durante
+  cuatro hipótesis era **en gran parte varianza del original**, no una propiedad
+  del bucle;
+- cualquier afirmación de speedup contra un baseline ruidoso es débil por
+  construcción.
+
+**Mecanismo:** `blockDim = 2·smax+1` deja 76-97% de los hilos ociosos esperando en
+la barrera. Los warps ociosos se programan de forma no determinista y cada
+`__syncthreads()` sobre ellos cuesta lo que al planificador le toque. El flat, con
+128 hilos y trabajo balanceado, no tiene ese grado de libertad.
+
+**Consecuencia:** la comparación honesta no es "1.93x", es **"1.9x más rápido y
+estable frente a uno que no es reproducible"**. Para un benchmark, la
+reproducibilidad vale tanto como la velocidad — y esto es lo que hay que reportar.
+
+### Qué se puede afirmar hoy, y qué no
+
+**Se puede afirmar** (medido en GPU, 500/500 verificado vs DP de CPU):
+- el flat es **1.06-1.93x más rápido** que el kernel actual;
+- el flat es **reproducible al 0.1%**; el actual varía **hasta 3x** intra-proceso;
+- el tamaño de bloque dejó de importar (64..512 dan lo mismo), que era el objetivo;
+- el remapping de hilos es correcto (500/500 en los 4 bloques).
+
+**No se puede afirmar:**
+- que el flat deba fusionarse ya: es un candidato, y el residuo de escalado con
+  smax del flat (que sigue existiendo: 1.77 → 5.33 ms de smax 64 a 256) no está
+  explicado. Pero ahora se mide contra un baseline reproducible, así que el residuo
+  es una propiedad **real** del flat y ya no puede ser varianza.
+- ninguna causa del residuo: cuatro hipótesis cayeron (wavefronts vacíos, tamaño de
+  bloque, ocupación, zeroing).
+
+### Lección de método de esta fase
+
+Cinco números parecían resultados y no lo eran. Los cuatro primeros fueron
+inferencias mías refutadas al medir (wavefronts vacíos, block, smem, ocupación). El
+quinto es el más importante: **comparaba contra un baseline que no era
+reproducible.** La regla que faltaba —y que ahora queda en el skill— es que
+**antes de atribuir una diferencia hay que medir el piso de ruido de ambos lados**;
+un baseline que varía 3x no puede sostener un speedup de 1.9x.
 
 ### Un error de mi propio gate, corregido
 
@@ -130,44 +174,45 @@ correcto. Ahora el gate compara contra el DP de CPU, que es la verdad independie
 
 ## 4. Siguientes pasos, en orden
 
-### Paso 1 — Cerrar la verificación del flat (en curso)
+### Paso 0 — ANTES DE CUALQUIER COMPARACIÓN: reportar el piso de ruido
 
-Leer job 29210729. Criterio de fusión, todo obligatorio:
-- `--verify` con 0 desacuerdos contra el DP de CPU en cada bloque probado
-- el barrido de smax plano o mejor que la baseline (0.966/2.190/4.835/10.349 ms)
-- elegir `WFA_FLAT_BLOCK` **con el dato del barrido**, no a ojo
+El job 29210734 mostró que el kernel actual varía **hasta 3x intra-proceso**. Toda
+comparación futura debe reportar `N repeticiones + dispersión` de AMBOS lados. Un
+número único de un kernel ruidoso no es una medición. Esto va primero porque
+invalida cualquier speedup calculado sin él — incluido el "1.93x" si se citara solo.
 
-### Paso 2 — Si funciona: propagar y re-medir la matriz
+### Paso 1 — Cerrar la verificación del flat
 
-- Re-correr los regímenes de Fase 6 con el kernel elegido, en MI210 y PRO 6000.
-- Actualizar `docs/BENCHMARK_FASE6.md` con la comparación antes/después.
-- Repetir el gate de paridad externo (edlib) sobre la salida del kernel nuevo —
-  la misma disciplina que Fase 4: el brazo externo debe correr sobre el kernel
-  que se reporta.
+Hecho: gate CPU PASS (0 desacuerdos), gate GPU PASS (500/500 en 4 bloques).
+Falta: el residuo de escalado del flat (1.77 → 5.33 ms de smax 64→256) — real,
+ahora medible contra baseline estable.
+
+### Paso 2 — Repetir la matriz de Fase 6 con el flat, con dispersión
+
+- Re-correr los regímenes de Fase 6 con el kernel flat en MI210 y PRO 6000,
+  **reportando media y dispersión de N repeticiones**.
+- Repetir el gate externo (edlib) sobre la salida del flat — misma disciplina que
+  Fase 4: el brazo externo corre sobre el kernel que se reporta.
+- Actualizar `docs/BENCHMARK_FASE6.md` con antes/después y las barras de error.
 
 ### Paso 3 — Las siguientes palancas, por orden de beneficio/riesgo medido
 
-1. **Múltiples pares por bloque.** Un bloque con 8 pares (1 warp cada uno) llena
-   el bloque y amortiza las barreras sobre trabajo útil. Requiere un A/B por par
-   en shared. Es la continuación natural del hallazgo de ocupación.
-2. **Extensión vectorizada.** `wfa_extend` compara byte a byte. Cargar palabras de
-   8 bytes y comparar con XOR + find-first-set reduce el bucle de extensión. Solo
-   relevante cuando la extensión domina, y **no se ha medido que domine** — hay que
-   medirlo antes.
-3. **Reducir el número de barreras.** El kernel validado tiene 3 `__syncthreads()`
-   por wavefront; una parece no-op pero **NO lo es** (mi primer intento de quitarla
-   falló el gate). Analizar cuáles son realmente necesarias, con el gate como red.
-4. **`smax` adaptativo.** Hoy se pasa `smax` fijo; la cota natural es
-   `min(smax, m+n)`. Menor impacto que las anteriores.
+1. **Múltiples pares por bloque.** 8 pares por bloque (1 warp cada uno) llena el
+   bloque y amortiza barreras sobre trabajo útil. Requiere A/B por par en shared.
+2. **Extensión vectorizada.** `wfa_extend` compara byte a byte. Solo relevante si la
+   extensión domina, y **no se ha medido que domine** — medirlo antes.
+3. **Reducir barreras.** El kernel validado tiene 3 `__syncthreads()` por wavefront;
+   una parece no-op pero **NO lo es** (mi primer intento de quitarla falló el gate).
+4. **`smax` adaptativo** = `min(smax, m+n)`. Menor impacto.
 
-Cada palanca sigue la misma regla: **medir el cuello primero, cambiar una cosa,
-gate CPU, gate GPU, y solo entonces creer el número.**
+Cada palanca: **medir el cuello primero, cambiar una cosa, gate CPU, gate GPU, y
+solo entonces creer el número.**
 
 ### Paso 4 — Fase 7 real: Smith-Waterman
 
-El masterplan define Fase 7 como el segundo método (SW antidiagonal), reusando la
-infraestructura. Las optimizaciones de arriba benefician a ambos kernels, así que
-conviene cerrarlas antes de escribir el segundo.
+El masterplan define Fase 7 como el segundo método (SW antidiagonal). Las
+optimizaciones de arriba benefician a ambos kernels, así que conviene cerrarlas
+antes de escribir el segundo.
 
 ---
 
