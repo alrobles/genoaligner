@@ -27,12 +27,20 @@ CMake >= 3.18, and a C++17 host compiler.
 cmake -S . -B build \
       -DCMAKE_CXX_COMPILER=$(command -v hipcc) \
       -DGENOALIGNER_BACKEND=rocm \
+      -DGENOALIGNER_GPU_ARCH=gfx90a \
       -DCMAKE_INSTALL_PREFIX=/your/prefix
 cmake --build build -j
 cmake --install build
 ```
 
 That produces `lib/libgenoaligner.a` and headers under `include/`.
+
+**Set `GENOALIGNER_GPU_ARCH` if you build on a machine with no visible GPU** (a login
+node, a CI runner). Without it hipcc picks a default architecture, the library links
+fine, and the consumer then dies at runtime with `invalid device function` — an error
+that names neither the architecture nor the cause. Common values: `gfx90a` (MI210),
+`gfx942` (MI300), or several comma-separated. Leave it unset when building on a GPU
+node and the compiler will detect the hardware.
 
 For the NVIDIA path, set the backend and point CMake at CUDA. **CUDA 12.x is
 required** (the ROCm compatibility layer does not parse under 13.0), and the version

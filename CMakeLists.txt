@@ -73,6 +73,25 @@ set(GENOALIGNER_CUDA_ROOT "/kuhpc/sw/nvhpc/Linux_x86_64/2024/cuda/12.4"
 set(GENOALIGNER_ROCM_ROOT "/kuhpc/sw/rocm/6.4.3"
     CACHE PATH "ROCm root (provides the HIP headers used by BOTH backends)")
 
+# --- GPU architecture (ROCm) --------------------------------------------
+#
+# WITHOUT THIS THE LIBRARY MAY BE UNUSABLE, and it fails at RUNTIME, not at build
+# time: hipcc on a machine with no GPU visible (a login node, a CI runner) picks a
+# default architecture, so the installed libgenoaligner.a contains code for a GPU you
+# do not have. The consumer links fine and then dies with:
+#
+#     invalid device function
+#
+# which names neither the architecture nor the cause. Found by building the install
+# on the KU login node and running an external consumer on an MI210.
+#
+# Set it to the target GPU(s). Several can be given, comma-separated:
+#   -DGENOALIGNER_GPU_ARCH=gfx90a          (MI210)
+#   -DGENOALIGNER_GPU_ARCH=gfx90a,gfx942   (MI210 + MI300)
+# Leave empty to keep hipcc's default (fine when building ON a GPU node).
+set(GENOALIGNER_GPU_ARCH "" CACHE STRING
+    "ROCm GPU architecture(s), e.g. gfx90a. Empty = compiler default.")
+
 # --- Host compiler for the CUDA backend ---------------------------------
 # nvcc validates the host GCC version and CUDA 12.4 refuses anything after 13:
 #   error: -- unsupported GNU version! gcc versions later than 13 are not supported!
@@ -143,6 +162,16 @@ function(genoaligner_configure_hip target)
     target_include_directories(${target} PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}"
         "${GENOALIGNER_ROCM_ROOT}/include")
+
+    # Pin the target architecture when the caller asked for one. See the
+    # GENOALIGNER_GPU_ARCH comment: without it, a build on a GPU-less host produces a
+    # library that links fine and then dies with "invalid device function".
+    if(GENOALIGNER_GPU_ARCH AND GENOALIGNER_BACKEND STREQUAL "rocm")
+        target_compile_options(${target} PRIVATE
+            "SHELL:--offload-arch=${GENOALIGNER_GPU_ARCH}")
+        target_link_options(${target} PRIVATE
+            "SHELL:--offload-arch=${GENOALIGNER_GPU_ARCH}")
+    endif()
 
     if(GENOALIGNER_BACKEND STREQUAL "cuda")
         # The define that routes hip_runtime.h to nvidia_detail.
@@ -266,6 +295,14 @@ message(STATUS "genoaligner configuration")
 message(STATUS "  backend     : ${GENOALIGNER_BACKEND}")
 message(STATUS "  compiler    : ${CMAKE_CXX_COMPILER}")
 message(STATUS "  ROCm root   : ${GENOALIGNER_ROCM_ROOT}")
+if(GENOALIGNER_BACKEND STREQUAL "rocm")
+    if(GENOALIGNER_GPU_ARCH)
+        message(STATUS "  GPU arch    : ${GENOALIGNER_GPU_ARCH}")
+    else()
+        message(STATUS "  GPU arch    : (compiler default — set GENOALIGNER_GPU_ARCH")
+        message(STATUS "                 if building on a host without a visible GPU)")
+    endif()
+endif()
 if(GENOALIGNER_BACKEND STREQUAL "cuda")
     message(STATUS "  CUDA root   : ${GENOALIGNER_CUDA_ROOT}")
     message(STATUS "  platform    : __HIP_PLATFORM_NVIDIA__ -> hip/nvidia_detail")

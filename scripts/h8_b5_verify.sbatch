@@ -23,18 +23,45 @@
 # pick up an in-tree header.
 set -o pipefail
 
-P=/beegfs/a474r867/pfx_b5
+GAINST=/beegfs/a474r867/pfx_b5
 LOGD=/beegfs/a474r867/genoaligner/logs
 
 echo "=== host: $(hostname) ==="
 echo "=== H8-B5v: external consumer against the install ==="
 echo
 
-if [ ! -f "$P/lib/libgenoaligner.a" ]; then
-    echo "no install at $P -- run the install first"; exit 1
+# Rebuild the install from THIS commit, with the target architecture pinned. The
+# previous run reused an install built without --offload-arch, so the consumer linked
+# against a library compiled for the login node's default arch and died on the MI210
+# with "invalid device function" -- a runtime failure that names neither the
+# architecture nor the cause. The test must build the artifact it claims to test.
+echo "--- rebuild + reinstall with GENOALIGNER_GPU_ARCH=gfx90a ---"
+source /kuhpc/sw/lmod/lmod/init/profile 2>/dev/null
+ml purge >/dev/null 2>&1
+ml load compiler/gcc/14.2 >/dev/null 2>&1
+ml load cmake/3.30.3 >/dev/null 2>&1
+ml load rocm/6.4.3 >/dev/null 2>&1
+BD=/beegfs/a474r867/binst_b5v
+rm -rf "$BD" "$GAINST"
+# The CUDA root default in CMakeLists points at an nvhpc path; on the ROCm branch it
+# is unused, so cmake must still configure cleanly.
+cmake -S . -B "$BD" -DCMAKE_CXX_COMPILER="$(command -v hipcc)" \
+      -DGENOALIGNER_BACKEND=rocm -DGENOALIGNER_GPU_ARCH=gfx90a \
+      -DCMAKE_INSTALL_PREFIX="$GAINST" > "$LOGD/b5v_cm.log" 2>&1
+echo "cmake rc=$?"
+cmake --build "$BD" -j8 > "$LOGD/b5v_bd.log" 2>&1
+RC_BD=$?; echo "build rc=$RC_BD"
+if [ "$RC_BD" -ne 0 ]; then grep -iE "error" "$LOGD/b5v_bd.log" | head -10; echo "H8-B5v: BUILD FAILED"; exit 1; fi
+cmake --install "$BD" > "$LOGD/b5v_in.log" 2>&1
+echo "install rc=$?"
+echo "HEAD: $(git rev-parse --short HEAD)"
+echo
+
+if [ ! -f "$GAINST/lib/libgenoaligner.a" ]; then
+    echo "no install at $GAINST -- install failed"; exit 1
 fi
 echo "--- installed prefix ---"
-find "$P" -type f | sort
+find "$GAINST" -type f | sort
 
 cat > /tmp/ext_consumer.cpp <<'EOF'
 // Written by the job, not by the repo: it must resolve entirely from the install.
@@ -75,8 +102,12 @@ int main(){
 }
 EOF
 
-/kuhpc/sw/rocm/6.4.3/bin/hipcc -O2 -std=c++17 -I"$P/include" \
-    -o /tmp/ext_consumer /tmp/ext_consumer.cpp -L"$P/lib" -lgenoaligner
+# The consumer is compiled with the same arch pin. It is built on the login node (no
+# GPU), so without --offload-arch it would embed the compiler's default and fail on
+# the MI210 exactly as the library did.
+/kuhpc/sw/rocm/6.4.3/bin/hipcc -O2 -std=c++17 --offload-arch=gfx90a \
+    -I"$GAINST/include" \
+    -o /tmp/ext_consumer /tmp/ext_consumer.cpp -L"$GAINST/lib" -lgenoaligner
 RC=$?
 echo "BUILD_RC=$RC"
 [ "$RC" -ne 0 ] && { echo "H8-B5v: BUILD FAILED"; exit 1; }
