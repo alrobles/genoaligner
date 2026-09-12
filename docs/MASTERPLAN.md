@@ -455,11 +455,39 @@ No fusionado todavía: es score-only y la librería aún no expone API (Fase 8).
 **hallazgo** (blockDim desproporcionado) se aplica al diseño de SW desde el inicio.
 
 
-### Fase 8 — Integración en phylogenyAI + paper (2 semanas)
+### Fase 8 — Integración en phylogenyAI + paper (2 semanas) ⏳ EVALUADA, BLOQUEADA
 
 - Enchufar genoaligner al pipeline (donde aporte).
 - Manifiesto de despliegue para otro cluster.
 - Preprint (JOSS o BMC Bioinformatics).
+
+**Resultado (2026-09-12): los tres entregables evaluados con evidencia. El bloqueante
+común es la falta de API pública, no el rendimiento.**
+
+**Manifiesto de despliegue: HECHO y VERIFICADO** —
+`docs/DEPLOYMENT_MANIFEST.md`. Procedimiento por pasos, tabla de fallos conocidos,
+e inventario de versiones de CUDA. **Verificado construyendo desde un clon limpio, y
+ese test encontró dos bugs reales** que el árbol de desarrollo ocultaba: el kernel y
+el shim usaban `size_t`/`INT32_MIN` sin los includes, y compilaban solo por el orden
+accidental de includes. **La red de seguridad de todas las fases no construía desde
+cero.** Corregido (commits d1c7522, 75f71f3) y re-verificado: AMD RC=0, NVIDIA RC=0,
+gate CPU COMPLETE con edlib 0 desacuerdos.
+
+**Integración en phylogenyAI: EVALUADA, no enchufable hoy** —
+`docs/INTEGRACION_PHYLOGENYAI.md`. MAFFT es MSA y genoaligner es pairwise: **no son
+intercambiables**. El único encaje real es ortología (DIAMOND/MMseqs2 + RBH), donde
+el valor es correr en MI210 (ni DIAMOND ni MMseqs2-GPU corren en AMD). Bloqueante:
+no existe `api.hpp` (previsto en §2.2, no escrito).
+
+**Preprint: CONTENIDO SÍ, REQUISITOS NO** — `docs/PREPRINT_ESTADO.md`. Hay material
+para JOSS (paridad en 6 GPUs, 3 oráculos externos, test sin GPU para el revisor),
+pero JOSS exige repo público, licencia OSI y docs de uso: hoy el repo es privado y
+no hay API. Borrador de `paper.md` redactado, **no enviable**.
+
+**Prioridad resultante: escribir la API pública.** Desbloquea JOSS, la integración y
+cualquier uso real. No tiene sentido conectar el pipeline antes de que exista la
+interfaz de consumo — sería copiar el harness a otro repo.
+
 
 ---
 

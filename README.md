@@ -53,3 +53,14 @@ libraries), which is why it can be built and tested on plain CPU boxes. See
 - [docs/OPTION_A_ANALYSIS.md](docs/OPTION_A_ANALYSIS.md) — build-from-scratch
   analysis: real code-size measurements from WFA-GPU/Accelign, effort
   estimate, pros/cons, and the architecture recommendation (pure HIP).
+- [docs/DEPLOYMENT_MANIFEST.md](docs/DEPLOYMENT_MANIFEST.md) — how to deploy on
+  another cluster: toolchain walk, build recipes for both backends, the known
+  failure table, and the clean-clone verification.
+- [docs/BENCHMARK_FASE6.md](docs/BENCHMARK_FASE6.md) — 6 GPUs, 2 vendors, verified
+  throughput, and the same-hardware comparison against Accelign.
+- [docs/RESULTADO_FASE7_OPTIMIZACION.md](docs/RESULTADO_FASE7_OPTIMIZACION.md) —
+  block-occupancy optimisation: 1.5-4.4x, and the interleaved measurement method.
+- [docs/INTEGRACION_PHYLOGENYAI.md](docs/INTEGRACION_PHYLOGENYAI.md) — where it
+  fits in the phylogenyAI pipeline and where it does not.
+- [docs/PREPRINT_ESTADO.md](docs/PREPRINT_ESTADO.md) — what is publishable today
+  and what is missing for a JOSS submission.

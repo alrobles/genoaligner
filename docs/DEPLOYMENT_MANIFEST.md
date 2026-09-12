@@ -150,6 +150,32 @@ implementaciones que no escribimos.
 
 ## 3. Verificación de replicabilidad
 
+**Antes de desplegar: construir desde un CLON LIMPIO.** Este paso no es formalismo —
+encontró dos bugs reales el 2026-09-12 que el árbol de desarrollo ocultaba:
+
+    wfa_kernel.hip      usaba size_t / INT32_MIN sin incluir <cstddef> / <cstdint>
+    hip_cpu_shim/.../hip_runtime.h   ídem, con size_t en su declaración de la línea 52
+
+Ambos compilaban en el árbol de desarrollo **solo por el orden accidental de los
+includes** de cada unidad de traducción. En un clon limpio el gate CPU fallaba con
+`'size_t' was not declared`, es decir: **la red de seguridad de todas las fases no
+construía desde cero.** Se corrigieron los dos headers con includes explícitos.
+
+La lección general: *un header que solo compila en su árbol no es portable*, y la
+portabilidad es la tesis del proyecto. Cualquier despliegue empieza por un clon
+limpio, no por el árbol de trabajo.
+
+```bash
+git clone <repo> /tmp/deploy_check && cd /tmp/deploy_check
+bash scripts/check_kernel_cpu.sh          # debe llegar a "CPU GATE COMPLETE"
+```
+
+Verificado en el clon limpio (commit 75f71f3):
+
+    AMD   hipcc -O2 ... -o /tmp/dt_rocm tests/parity/wfa_parity.cpp   -> RC=0
+    NVIDIA nvcc  -x cu  ... -o /tmp/dt_cuda tests/parity/wfa_parity.cpp -> RC=0
+    CPU    check_kernel_cpu.sh  -> CPU GATE COMPLETE, edlib 0 DISAGREES
+
 Correr el mismo check en cada host y **comparar versiones de toolchain**, no solo
 veredictos. Idénticas versiones de hipcc/cmake en familias de OS distintas es la
 evidencia real de que el entorno está fijado (ver `docs/CONTAINERS.md`).
