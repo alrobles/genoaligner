@@ -331,6 +331,14 @@ int main(int argc, char** argv)
 {
     const int smax = 64;
 
+    // --emit <path>: write index / pattern / text / CIGAR for the external
+    // edlib comparison (check_cigar.py). Column 4 carries the CIGAR so the
+    // same reader shape works as for the score harness.
+    std::string emit_path;
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == "--emit" && i + 1 < argc) emit_path = argv[i + 1];
+    }
+
     // ---- hand cases with expected scores (not expected CIGAR strings) ------
     struct Case { const char* p; const char* t; int score; const char* note; };
     const std::vector<Case> hand = {
@@ -380,6 +388,17 @@ int main(int argc, char** argv)
     int n_tot = 0, n_rescore = 0, n_wf = 0, n_skip = 0;
     int shown = 0;
 
+    FILE* emit = nullptr;
+    if (!emit_path.empty()) {
+        emit = std::fopen(emit_path.c_str(), "w");
+        if (!emit) {
+            std::fprintf(stderr, "ERROR: cannot open emit path %s\n", emit_path.c_str());
+            return 2;
+        }
+        std::fprintf(emit, "# genoaligner Fase 4 CIGAR emit\n");
+        std::fprintf(emit, "index\tpattern\ttext\tcigar\tscore\n");
+    }
+
     for (int cases = 0; cases < 3000; ++cases) {
         const int len = 24 + (cases % 6) * 8;
         std::string t;
@@ -406,6 +425,12 @@ int main(int argc, char** argv)
         const std::string cigar = traceback(p, t, S);
         bool ops_ok = false;
         const int rescored = cigar_score(cigar, p, t, &ops_ok);
+
+        if (emit) {
+            std::fprintf(emit, "%d\t%s\t%s\t%s\t%d\n",
+                         cases, p.c_str(), t.c_str(),
+                         cigar.empty() ? "-" : cigar.c_str(), S.final_score);
+        }
 
         if (ops_ok && rescored == S.final_score) ++n_rescore; else {
             if (shown++ < 3) {
@@ -447,5 +472,10 @@ int main(int argc, char** argv)
     const bool pass = (bad == 0) && (n_rescore == n_tot) && (n_wf == n_tot) && (n_tot > 0);
     std::printf("\n==== Fase 4 CPU %s ====\n",
                 pass ? "TRACEBACK OK" : "TRACEBACK FAILED");
+
+    if (emit) {
+        std::fclose(emit);
+        std::printf("emitted CIGARs: %s\n", emit_path.c_str());
+    }
     return pass ? 0 : 1;
 }
