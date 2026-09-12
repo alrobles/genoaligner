@@ -1,0 +1,56 @@
+name: cpu-gate
+
+# The CPU gate is the one check that needs no GPU, no ROCm and no CUDA: it compiles
+# the SHIPPED kernel body against a host shim and runs it against an independent
+# O(nm) dynamic program. Seconds, not minutes.
+#
+# It runs here for two reasons:
+#   1. it is the gate that everything else depends on, so it should fail as early
+#      and as publicly as possible; and
+#   2. it is the same command a reviewer can run to check this software without
+#      access to an accelerator, which is exactly what a reproducibility claim
+#      should offer.
+#
+# What this workflow does NOT cover: the HIP and CUDA builds, device behaviour, and
+# the NCCL-free parity runs on real GPUs. Those need the cluster and are documented
+# in docs/DEPLOYMENT_MANIFEST.md. A green run here is a necessary condition, not
+# proof the GPU paths work.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the repo's history is part of its evidence; do not shallow it
+
+      - name: Compiler versions
+        run: |
+          g++ --version | head -1
+          python3 --version
+
+      - name: CPU gate (parity + sanitizer + traceback + edlib)
+        run: bash scripts/check_kernel_cpu.sh
+
+      - name: Public API test (shim path)
+        run: |
+          g++ -O2 -std=c++17 -DGENOALIGNER_HIP_SHIM \
+              -Itests/parity/hip_cpu_shim -I. \
+              -o /tmp/test_api tests/api/test_api.cpp src/api/api.cpp
+          /tmp/test_api
+
+      - name: Clean-clone build check
+        # A header that only compiles inside its home tree is not portable. This
+        # step exists because that actually happened: the kernel header and the CPU
+        # shim both used size_t without <cstddef> and only built by accident of
+        # include order in the development tree.
+        run: |
+          git clone --quiet . /tmp/clean_clone
+          cd /tmp/clean_clone
+          bash scripts/check_kernel_cpu.sh
