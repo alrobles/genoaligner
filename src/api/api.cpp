@@ -285,6 +285,12 @@ BatchResult align_batch(const std::vector<AlignRequest>& reqs)
     if (hipMalloc(&d_pat, P.size() ? P.size() : 1) != hipSuccess)        return fail("hipMalloc(d_pat)");
     if (hipMalloc(&d_tex, T.size() ? T.size() : 1) != hipSuccess)        return fail("hipMalloc(d_tex)");
     if (hipMalloc(&d_scores, (size_t)N * sizeof(int)) != hipSuccess)     return fail("hipMalloc(d_scores)");
+    // Sentinel before any kernel runs: a score buffer that stays -1 means "the
+    // kernel never wrote it". Without this, a dead kernel leaves uninitialised
+    // device memory that memcpy's back as scores that look VALID -- the one
+    // output this library must never produce.
+    if (hipMemset(d_scores, 0xFF, (size_t)N * sizeof(int)) != hipSuccess)
+        return fail("hipMemset(d_scores)");
     if (any_cigar) {
         if (hipMalloc(&d_cg, (size_t)N * (size_t)cigar_cap * sizeof(int)) != hipSuccess) return fail("hipMalloc(d_cg)");
         if (hipMalloc(&d_meta, (size_t)N * 4 * sizeof(int)) != hipSuccess) return fail("hipMalloc(d_meta)");
@@ -311,7 +317,8 @@ BatchResult align_batch(const std::vector<AlignRequest>& reqs)
         views[(size_t)i] = PairView{ d_tex + toff[i], reqs[i].text_len,
                                      d_pat + poff[i], reqs[i].pattern_len, smax };
     }
-    hipMemcpy(d_pairs, views.data(), (size_t)N * sizeof(PairView), hipMemcpyHostToDevice);
+    cpy = hipMemcpy(d_pairs, views.data(), (size_t)N * sizeof(PairView), hipMemcpyHostToDevice);
+    if (cpy != hipSuccess) return fail("hipMemcpy(views)");
 
     if (any_cigar) {
         // Traceback path: score + CIGAR in one kernel.
@@ -331,7 +338,10 @@ BatchResult align_batch(const std::vector<AlignRequest>& reqs)
         if (hipMalloc(&d_ws, (size_t)wf_alloc_max * (size_t)N * sizeof(int)) != hipSuccess) {
             return fail("hipMalloc(d_ws)");
         }
-        hipMemset(d_ws, 0, (size_t)wf_alloc_max * (size_t)N * sizeof(int));
+        if (hipMemset(d_ws, 0, (size_t)wf_alloc_max * (size_t)N * sizeof(int)) != hipSuccess) {
+            hipFree(d_ws);
+            return fail("hipMemset(d_ws)");
+        }
 
         if (chunk_bytes > 48 * 1024) {
             hipError_t as = hipFuncSetAttribute(
@@ -371,13 +381,20 @@ BatchResult align_batch(const std::vector<AlignRequest>& reqs)
                          (unsigned)N);
             return fail(hipGetErrorString(le));
         }
-        hipDeviceSynchronize();
+        // The launch returning no error only means the kernel STARTED. A fault
+        // during execution surfaces here -- and unchecked, it would leave the
+        // -1 sentinel / device garbage in d_scores to be read as real results.
+        hipError_t se = hipDeviceSynchronize();
+        if (se != hipSuccess) { hipFree(d_ws); return fail(hipGetErrorString(se)); }
 
         std::vector<int> scores((size_t)N, -1), meta((size_t)N * 4, 0);
         std::vector<int> cg((size_t)N * (size_t)cigar_cap, 0);
-        hipMemcpy(scores.data(), d_scores, (size_t)N * sizeof(int), hipMemcpyDeviceToHost);
-        hipMemcpy(meta.data(), d_meta, (size_t)N * 4 * sizeof(int), hipMemcpyDeviceToHost);
-        hipMemcpy(cg.data(), d_cg, (size_t)N * (size_t)cigar_cap * sizeof(int), hipMemcpyDeviceToHost);
+        if (hipMemcpy(scores.data(), d_scores, (size_t)N * sizeof(int), hipMemcpyDeviceToHost) != hipSuccess ||
+            hipMemcpy(meta.data(),   d_meta,   (size_t)N * 4 * sizeof(int), hipMemcpyDeviceToHost) != hipSuccess ||
+            hipMemcpy(cg.data(),     d_cg,     (size_t)N * (size_t)cigar_cap * sizeof(int), hipMemcpyDeviceToHost) != hipSuccess) {
+            hipFree(d_ws);
+            return fail("hipMemcpy(results)");
+        }
 
         for (int i = 0; i < N; ++i) {
             const int rev_used = meta[(size_t)i * 4 + 1];
@@ -407,9 +424,11 @@ BatchResult align_batch(const std::vector<AlignRequest>& reqs)
 #endif
         hipError_t le = hipGetLastError();
         if (le != hipSuccess) { return fail("wfa_score_kernel launch"); }
-        hipDeviceSynchronize();
+        hipError_t se = hipDeviceSynchronize();
+        if (se != hipSuccess) return fail(hipGetErrorString(se));
         std::vector<int> scores((size_t)N, -1);
-        hipMemcpy(scores.data(), d_scores, (size_t)N * sizeof(int), hipMemcpyDeviceToHost);
+        if (hipMemcpy(scores.data(), d_scores, (size_t)N * sizeof(int), hipMemcpyDeviceToHost) != hipSuccess)
+            return fail("hipMemcpy(scores)");
         for (int i = 0; i < N; ++i) {
             out.results[(size_t)i].score    = scores[(size_t)i];
             out.results[(size_t)i].resolved = scores[(size_t)i] >= 0;
