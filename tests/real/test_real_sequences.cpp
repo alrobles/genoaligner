@@ -50,7 +50,8 @@ static int g_last_resolved = 0;   // resolved count from the last compare_all ca
 
 static int compare_all(const std::vector<std::string>& pats,
                        const std::vector<std::string>& texts,
-                       int smax, const char* label, int max_print = 4)
+                       int smax, const char* label, int max_print = 4,
+                       bool with_cigar = true)
 {
     if (pats.size() != texts.size()) { check(false, "test bug: unequal pair lists"); return 0; }
 
@@ -61,6 +62,7 @@ static int compare_all(const std::vector<std::string>& pats,
         r.pattern = pats[i].data(); r.pattern_len = (int)pats[i].size();
         r.text    = texts[i].data(); r.text_len    = (int)texts[i].size();
         r.smax    = smax;
+        r.with_cigar = with_cigar;
         reqs.push_back(r);
     }
     BatchResult b = align_batch(reqs);
@@ -88,14 +90,18 @@ static int compare_all(const std::vector<std::string>& pats,
                 printf("  score %d, CPU DP says %d  (pair %zu)\n", r.score, want, i);
         }
         // The CIGAR must reconstruct the pair AND re-score to the reported score.
-        if (r.cigar.empty()) {
-            ++n_empty;
-            if (printed++ < max_print) printf("  EMPTY cigar on a resolved pair %zu\n", i);
-        } else if (!r.rescore_ok || !r.wellformed_ok) {
-            ++n_validator;
-            if (printed++ < max_print)
-                printf("  cigar invalid on pair %zu (rescore=%d wf=%d, len=%zu)\n",
-                       i, (int)r.rescore_ok, (int)r.wellformed_ok, r.cigar.size());
+        // Score-only requests (with_cigar=false) emit none by contract -- the
+        // sections that use them exist for the resolved/unresolved semantics.
+        if (with_cigar) {
+            if (r.cigar.empty()) {
+                ++n_empty;
+                if (printed++ < max_print) printf("  EMPTY cigar on a resolved pair %zu\n", i);
+            } else if (!r.rescore_ok || !r.wellformed_ok) {
+                ++n_validator;
+                if (printed++ < max_print)
+                    printf("  cigar invalid on pair %zu (rescore=%d wf=%d, len=%zu)\n",
+                           i, (int)r.rescore_ok, (int)r.wellformed_ok, r.cigar.size());
+            }
         }
     }
 
@@ -104,8 +110,10 @@ static int compare_all(const std::vector<std::string>& pats,
     g_ran = true;
     g_last_resolved = n_resolved;
     check(n_bad == 0, label);
-    check(n_empty == 0, "no empty CIGARs on resolved pairs");
-    check(n_validator == 0, "all CIGARs pass re-score and well-formedness");
+    if (with_cigar) {
+        check(n_empty == 0, "no empty CIGARs on resolved pairs");
+        check(n_validator == 0, "all CIGARs pass re-score and well-formedness");
+    }
     return (int)reqs.size();
 }
 
@@ -209,7 +217,12 @@ int main()
         // d ~300 > smax: these MUST be unresolved, and the test asserts the API says
         // so rather than returning a truncated alignment as if it were complete.
         compare_all(pats, texts, 64, "600 bp co-linear, smax=64");
-        compare_all(pats, texts, 200, "600 bp co-linear, smax=200");
+        // Score-only: the trace kernel's per-block shared workspace is
+        // (smax+1)(2*smax+3) ints -- over the 64 KiB device limit beyond
+        // smax ~88, so the API refuses with_cigar at smax=200 by design.
+        // What this case asserts is the unresolved-vs-distance semantics,
+        // which the score kernel covers.
+        compare_all(pats, texts, 200, "600 bp co-linear, smax=200", 4, false);
         printf("        (0 resolved is CORRECT here: measured d ~300 > smax)\n");
 
         // Now a case that must RESOLVE: shorter real windows, where the distance does
@@ -236,7 +249,11 @@ int main()
     {
         std::vector<std::string> pats{hum, hum}, texts{hum, chi};
         // smax must cover ~12%% divergence over 16.5 kb (~2000 edits).
-        compare_all(pats, texts, 511, "whole mtDNA, smax=511");
+        // Score-only: smax=511 needs ~2 MB of per-block shared memory for
+        // traceback -- no current device takes it; the API refuses with_cigar
+        // by design. What is asserted is that d>511 reports unresolved, which
+        // the score kernel answers.
+        compare_all(pats, texts, 511, "whole mtDNA, smax=511", 4, false);
         printf("        (the human-vs-chimp case needs d > 511; unresolved is\n");
         printf("         expected and correct -- see the count above)\n");
     }
@@ -252,7 +269,8 @@ int main()
             const size_t from = (npos > 100) ? npos - 100 : 0;
             const std::string p = slice(hum, from, 200);
             std::vector<std::string> pats{p, p}, texts{p, std::string(p.rbegin(), p.rend())};
-            compare_all(pats, texts, 200, "window containing N (+ its reverse)");
+            // Score-only for the same reason as smax=200 above.
+            compare_all(pats, texts, 200, "window containing N (+ its reverse)", 4, false);
         }
     }
 

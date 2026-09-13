@@ -156,6 +156,155 @@ struct BatchResult {
 };
 BatchResult align_batch(const std::vector<AlignRequest>& reqs);
 
+// ===========================================================================
+// SMITH-WATERMAN — local alignment (a different algorithm, a different meaning)
+// ===========================================================================
+//
+// WHY SEPARATE ENTRY POINTS, NOT AN `algorithm` FIELD ON AlignRequest
+// ------------------------------------------------------------------
+// SWAlignResult::score is an alignment SCORE (higher is better, >= 0 always).
+// AlignResult::score is an edit DISTANCE (lower is better). Overloading one
+// field with both meanings is exactly the silent-semantic-change bug this
+// project exists to avoid, so SW gets its own request/result types:
+//
+//   * SWRequest has NO smax. Smith-Waterman is not bounded by a distance
+//     budget; there is nothing for the field to mean, so it is absent rather
+//     than ignored.
+//   * SWAlignResult carries the alignment's COORDINATES (start/end in both
+//     sequences), which local alignment produces and WFA does not.
+//   * A batch is homogeneous by type: you cannot accidentally mix distance
+//     requests and score requests into one result vector.
+//
+// THE SCORING SCHEME
+// ------------------
+// SWRequest::scoring is {match, mismatch, gap_open, gap_extend}:
+//   a match adds match; a mismatch adds mismatch; a gap run of length L
+//   subtracts gap_open + (L-1)*gap_extend. The defaults below are an EXAMPLE,
+//   not a recommendation -- pick the scheme for your data.
+//
+//   Validation REFUSES a request rather than computing under a degenerate
+//   scheme (invalid_argument, whole batch fails):
+//     match <= 0            SW is degenerate: the score is 0 for every input
+//     mismatch >= match     a scheme where mismatching never loses to matching
+//                           is pathological -- almost surely a caller error
+//     gap_open <= 0 or
+//     gap_extend <= 0       free or rewarded gaps are degenerate
+//     gap_extend > gap_open  WITH with_cigar: under this regime the DP prefers
+//                           re-opening adjacent 1-gaps over extending a run
+//                           (two opens cost 2*gap_open < gap_open+gap_extend),
+//                           and consecutive same-direction ops are ONE run in
+//                           CIGAR terms -- the emitted string cannot reproduce
+//                           its own score. Found empirically in Fase B
+//                           (docs/RESULTADO_H9_SW2_TRACE.md). Score-only
+//                           requests still accept it: the SCORE remains exact.
+//     mixed scoring in one
+//     batch                 one kernel launch takes ONE scheme, like the
+//                           one-smax rule: group by scheme, call per scheme.
+//
+// COORDINATES AND THE ALIGNED SPAN
+// --------------------------------
+// A local alignment covers a SPAN, not the whole sequences. start_i/start_j
+// are the 0-based indices of the first aligned char of text/pattern;
+// end_i/end_j the last. The CIGAR covers exactly text[start_i..end_i] and
+// pattern[start_j..end_j]. score == 0 means "no positive-scoring alignment
+// exists" (disjoint sequences); all four coords are -1 and the CIGAR is empty.
+// Score-only results (with_cigar = false, unmixed batch) report score and the
+// end coordinate; the start coords are -1 because sw_score_kernel does not
+// compute them.
+//
+// SUPPORTED-SIZE LIMITS, DECLARED
+// -------------------------------
+//   * with_cigar needs (text_len+1)*(pattern_len+1) bytes of direction table
+//     per pair. Pairs whose matrix exceeds SW_MAX_TRACE_CELLS come back
+//     resolved=false with too_large=true -- a reported limit, not a crash.
+//   * with_cigar=false on an unmixed batch runs the warp kernel, whose
+//     pattern_len is bounded by device shared memory (per-warp 2*(n+1) ints,
+//     4 warps/block; ~2047 bases on a 64 KiB limit). A batch exceeding it is
+//     refused with invalid_argument naming the limit.
+//   * The whole batch's workspace is one device allocation; if it does not
+//     fit in device memory the batch reports device_error. Split the batch.
+//
+// EXAMPLE
+// -------
+//     genoaligner::SWRequest req;
+//     req.text        = "TTTACGTGTT"; req.text_len    = 10;
+//     req.pattern     = "ACGTGT";     req.pattern_len = 6;
+//     req.scoring     = {2, -3, 5, 2};
+//     genoaligner::SWAlignResult r = genoaligner::align_sw(req);
+//     // r.score == 12, cigar "MMMMMM", text[3..8] aligned to pattern[0..5]
+//
+// ---------------------------------------------------------------------------
+// The scoring scheme. Penalties are positive and SUBTRACTED.
+// ---------------------------------------------------------------------------
+struct SWScoring {
+    int match      = 2;
+    int mismatch   = -3;
+    int gap_open   = 5;
+    int gap_extend = 2;
+};
+
+// The largest direction table a pair may need for traceback, in cells
+// ((text_len+1)*(pattern_len+1)); ~8k x 8k pairs fit, ~67 MB per pair of
+// device workspace. Larger pairs report too_large rather than overrun.
+static constexpr int SW_MAX_TRACE_CELLS = 1 << 26;
+
+// ---------------------------------------------------------------------------
+// One pair to locally align.
+// ---------------------------------------------------------------------------
+struct SWRequest {
+    const char* text        = nullptr;   // the row axis
+    int         text_len    = 0;
+    const char* pattern     = nullptr;   // the column axis
+    int         pattern_len = 0;
+    SWScoring   scoring;
+    bool        with_cigar  = true;      // false = score + end coordinate only
+};
+
+// ---------------------------------------------------------------------------
+// Result of locally aligning ONE pair.
+// ---------------------------------------------------------------------------
+struct SWAlignResult {
+    int         score    = -1;   // alignment score, >= 0 when resolved;
+                                 // -1 only when the pair was not computed
+    bool        resolved = false;
+    std::string cigar;           // over the aligned span; empty when score == 0
+
+    int         start_i = -1;    // first aligned char of text    (-1 if score 0
+    int         start_j = -1;    //   of pattern                    or unknown)
+    int         end_i   = -1;    // last aligned char of text
+    int         end_j   = -1;    //   of pattern
+
+    // Same discipline as AlignResult: computed in the library, not trusted.
+    // rescore_ok = the CIGAR re-scores to `score` under the affine scheme;
+    // wellformed_ok = it consumes exactly the reported span, M on equal chars,
+    // X on differing. score == 0 resolves with both true (vacuous).
+    bool        rescore_ok    = false;
+    bool        wellformed_ok = false;
+
+    // The pair's matrix exceeded SW_MAX_TRACE_CELLS: a declared supported-size
+    // limit, reported per pair. resolved is false and score is -1.
+    bool        too_large = false;
+};
+
+// ---------------------------------------------------------------------------
+// Batch entry point. Results come back in request order; resolved_count counts
+// computed pairs (SW has no "unresolved by design" -- unresolved here means
+// too_large or an execution failure, which is why the count exists).
+// ---------------------------------------------------------------------------
+struct SWBatchResult {
+    std::vector<SWAlignResult> results;
+    int resolved_count   = 0;
+    int unresolved_count = 0;
+
+    enum class Status { ok, invalid_argument, device_error };
+    Status status = Status::ok;
+    const char* error = nullptr;   // static string, non-null iff status != ok
+
+    bool ok() const { return status == Status::ok; }
+};
+SWBatchResult align_sw_batch(const std::vector<SWRequest>& reqs);
+SWAlignResult align_sw(const SWRequest& req);
+
 // ---------------------------------------------------------------------------
 // Environment / provenance. Cheap calls, no device work.
 // ---------------------------------------------------------------------------

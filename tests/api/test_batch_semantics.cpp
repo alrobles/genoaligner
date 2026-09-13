@@ -117,7 +117,13 @@ int main()
         check(b.unresolved_count == 2, "both requests unresolved under the narrow bound");
 
         // And the cost is real and observable: request A alone WOULD have resolved.
+        // Score-only: the trace kernel's per-block shared workspace is
+        // (smax+1)(2*smax+3) ints -- past the 64 KiB device limit beyond
+        // smax ~88, so the API refuses with_cigar at smax=200 by design. What
+        // is asserted here is resolution under the wide bound, which the score
+        // kernel answers.
         std::vector<AlignRequest> alone{reqs[0]};
+        alone[0].with_cigar = false;
         BatchResult bA = align_batch(alone);
         printf("  the same request alone (smax=200): resolved=%d  <- shows what was lost\n",
                bA.resolved_count);
@@ -135,6 +141,8 @@ int main()
             wide[(size_t)i].pattern = p.data(); wide[(size_t)i].pattern_len = (int)p.size();
             wide[(size_t)i].text    = q.data(); wide[(size_t)i].text_len    = (int)q.size();
             wide[(size_t)i].smax    = 200;
+            wide[(size_t)i].with_cigar = false;   // see note above: smax>~88 is
+                                                  // score-only by device limit
         }
         BatchResult b = align_batch(wide);
         printf("  both with smax=200: resolved=%d unresolved=%d\n",

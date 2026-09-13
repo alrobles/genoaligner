@@ -219,12 +219,15 @@ fi
 # sizing, the batch packing and the input validation, and it has already shipped one
 # real bug in each (a CIGAR cap sized from the first request, and a silently clamped
 # smax). A gate that does not exercise the public surface cannot catch those.
+# The SW section of the API test emits a TSV the SeqAn3 oracle can score on a
+# host that has SeqAn3 (the cluster). -pthread is required: the shim's warp
+# emulation (used by the SW score-only path) is one std::thread per lane.
 echo
 echo "--- [shim] build and run the public API test ---"
-if g++ -O2 -std=c++17 -DGENOALIGNER_HIP_SHIM -I"$SHIM_DIR" -I"$REPO_ROOT" -I"$REPO_ROOT/include" \
+if g++ -O2 -std=c++17 -pthread -DGENOALIGNER_HIP_SHIM -I"$SHIM_DIR" -I"$REPO_ROOT" -I"$REPO_ROOT/include" \
        -o "$BUILD_DIR/test_api" \
        "$REPO_ROOT/tests/api/test_api.cpp" "$REPO_ROOT/src/api/api.cpp" 2>"$BUILD_DIR/api_build.log"; then
-    if ! "$BUILD_DIR/test_api" | tee "$BUILD_DIR/api_test.out" | tail -20; then
+    if ! "$BUILD_DIR/test_api" --emit-sw "$BUILD_DIR/api_sw_cases.tsv" | tee "$BUILD_DIR/api_test.out" | tail -34; then
         echo
         echo "=== CPU GATE FAILED (public API) — do not submit to the cluster ==="
         exit 1
@@ -325,6 +328,25 @@ if "$HIPCC" -O2 -std=c++17 -I"$REPO_ROOT" -I"$REPO_ROOT/include" \
             fi
         else
             echo "  !!! batch-semantics test failed to BUILD:"; sed -n '1,15p' "$BUILD_DIR/batch_build.log"; exit 1
+        fi
+
+        # The public API test itself, on the real device: the shim run above
+        # verifies WFA's SHAPE and SW's results; this run verifies BOTH for real
+        # -- including the SW score kernel's warp path and the trace kernel's
+        # device workspace. Emits the SW TSV for the SeqAn3 oracle.
+        echo
+        echo "--- [gpu] public API test on the real device ---"
+        if "$HIPCC" -O2 -std=c++17 -pthread -I"$REPO_ROOT" -I"$REPO_ROOT/include" -o "$BUILD_DIR/test_api_gpu" \
+               "$REPO_ROOT/tests/api/test_api.cpp" \
+               "$REPO_ROOT/src/api/api.cpp" 2>"$BUILD_DIR/api_gpu_build.log"; then
+            "$BUILD_DIR/test_api_gpu" --emit-sw "$BUILD_DIR/api_sw_gpu.tsv" \
+                | tee "$BUILD_DIR/api_gpu_test.out" | tail -34
+            if [ "${PIPESTATUS[0]}" -ne 0 ] || ! grep -q "RESULT: PASS" "$BUILD_DIR/api_gpu_test.out"; then
+                echo "  !!! API test on GPU did not PASS — treating as FAILURE."
+                exit 1
+            fi
+        else
+            echo "  !!! API test failed to BUILD with hipcc:"; sed -n '1,15p' "$BUILD_DIR/api_gpu_build.log"; exit 1
         fi
     fi
 else
