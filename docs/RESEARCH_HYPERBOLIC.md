@@ -85,20 +85,48 @@ primero (n≤1k).
 GeoPhy/H-Vcsmc como backend alternativo a IQ-TREE para la supermatrix —
 proyecto separado (phylogenyAI), no mezclar con el milestone de MSA.
 
-## 4. Experimentos propuestos
+## 4. Experimento H1 ejecutado — viabilidad confirmada con límites
 
-1. **Baseline de distorsión** (CPU/Python, horas): k-mer dists del set
-   CYTB/COI → Poincaré embedding d=2..8 (geoopt/torch) → stress vs.
-   distancias originales; RF del árbol decodificado vs. NJ. Decide si el
-   nivel A es viable.
-2. **Gate de calidad**: mismo input, genomsa con `--guidetree-in` NJ vs.
-   decodificado-hiperbólico → SP/TC en benchmark proteico subset +
-   familias sintéticas con verdad conocida (simgrid ya genera
-   `sim_true_tree.nwk` — RF directo contra la verdad también).
-3. **Scaling**: n=10⁴..10⁵, tiempo end-to-end del path embedding+decode
-   vs. NJ actual — objetivo: quitar la barrera de n=10⁴ del simgrid.
+`scripts/hyp_embed_test.py` (numpy puro, Poincaré ball + RSGD con
+gradiente verificado por diferencias finitas — la disposición
+"x/y" citada de NK2017 da **−grad**, corregido en el script).
 
-## 5. Riesgos y honestidad
+Setup: `simgrid` cells con `sim_true_tree.nwk` → (a) distancias
+patristicas exactas, (b) distancias k-mer Jaccard k=5 de `sim_in.fasta`
+(la métrica real de genomsa) → embedding → NJ sobre geodésicas → RF.
+
+**Resultados:**
+
+| input | dim | rel-stress | RF(NJ(G), verdad) | baseline NJ(D) |
+|---|---|---|---|---|
+| patristica (s=0.02) | 4 | 0.124 | 43 | 1 |
+| patristica (s=0.02) | 8 | 0.054 | **1** | 1 |
+| k-mer (s=0.02) | 8 | 0.091 | 21 | 3 |
+| k-mer (s=0.02) | 16 | 0.041 | **3** (RF=0 vs NJ) | 3 |
+| k-mer (s=0.10) | 16 | 0.074 | 121 | 47 |
+| k-mer (s=0.10) | 32 | 0.032 | **43** | 47 |
+
+**Lectura:** (1) la recuperación es esencialmente exacta cuando el
+stress baja de ~0.05 — existe un umbral de dimensión que crece con el
+ruido de la métrica (16 para s=0.02, ~32 para s=0.10); (2) en el
+régimen difícil el embedding incluso suaviza el ruido (43 < 47);
+(3) el decode usado sigue siendo NJ O(n³) — el embedding comprime la
+información topológica a n·d flotantes pero NO quita el costo de
+decode. La escalabilidad real requiere reemplazar el decode (MST/
+single-linkage/soft-NJ en H^d) — ese es el siguiente experimento.
+
+## 5. Experimentos pendientes
+
+1. **Decode barato**: single-linkage/MST sobre geodésicas H^d (O(n²) con
+   heaps, o Delaunay hiperbólico tipo Sarkar) → comparar RF y tiempo vs.
+   NJ completo. Si single-linkage basta para guide tree, el pipeline
+   completo queda O(n²d) efectivo.
+2. **Gate de calidad MSA**: `--guidetree-in` con el árbol decodificado
+   vs. NJ estándar → SP/TC en benchmark proteico subset.
+3. **Scaling**: n=10⁴..10⁵ con pares muestreados (sin materializar n²
+   distancias) — objetivo: quitar la barrera n=10⁴ del simgrid.
+
+## 6. Riesgos y honestidad
 
 - El guide tree NO es el árbol filogenético final — sobre-invertir en
   su "calidad" tiene rendimiento decreciente: solo importa el orden de
