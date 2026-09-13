@@ -48,7 +48,7 @@ static void hip_free_all(std::vector<void*>& ps) {
 
 bool msa_align_gpu(const std::vector<std::string>& seqs, const Params& P,
                    std::vector<std::string>& out, std::string& err,
-                   GpuStats* stats) {
+                   GpuStats* stats, Tree* guide_out) {
     auto fail = [&](const char* m) { err = m; return false; };
     const int n = (int)seqs.size();
     if (n == 0) return fail("empty input");
@@ -69,6 +69,7 @@ bool msa_align_gpu(const std::vector<std::string>& seqs, const Params& P,
     std::vector<float> D = kmer_distances_mt(seqs, P.kmer_k, nthreads);
     auto t1 = std::chrono::steady_clock::now();
     Tree tree = nj_tree_mt(D, n, nthreads);
+    if (guide_out) *guide_out = tree;
     auto levels = tree_levels(tree);
     auto t2 = std::chrono::steady_clock::now();
 

@@ -62,6 +62,16 @@ def simulate(n_leaves=64, L=1500, seed=1, sub_rate=0.06, indel_rate=0.02):
         return split(branch(seq), mid) + split(branch(seq), k - mid)
 
     leaves = split(anc, n_leaves)
+    # true guide tree (balanced splits mirror the simulation topology):
+    # leaves are written in split order, so the tree is
+    #   split(k) = (split(k//2), split(k-k//2)) over consecutive leaf ids
+    def true_nwk(lo, k):
+        if k == 1:
+            return f"s{lo}"
+        mid = k // 2
+        return f"({true_nwk(lo, mid)},{true_nwk(lo + mid, k - mid)})"
+
+    tree_nwk = true_nwk(0, n_leaves) + ";\n"
     colidx = {c: i for i, c in enumerate(order)}
     true_rows = []
     for s in leaves:
@@ -70,7 +80,7 @@ def simulate(n_leaves=64, L=1500, seed=1, sub_rate=0.06, indel_rate=0.02):
             row[colidx[c]] = b
         true_rows.append("".join(row))
     leaf_seqs = ["".join(b for b, _ in s) for s in leaves]
-    return leaf_seqs, true_rows
+    return leaf_seqs, true_rows, tree_nwk
 
 def sps(true_rows, got_rows):
     n = len(true_rows)
@@ -100,14 +110,16 @@ if __name__ == "__main__":
     seed = int(sys.argv[3]) if len(sys.argv) > 3 else 1
     sub = float(sys.argv[4]) if len(sys.argv) > 4 else 0.02
     ind = float(sys.argv[5]) if len(sys.argv) > 5 else 0.004
-    seqs, true_rows = simulate(n_leaves=n, seed=seed, sub_rate=sub,
-                               indel_rate=ind)
+    seqs, true_rows, tree_nwk = simulate(n_leaves=n, seed=seed,
+                                       sub_rate=sub, indel_rate=ind)
     with open("sim_in.fasta", "w") as f:
         for i, s in enumerate(seqs):
             f.write(f">s{i}\n{s}\n")
     with open("sim_true.fasta", "w") as f:
         for i, s in enumerate(true_rows):
             f.write(f">s{i}\n{s}\n")
+    with open("sim_true_tree.nwk", "w") as f:
+        f.write(tree_nwk)
     if sys.argv[1] != "-":
         got = {}
         cur = None

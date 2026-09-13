@@ -82,6 +82,10 @@ Tree nj_tree_mt(const std::vector<float>& dist_packed, int n, int threads);
 // level, nodes keep ascending node-id order.
 std::vector<std::vector<int>> tree_levels(const Tree& t);
 
+// Serialize the guide tree as Newick (topology only, no branch lengths).
+// names[i] is the label of leaf i (typically the FASTA id).
+std::string tree_to_newick(const Tree& t, const std::vector<std::string>& names);
+
 // ------------------------------------------------------- profile-profile
 struct AlignResult {
     float score = 0;
@@ -120,6 +124,6 @@ struct GpuStats {
 };
 bool msa_align_gpu(const std::vector<std::string>& seqs, const Params& P,
                    std::vector<std::string>& out, std::string& err,
-                   GpuStats* stats = nullptr);
+                   GpuStats* stats = nullptr, Tree* guide_out = nullptr);
 
 } // namespace genomsa

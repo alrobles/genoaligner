@@ -545,4 +545,26 @@ std::vector<std::string> msa_align(const std::vector<std::string>& seqs,
     return msa_align_with_tree(seqs, t, P);
 }
 
+std::string tree_to_newick(const Tree& t,
+                           const std::vector<std::string>& names) {
+    std::string s;
+    std::function<void(int)> emit = [&](int u) {
+        const Node& nd = t.nodes[u];
+        if (nd.left < 0) {                      // leaf: id is the seq index
+            const std::string& nm = names[u];
+            bool quote = nm.find_first_of(" \t()[]':;,") != std::string::npos;
+            s += quote ? "'" + nm + "'" : nm;
+            return;
+        }
+        s += '(';
+        emit(nd.left);
+        s += ',';
+        emit(nd.right);
+        s += ')';
+    };
+    emit(t.root);
+    s += ";\n";
+    return s;
+}
+
 } // namespace genomsa

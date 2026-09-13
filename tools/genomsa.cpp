@@ -26,11 +26,13 @@ int main(int argc, char** argv) {
     const char* out_path = argv[2];
     genomsa::Params P;
     bool use_cpu = false;
+    std::string tree_out;
     for (int i = 3; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--cpu") use_cpu = true;
         else if (a == "--kmer" && i + 1 < argc) P.kmer_k = atoi(argv[++i]);
         else if (a == "--global") P.free_end_gaps = false;
+        else if (a == "--tree-out" && i + 1 < argc) tree_out = argv[++i];
         else { fprintf(stderr, "unknown arg: %s\n", a.c_str()); return 2; }
     }
 
@@ -46,11 +48,13 @@ int main(int argc, char** argv) {
 
     auto t0 = std::chrono::steady_clock::now();
     std::vector<std::string> msa;
+    genomsa::Tree guide;
     if (use_cpu) {
-        msa = genomsa::msa_align(seqs, P);
+        msa = genomsa::msa_align(seqs, P, tree_out.empty() ? nullptr : &guide);
     } else {
         genomsa::GpuStats st;
-        if (!genomsa::msa_align_gpu(seqs, P, msa, err, &st)) {
+        if (!genomsa::msa_align_gpu(seqs, P, msa, err, &st,
+                                    tree_out.empty() ? nullptr : &guide)) {
             fprintf(stderr, "gpu align failed: %s\n", err.c_str());
             return 1;
         }
@@ -70,5 +74,16 @@ int main(int argc, char** argv) {
         fprintf(f, ">%s\n%s\n", recs[i].id.c_str(), msa[i].c_str());
     fclose(f);
     fprintf(stderr, "wrote %s\n", out_path);
+
+    if (!tree_out.empty()) {
+        std::vector<std::string> names;
+        for (auto& r : recs) names.push_back(r.id);
+        FILE* tf = fopen(tree_out.c_str(), "w");
+        if (!tf) { fprintf(stderr, "cannot write %s\n", tree_out.c_str()); return 1; }
+        std::string nwk = genomsa::tree_to_newick(guide, names);
+        fputs(nwk.c_str(), tf);
+        fclose(tf);
+        fprintf(stderr, "wrote %s\n", tree_out.c_str());
+    }
     return 0;
 }
