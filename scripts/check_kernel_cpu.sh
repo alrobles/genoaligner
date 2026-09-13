@@ -115,6 +115,30 @@ run_pass() {
             pass_fail=1
         fi
     fi
+
+    # --- the SW traceback kernel (Fase B): score + CIGAR ---------------------
+    # sw_trace_kernel is one thread per pair (no warps, no barriers) but its own
+    # forward pass is a DIFFERENT code path than the warp scan -- this test
+    # asserts trace.score == score-kernel == reference AND that the emitted
+    # CIGAR equals an independent matrix walk, is well-formed on the aligned
+    # span, and re-scores exactly. Emits a TSV for the SeqAn3 oracle that the
+    # GPU job runs (SeqAn3 needs the cluster's g++14.2; not required locally).
+    local twsrc="$REPO_ROOT/tests/sw/test_sw_trace.cpp"
+    local twbin="$BUILD_DIR/test_sw_trace"
+    echo "--- [${label}] build test_sw_trace (shim) ---"
+    # shellcheck disable=SC2086
+    if ! "$CXX" $extra -std=c++17 -pthread -DGENOALIGNER_HIP_SHIM \
+            -I"$SHIM_DIR" -I"$REPO_ROOT" -I"$REPO_ROOT/include" \
+            -o "$twbin" "$twsrc"; then
+        echo "BUILD FAILED (${label}): test_sw_trace.cpp (shim)"
+        pass_fail=1
+    else
+        echo "--- [${label}] run test_sw_trace ---"
+        if ! "$twbin" --emit "$BUILD_DIR/sw_trace_cases.tsv"; then
+            echo "RUN FAILED (${label}): test_sw_trace (shim)"
+            pass_fail=1
+        fi
+    fi
     echo
     return $pass_fail
 }

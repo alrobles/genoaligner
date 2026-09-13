@@ -64,12 +64,57 @@
 //     runtime warpSize, so the same body runs on 32-lane NVIDIA and 64-lane AMD
 //     warps. The CPU gate emulates BOTH widths.
 //
-// WHAT THIS FILE DOES NOT DO YET
-// ------------------------------
-// Traceback. It returns the SCORE and the END coordinate. Reconstructing the path needs
-// the matrix retained and a second pass -- and in this project the traceback is where
-// the bugs have lived (the WFA CIGAR path never worked through the API while its test
-// passed). It gets its own gate before it is claimed.
+// FASE B — TRACEBACK (CIGAR reconstruction)
+// -----------------------------------------
+// sw_score_kernel returns the score and the END coordinate. Reconstructing the path
+// needs a decision record the score kernel does not keep: it holds one row in shared
+// memory and overwrites it. sw_trace_kernel below is a SEPARATE kernel, one THREAD
+// per pair, which recomputes the matrix serially -- deliberately a different code
+// path from the warp scan, so agreement between them means something -- and records,
+// per cell, a DIRECTION BYTE:
+//
+//     dir[i][j] bits:
+//       [1:0] hsrc  how H[i][j] was produced:
+//                     0 = stop    (final h == 0: the local alignment restarts here)
+//                     1 = diag    (H[i-1][j-1] + s)
+//                     2 = E       (gap in TEXT: consumes a pattern column -> op 'D')
+//                     3 = F       (gap in PATTERN: consumes a text row   -> op 'I')
+//       [2]   esrc  how E[i][j] was produced: 0 = open  (H[i][j-1] - gap_open)
+//                                           1 = extend(E[i][j-1] - gap_extend)
+//       [3]   fsrc  how F[i][j] was produced: 0 = open, 1 = extend (same, vertical)
+//
+// The backward walk then needs NO matrix values: at cell (i,j) it reads the byte,
+// emits one op, moves, and -- inside a gap run -- consults esrc/fsrc of the cell it
+// is AT to decide whether the gap opened or extends. Tie-breaks are decided ONCE,
+// in the forward pass, with the reference's own priority (diag > E > F; a gap
+// extends only when strictly greater than opening), so the emitted path is
+// deterministic and equals the reference walk's.
+//
+// MEMORY, DECIDED EXPLICITLY (the plan's demand)
+// ----------------------------------------------
+// The workspace is (m+1)*(n+1) BYTES of directions + 2*(n+1) ints of row scratch per
+// pair -- NOT the 3*mn ints a full H/E/F stack would cost. 400x160 is ~64 KB per
+// pair; 8192x8192 is ~67 MB per pair. The caller sizes dir_stride; a pair whose
+// matrix would not fit reports score = SW_TRACE_TOO_BIG instead of writing out of
+// bounds. This is a SUPPORTED-SIZE design, not genome-scale traceback: Fase C (the
+// API) turns it into a documented limit, and banded/checkpointed traceback is a
+// future design, not a silent gap.
+//
+// CIGAR encoding reuses the WFA convention (op codes 0=M 1=X 2=I 3=D, the array
+// filled in REVERSE, cigar_meta = {cap, used, truncated, emitted} per pair) so the
+// same checkers apply. In this kernel's coordinates text is the row axis and
+// pattern the column axis, so 'I' consumes text and 'D' consumes pattern, matching
+// tests/parity/cigar.hpp.
+//
+// PARAMETER REGIME: gap_extend <= gap_open is REQUIRED for the CIGAR to agree with
+// the score. With ge > go the recurrence itself is still exact, but it prefers
+// re-OPENING adjacent 1-gaps over extending a run (two opens cost 2*go < go+ge),
+// and consecutive same-direction ops are one gap RUN in CIGAR terms -- the walk's
+// path and the emitted string then rescore differently by construction. The gate
+// found this empirically (scheme {2,-3,1,2}: score 14, CIGAR rescores 13). The
+// score kernel remains exact under ge>go; TRACEBACK does not. Fase C's API will
+// reject ge>go with an explicit error rather than emit a CIGAR that cannot
+// reproduce its own score.
 
 #ifndef GENOALIGNER_SW_KERNEL_HIP
 #define GENOALIGNER_SW_KERNEL_HIP
@@ -157,6 +202,59 @@ __global__ void sw_score_kernel(const SWPairView* __restrict__ pairs,
                                 SWResult* __restrict__ out,
                                 int                n_pairs,
                                 int                smem_ints_per_warp);
+
+// ---- Fase B: traceback -------------------------------------------------------
+
+// CIGAR op codes -- the same encoding tests/parity/cigar.hpp uses for WFA, so the
+// same decode/verify helpers apply to both algorithms.
+//   0 = M (match, consumes both)   1 = X (mismatch, consumes both)
+//   2 = I (consumes TEXT)          3 = D (consumes PATTERN)
+static constexpr int SW_OP_M = 0;
+static constexpr int SW_OP_X = 1;
+static constexpr int SW_OP_I = 2;
+static constexpr int SW_OP_D = 3;
+
+// Direction-byte fields (see the Fase B section above).
+static constexpr uint8_t SW_DIR_STOP = 0;
+static constexpr uint8_t SW_DIR_DIAG = 1;
+static constexpr uint8_t SW_DIR_E    = 2;   // hsrc: H[i][j] came from E
+static constexpr uint8_t SW_DIR_F    = 3;   // hsrc: H[i][j] came from F
+static constexpr uint8_t SW_DIR_EEXT = 4;   // esrc: E[i][j] extended (else opened)
+static constexpr uint8_t SW_DIR_FEXT = 8;   // fsrc: F[i][j] extended (else opened)
+
+// Reported in SWTraceResult::score when a pair's matrix does not fit the
+// caller-provided dir_stride: a declared supported-size limit, not a crash.
+static constexpr int SW_TRACE_TOO_BIG = -(1 << 30);
+
+struct SWTraceResult {
+    int score;
+    int start_i;   // 0-based index of the FIRST aligned text char    (-1 if score == 0)
+    int start_j;   // 0-based index of the FIRST aligned pattern char
+    int end_i;     // 0-based index of the LAST aligned text char     (-1 if score == 0)
+    int end_j;     // 0-based index of the LAST aligned pattern char
+};
+
+// ---- launch contract ---------------------------------------------------------
+//
+//   pair_id    = blockIdx.x * blockDim.x + threadIdx.x   (one thread per pair)
+//   dirs       : n_pairs * dir_stride bytes; dir_stride >= (text_len+1)*(pattern_len+1)
+//                for the largest pair in the batch. Row i of a pair's table sits at
+//                dirs[pair_id*dir_stride + i*(n+1)].
+//   scratch    : n_pairs * scratch_stride ints; scratch_stride >= 2*(pattern_len+1)
+//                (previous H row + F column array for the serial forward pass).
+//   cigar_buf  : n_pairs * cigar_cap ints, filled in REVERSE (as WFA).
+//   cigar_meta : n_pairs * 4 ints = {cap, used, truncated, emitted}.
+//
+// A pair whose matrix exceeds dir_stride reports score = SW_TRACE_TOO_BIG and
+// emits nothing -- the limit is declared, never silently overrun.
+__global__ void sw_trace_kernel(const SWPairView* __restrict__ pairs,
+                                SWParams           params,
+                                SWTraceResult* __restrict__ out,
+                                int* __restrict__ cigar_buf,
+                                int* __restrict__ cigar_meta,
+                                uint8_t* __restrict__ dirs,    size_t dir_stride,
+                                int* __restrict__ scratch,     size_t scratch_stride,
+                                int n_pairs, int cigar_cap);
 
 }  // namespace genoaligner
 
