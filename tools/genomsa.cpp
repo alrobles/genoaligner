@@ -55,9 +55,9 @@ int main(int argc, char** argv) {
             return 1;
         }
         fprintf(stderr,
-                "levels=%d pairs=%d dir_peak=%.1fMB | dist=%.2fs tree=%.2fs align=%.2fs\n",
+                "levels=%d pairs=%d dir_peak=%.1fMB | dist=%.2fs tree=%.2fs(%s) align=%.2fs\n",
                 st.levels, st.pairs, st.dir_bytes / 1e6,
-                st.dist_s, st.tree_s, st.align_s);
+                st.dist_s, st.tree_s, st.tree_gpu ? "gpu" : "cpu", st.align_s);
     }
     auto t1 = std::chrono::steady_clock::now();
     fprintf(stderr, "align total: %.2fs (%s)\n",
