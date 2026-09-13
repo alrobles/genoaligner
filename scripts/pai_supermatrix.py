@@ -17,8 +17,8 @@ import os, sys, re
 
 PAI = os.environ.get("PAI_DIR", "/beegfs/a474r867/phylogenyAI")
 RAW = os.path.join(PAI, "data/genes_raw")
-TRIM = os.path.join(PAI, "data/alignments_qc_trimmed")
-OUT = os.path.join(PAI, "data/supermatrix")
+TRIM = os.environ.get("TRIM_DIR", os.path.join(PAI, "data/alignments_qc_trimmed"))
+OUT = os.environ.get("OUT_DIR", os.path.join(PAI, "data/supermatrix"))
 GENES = ["A2AB","ADORA3","ADRB2","APOB","APP","ATP7","BCHE","BDNF","BMI1",
          "BRCA1","BRCA2","CNR1","COI","CREM","CYTB","DMP1","EDG1","ENAM",
          "FBN1","GHR","IRBP","ND1","ND2","PLCB4","PNOC","RAG1A","RAG1B",
