@@ -382,7 +382,8 @@ echo "--- [shim] MSA GPU driver parity (shipped code) ---"
 if g++ -O2 -std=c++17 -pthread -DGENOALIGNER_HIP_SHIM -I"$SHIM_DIR" -I"$REPO_ROOT/include" \
        -o "$BUILD_DIR/msa_driver_parity" \
        "$REPO_ROOT/tests/parity/msa_driver_parity.cpp" \
-       "$REPO_ROOT/src/msa/msa_gpu.cpp" "$REPO_ROOT/src/msa/msa_ref.cpp" \
+       "$REPO_ROOT/src/msa/msa_gpu.cpp" "$REPO_ROOT/src/msa/nj_gpu.cpp" \
+       "$REPO_ROOT/src/msa/msa_ref.cpp" \
        2>"$BUILD_DIR/msa_drv_build.log"; then
     if ! "$BUILD_DIR/msa_driver_parity" | tee "$BUILD_DIR/msa_drv.out" | tail -15; then
         echo
@@ -396,6 +397,32 @@ if g++ -O2 -std=c++17 -pthread -DGENOALIGNER_HIP_SHIM -I"$SHIM_DIR" -I"$REPO_ROO
 else
     echo "  !!! MSA driver parity failed to BUILD:"
     sed -n '1,20p' "$BUILD_DIR/msa_drv_build.log"
+    exit 1
+fi
+
+echo
+echo "--- [shim] NJ0 exact dense Neighbor Joining parity (shipped code) ---"
+# src/msa/nj_gpu.cpp + the kernel bodies under the shim vs genomsa::nj_tree:
+# Tree.nodes identical, including on matrices with exact Q ties (the
+# lexicographic (q,a,b) reduction is what makes the device argmin equal the
+# host's first-minimum scan). Emits ALL OK or N FAILURES.
+if g++ -O2 -std=c++17 -pthread -DGENOALIGNER_HIP_SHIM -I"$SHIM_DIR" -I"$REPO_ROOT/include" \
+       -o "$BUILD_DIR/nj_gpu_test" \
+       "$REPO_ROOT/tests/msa/test_nj_gpu.cpp" \
+       "$REPO_ROOT/src/msa/nj_gpu.cpp" "$REPO_ROOT/src/msa/msa_ref.cpp" \
+       2>"$BUILD_DIR/nj_gpu_build.log"; then
+    if ! "$BUILD_DIR/nj_gpu_test" | tee "$BUILD_DIR/nj_gpu.out" | tail -8; then
+        echo
+        echo "=== CPU GATE FAILED (NJ0 parity) — do not submit ==="
+        exit 1
+    fi
+    if ! grep -q "ALL OK" "$BUILD_DIR/nj_gpu.out"; then
+        echo "  !!! NJ0 parity produced no ALL OK verdict — treating as FAILURE."
+        exit 1
+    fi
+else
+    echo "  !!! NJ0 parity failed to BUILD:"
+    sed -n '1,20p' "$BUILD_DIR/nj_gpu_build.log"
     exit 1
 fi
 

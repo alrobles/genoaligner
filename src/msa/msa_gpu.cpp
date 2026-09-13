@@ -68,7 +68,22 @@ bool msa_align_gpu(const std::vector<std::string>& seqs, const Params& P,
     }();
     std::vector<float> D = kmer_distances_mt(seqs, P.kmer_k, nthreads);
     auto t1 = std::chrono::steady_clock::now();
-    Tree tree = nj_tree_mt(D, n, nthreads);
+    // Guide tree: NJ0 on the device unless GENOMSA_NJ=cpu. nj_tree_gpu is
+    // bit-exact with nj_tree, so the fallback below changes timing only.
+    Tree tree;
+    {
+        const char* e = std::getenv("GENOMSA_NJ");
+        const bool want_gpu = !(e && std::strcmp(e, "cpu") == 0);
+        std::string nj_err;
+        if (want_gpu) tree = nj_tree_gpu(D, n, nj_err);
+        if (!want_gpu || !nj_err.empty()) {
+            if (!nj_err.empty())
+                fprintf(stderr, "genomsa: %s; falling back to nj_tree_mt\n", nj_err.c_str());
+            tree = nj_tree_mt(D, n, nthreads);
+        } else if (stats) {
+            stats->tree_gpu = 1;
+        }
+    }
     auto levels = tree_levels(tree);
     auto t2 = std::chrono::steady_clock::now();
 

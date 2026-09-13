@@ -1,0 +1,91 @@
+# Resultado NJ0: Neighbor Joining exacto denso en GPU (`nj_tree_gpu`)
+
+Rama `devin/1789341442-nj-gpu0`. Contrato: `docs/SPEC_NJ_GPU.md` (fase NJ0).
+Jobs Slurm en KU HPC, partición `sixhour`, `gpu:mi210:1` (gfx90a), nodo
+`r06r18n01`, 16 hilos host, ROCm 6.4.3: `29238546` (v1), `29238566` (v2,
+rowsum pipelineado), `29238575` (v3, bloque rowsum 64). Script:
+`scripts/nj_gpu_validate.sbatch`; datos por gen en
+`/beegfs/a474r867/phylogenyAI/data/nj_gpu0/nj_gpu0_<job>.tsv`.
+
+## 1. Veredicto
+
+| Gate (SPEC §NJ0)                                            | Resultado |
+|-------------------------------------------------------------|-----------|
+| Paridad sintética en device (`tests/msa/test_nj_gpu.cpp`: n=1,2,3,4,5,8,17,33,64,1000; aleatorias, constantes, cero, cuantizadas con empates, métricas aditivas, tamaño empaquetado inválido) | PASS (3/3 jobs) |
+| Paridad en los 31 genes reales: `Tree.nodes` y `root` idénticos a `nj_tree_mt` | PASS 31/31 (3/3 jobs) |
+| End-to-end `genomsa` en COI: alineamiento byte-idéntico con árbol GPU vs `GENOMSA_NJ=cpu` | PASS (jobs 29238566, 29238575) — ver §4 sobre el job 29238546 |
+| Fallback explícito: cualquier `hipError_t` ⇒ `err` no vacío, sin árbol | implementado; sin fallbacks observados (`exact_fallbacks=0`) |
+
+NJ0 cumple I1 (bit-exact con la referencia) en hardware real. El árbol guía de
+CYTB (n=3523) pasa de 60 s (host 1 hilo, `RESULTADO_MSA_GPU2.md`) / 9.0 s
+(`nj_tree_mt`, 16 hilos) a **1.5 s de kernels + 0.3 s de upload** (×6 frente a 16 hilos, ×40 frente al host original).
+
+## 2. Rendimiento (job 29238575, MI210)
+
+`nj_gpu_s` incluye la conversión float→double densa en host, `hipMalloc`,
+copias y la reconstrucción del árbol. `upload_s` (~0.27 s en todos los genes)
+está dominado por la inicialización del runtime HIP en el primer `hipMalloc`
+del proceso, no por la copia (la matriz de CYTB son 99 MB ≈ 0.05 s a PCIe).
+En el driver `genomsa` el runtime ya está inicializado por el cálculo de
+distancias, así que ese coste no aparece dos veces.
+
+| Gen   | n    | `nj_tree_mt` 16T (s) | `nj_tree_gpu` total (s) | rounds (s) | upload (s) | device (MB) | paridad |
+|-------|------|------|-------|-------|-------|------|------|
+| CYTB  | 3523 | 9.05 | 1.83  | 1.47  | 0.30 | 99.4 | PASS |
+| COI   | 1608 | 1.38 | 0.56  | 0.23  | 0.28 | 20.8 | PASS |
+| IRBP  | 1252 | 0.89 | 0.45  | 0.12  | 0.27 | 12.6 | PASS |
+| ND1   | 941  | 0.59 | 0.40  | 0.07  | 0.27 | 7.1  | PASS |
+| BRCA1 | 913  | 0.56 | 0.40  | 0.07  | 0.28 | 6.7  | PASS |
+| BMI1  | 140  | 0.07 | 0.34  | 0.003 | 0.28 | 0.2  | PASS |
+
+Los 31 genes están en el TSV; todos PASS. Para n < ~900 el coste fijo de
+inicialización domina y `nj_tree_mt` sigue siendo más rápido en aislamiento;
+dentro de `genomsa` (runtime ya caliente) la GPU gana a partir de n ≈ 300.
+
+### 2.1 Perfil por kernel (rocprof, COI, job 29238566)
+
+| Kernel              | llamadas | total (ms) | media (µs) | %    |
+|---------------------|----------|------------|------------|------|
+| `nj_rowsum_kernel`  | 1606     | 308        | 192        | 88.1 |
+| `nj_argmin_kernel`  | 1606     | 22         | 14         | 6.4  |
+| `nj_merge_kernel`   | 1606     | 20         | 12         | 5.6  |
+
+El rowsum domina porque el contrato exige sumar cada fila **en orden host**
+(cadena de dependencias de longitud m por hilo, sin reducción en árbol ni
+`atomicAdd`). El argmin y el merge son ya despreciables.
+
+## 3. Historia de la optimización (misma semántica, misma paridad)
+
+| Versión | CYTB rounds (s) | COI rounds (s) | Cambio |
+|---------|-----|------|--------|
+| v1 (29238546) | 168.3 | 33.0 | rowsum: 1 hilo/fila, bucle escalar con `alive[b]` leído de global en cada iteración ⇒ latencia serializada (~7 µs·m por ronda) |
+| v2 (29238566) | 2.64  | 0.35 | rowsum: `alive` por tile en shared, cuerpo desenrollado ×8 (8 cargas en vuelo, sumas en orden) |
+| v3 (29238575) | 1.47  | 0.23 | bloque rowsum 256→64 para repartir los m hilos en más CUs |
+
+v1→v2 es ×64 en CYTB sin cambiar un bit del resultado: el orden de las sumas
+es idéntico, sólo se agrupan las cargas.
+
+## 4. Incidencias
+
+- Job 29238546, paso E2E: la primera ejecución de `genomsa` (árbol GPU) murió
+  con `HW Exception by GPU node-4 ... reason: GPU Hang` antes de escribir el
+  alineamiento; la ejecución con `GENOMSA_NJ=cpu` en el mismo nodo terminó
+  bien, y en los jobs 29238566 y 29238575 (mismo nodo, mismo binario salvo el
+  rowsum) el paso E2E pasó. No se ha reproducido. Hipótesis: el rowsum v1
+  (168 s de kernels encolados sin sincronización en CYTB; ~33 s en COI)
+  disparó el watchdog de la cola; v2/v3 mantienen cada kernel en <1 ms. Queda
+  como punto a vigilar en la validación multi-GPU (A100/L40 vía CUDA).
+- hipcc emitió `-Wunused-result` en `hipFree` del destructor RAII; corregido.
+
+## 5. Siguientes pasos
+
+1. Reducir el coste fijo de `upload_s`: inicializar el runtime una vez por
+   proceso (ya ocurre en `genomsa`); en `nj_bench` medirlo aparte.
+2. Rowsum: probar 2–4 hilos por fila con **sumas parciales en orden** no es
+   posible sin cambiar el orden de acumulación; la única vía exacta es más
+   cargas en vuelo (unroll 16) o `double2` vectorizado sobre pares `(b, b+1)`
+   manteniendo `s += v0; s += v1`.
+3. Validar en A100/L40 (backend CUDA del `CMakeLists.txt`) y cerrar la fila
+   MI210/A100 de `SPEC_NJ_GPU.md`.
+4. NJ1' (candidatos por embedding hiperbólico + certificación exacta): sólo
+   si `tools/nj_trace.cpp` muestra Recall@32 > 0.95 (`LITERATURA_NJ_GPU.md` §6).
