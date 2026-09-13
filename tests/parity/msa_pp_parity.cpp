@@ -78,6 +78,34 @@ static bool run_kernel(const Profile& A, const Profile& B, const Params& P,
     return res.score != MSA_PP_TOO_BIG;
 }
 
+// Same pair through the wavefront kernel: block-per-pair, so the shim's
+// run_block spawns 256 real host threads with a real block barrier -- the
+// anti-diagonal synchronisation is genuinely exercised, not paraphrased.
+static bool run_kernel_wf(const Profile& A, const Profile& B, const Params& P,
+                          MsaPPResult& res, std::string& cigar) {
+    SoAHolder ha = to_soa(A), hb = to_soa(B);
+    MsaPPPair pp{ha.view, hb.view};
+
+    const size_t dir_sz = (size_t)(A.ncols() + 1) * (B.ncols() + 1);
+    const size_t scr_sz = (size_t)11 * (A.ncols() + 1) + 2 * (B.ncols() + 1);
+    const int    cap    = A.ncols() + B.ncols() + 4;
+    std::vector<uint8_t> dirs(dir_sz), cig(cap);
+    std::vector<float>   scr(scr_sz);
+    int meta[2];
+    const size_t zero[1] = {0}, av_d[1] = {dir_sz}, av_s[1] = {scr_sz};
+
+    blockIdx = uint3{0,0,0}; threadIdx = uint3{0,0,0};
+    blockDim = dim3{256,1,1};  gridDim = dim3{1,1,1};
+    shim::run_block(256, [&] {
+        msa_pp_trace_kernel_wf(&pp, to_params(P), &res, dirs.data(), zero, av_d,
+                               cig.data(), zero, meta, scr.data(), zero, av_s,
+                               1, cap);
+    });
+    static const char ops[] = "MID";
+    for (int k = meta[1] - 1; k >= 0; --k) cigar.push_back(ops[cig[k]]);
+    return res.score != MSA_PP_TOO_BIG;
+}
+
 static void check_pair(const Profile& A, const Profile& B, const Params& P,
                        const char* tag) {
     genomsa::AlignResult ref = genomsa::align_profiles(A, B, P);
@@ -89,6 +117,14 @@ static void check_pair(const Profile& A, const Profile& B, const Params& P,
           "%s: span k=(%d,%d)-(%d,%d) ref=(%d,%d)-(%d,%d)",
           tag, k.ai, k.aj, k.bi, k.bj, ref.ai, ref.aj, ref.bi, ref.bj);
     CHECK(kcig == ref.cigar, "%s: cigar k=%s ref=%s", tag, kcig.c_str(), ref.cigar.c_str());
+    MsaPPResult w; std::string wcig;
+    bool wok = run_kernel_wf(A, B, P, w, wcig);
+    CHECK(wok, "%s: wf kernel too_big", tag);
+    CHECK(w.score == ref.score, "%s: wf score=%g ref=%g", tag, w.score, ref.score);
+    CHECK(w.ai == ref.ai && w.aj == ref.aj && w.bi == ref.bi && w.bj == ref.bj,
+          "%s: wf span k=(%d,%d)-(%d,%d) ref=(%d,%d)-(%d,%d)",
+          tag, w.ai, w.aj, w.bi, w.bj, ref.ai, ref.aj, ref.bi, ref.bj);
+    CHECK(wcig == ref.cigar, "%s: wf cigar k=%s ref=%s", tag, wcig.c_str(), ref.cigar.c_str());
 }
 
 static std::mt19937 rng(4242);

@@ -13,6 +13,8 @@
 #include <hip/hip_runtime.h>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -33,6 +35,10 @@ using genoaligner::MsaPPParams;
 using genoaligner::MsaPPResult;
 using genoaligner::MsaProfileView;
 using genoaligner::msa_pp_trace_kernel;
+using genoaligner::msa_pp_trace_kernel_wf;
+
+// V2 wavefront launch width: multiple of both warp sizes (gfx 64, NV 32).
+static constexpr int WF_T = 256;
 
 static void hip_free_all(std::vector<void*>& ps) {
     for (void* p : ps) if (p) hipFree(p);
@@ -84,7 +90,10 @@ bool msa_align_gpu(const std::vector<std::string>& seqs, const Params& P,
             dir_av[k]   = (size_t)(A.ncols() + 1) * (B.ncols() + 1);
             dtot += dir_av[k];
             scr_base[k] = stot;
-            scr_av[k]   = (size_t)3 * (B.ncols() + 1) + 2 * (A.ncols() + 1);
+            // serial needs 3*(N+1)+2*(M+1); wavefront needs 11*(M+1)+2*(N+1)
+            const size_t s_ser = (size_t)3 * (B.ncols() + 1) + 2 * (A.ncols() + 1);
+            const size_t s_wf  = (size_t)11 * (A.ncols() + 1) + 2 * (B.ncols() + 1);
+            scr_av[k]   = s_ser > s_wf ? s_ser : s_wf;
             stot += scr_av[k];
             cig_base[k] = ctot;
             int ck = A.ncols() + B.ncols() + 4;
@@ -168,28 +177,57 @@ bool msa_align_gpu(const std::vector<std::string>& seqs, const Params& P,
             return false;
         }
 
+        // Kernel selection: wavefront (block-per-pair) is the default;
+        // GENOMSA_MSA_KERNEL=serial keeps the one-thread-per-pair kernel for
+        // A/B benchmarking on device. Both are parity-gated.
+        static const bool use_wf = [] {
+            const char* k = std::getenv("GENOMSA_MSA_KERNEL");
+            return !(k && std::strcmp(k, "serial") == 0);
+        }();
 #ifdef GENOALIGNER_HIP_SHIM
-        // CPU shim: emulate the grid -- one thread per pair, iterated.
-        blockDim = dim3{128, 1, 1};
-        gridDim  = dim3{(unsigned)((np + 127) / 128), 1, 1};
-        for (unsigned bx = 0; bx < gridDim.x; ++bx) {
-            blockIdx = uint3{bx, 0, 0};
-            for (unsigned tx = 0; tx < 128; ++tx) {
-                if (bx * 128 + tx >= (unsigned)np) break;
-                threadIdx = uint3{tx, 0, 0};
-                msa_pp_trace_kernel(d_pairs, kp, d_res, d_dirs, d_db, d_da,
-                                    d_cig, d_cb, d_meta, d_scr, d_sb, d_sa,
-                                    np, cap);
+        if (use_wf) {
+            // Genuine threaded emulation: run_block spawns WF_T real host
+            // threads per pair with a real block barrier for __syncthreads.
+            gridDim  = dim3{(unsigned)np, 1, 1};
+            blockDim = dim3{WF_T, 1, 1};
+            for (int bx = 0; bx < np; ++bx) {
+                blockIdx = uint3{(unsigned)bx, 0, 0};
+                shim::run_block(WF_T, [&] {
+                    msa_pp_trace_kernel_wf(d_pairs, kp, d_res, d_dirs,
+                                           d_db, d_da, d_cig, d_cb, d_meta,
+                                           d_scr, d_sb, d_sa, np, cap);
+                });
+            }
+        } else {
+            blockDim = dim3{128, 1, 1};
+            gridDim  = dim3{(unsigned)((np + 127) / 128), 1, 1};
+            for (unsigned bx = 0; bx < gridDim.x; ++bx) {
+                blockIdx = uint3{bx, 0, 0};
+                for (unsigned tx = 0; tx < 128; ++tx) {
+                    if (bx * 128 + tx >= (unsigned)np) break;
+                    threadIdx = uint3{tx, 0, 0};
+                    msa_pp_trace_kernel(d_pairs, kp, d_res, d_dirs, d_db, d_da,
+                                        d_cig, d_cb, d_meta, d_scr, d_sb, d_sa,
+                                        np, cap);
+                }
             }
         }
         hipError_t le = hipSuccess, se = hipSuccess;
 #else
-        hipLaunchKernelGGL(msa_pp_trace_kernel,
-                           dim3((unsigned)((np + 127) / 128)), dim3(128),
-                           0, nullptr,
-                           d_pairs, kp, d_res, d_dirs, d_db, d_da,
-                           d_cig, d_cb, d_meta, d_scr, d_sb, d_sa,
-                           np, cap);
+        if (use_wf) {
+            hipLaunchKernelGGL(msa_pp_trace_kernel_wf,
+                               dim3((unsigned)np), dim3(WF_T), 0, nullptr,
+                               d_pairs, kp, d_res, d_dirs, d_db, d_da,
+                               d_cig, d_cb, d_meta, d_scr, d_sb, d_sa,
+                               np, cap);
+        } else {
+            hipLaunchKernelGGL(msa_pp_trace_kernel,
+                               dim3((unsigned)((np + 127) / 128)), dim3(128),
+                               0, nullptr,
+                               d_pairs, kp, d_res, d_dirs, d_db, d_da,
+                               d_cig, d_cb, d_meta, d_scr, d_sb, d_sa,
+                               np, cap);
+        }
         hipError_t le = hipGetLastError();
         hipError_t se = hipDeviceSynchronize();
 #endif

@@ -171,6 +171,169 @@ __global__ void msa_pp_trace_kernel(const MsaPPPair* __restrict__ pairs,
     out[pair_id] = MsaPPResult{best, i, j, ei, ej};
 }
 
+// ---------------------------------------------------------------------------
+// V2 KERNEL: one BLOCK per pair. Threads sweep the anti-diagonals in
+// parallel; a cell (i,j) on diagonal d=i+j reads only diagonals d-1 and d-2,
+// so a block barrier between diagonals is the entire synchronisation. The
+// recurrence, the direction bytes, the endpoint-scan order and the walk are
+// IDENTICAL to msa_pp_trace_kernel -- only the traversal order changed, and
+// traversal order cannot change any value (every read is of a strictly older
+// diagonal). Parity with the serial kernel and the reference is still what
+// the gate asserts.
+//
+// Launch: <<<n_pairs, T>>>; pair p is block p. T must be a multiple of the
+// warp size (256 works on gfx and NVIDIA).
+//
+// Scratch layout per pair (floats), all rolling arrays indexed by ROW i:
+//   [M3 | Ix3 | Iy3]   3 slots each (d%3), (M+1) floats per slot
+//   [colM | colIx]     (i,N) snapshots for the endpoint scan, M+1 each
+//   [rowM | rowIy]     (M,j) snapshots, N+1 each
+//   need = 11*(M+1) + 2*(N+1) floats.
+// ---------------------------------------------------------------------------
+__global__ void msa_pp_trace_kernel_wf(const MsaPPPair* __restrict__ pairs,
+                                       MsaPPParams params,
+                                       MsaPPResult* __restrict__ out,
+                                       uint8_t* __restrict__ dirs,
+                                       const size_t* __restrict__ dir_base,
+                                       const size_t* __restrict__ dir_avail,
+                                       uint8_t* __restrict__ cigar_buf,
+                                       const size_t* __restrict__ cig_base,
+                                       int* __restrict__ cigar_meta,
+                                       float* __restrict__ scratch,
+                                       const size_t* __restrict__ scr_base,
+                                       const size_t* __restrict__ scr_avail,
+                                       int n_pairs, int cigar_cap)
+{
+    const int pair_id = blockIdx.x;
+    if (pair_id >= n_pairs) return;
+
+    const MsaPPPair pp = pairs[pair_id];
+    const int M = pp.A.len, N = pp.B.len;
+    const bool free_ends = (params.free_end_gaps != 0);
+    const float go = params.gap_open, ge = params.gap_extend;
+    const float NEG = -1e30f;
+
+    if (M <= 0 || N <= 0) {
+        if (threadIdx.x == 0) {
+            out[pair_id] = MsaPPResult{0.f, 0, 0, 0, 0};
+            cigar_meta[pair_id * 2 + 0] = cigar_cap;
+            cigar_meta[pair_id * 2 + 1] = 0;
+        }
+        return;
+    }
+    if ((size_t)(M + 1) * (size_t)(N + 1) > dir_avail[pair_id] ||
+        (size_t)(11 * (M + 1) + 2 * (N + 1)) > scr_avail[pair_id]) {
+        if (threadIdx.x == 0) {
+            out[pair_id] = MsaPPResult{MSA_PP_TOO_BIG, 0, 0, 0, 0};
+            cigar_meta[pair_id * 2 + 0] = cigar_cap;
+            cigar_meta[pair_id * 2 + 1] = 0;
+        }
+        return;
+    }
+
+    uint8_t* dir   = dirs + dir_base[pair_id];
+    float*   M3    = scratch + scr_base[pair_id];
+    float*   Ix3   = M3  + 3 * (M + 1);
+    float*   Iy3   = Ix3 + 3 * (M + 1);
+    float*   colM  = Iy3 + 3 * (M + 1);
+    float*   colIx = colM + (M + 1);
+    float*   rowM  = colIx + (M + 1);
+    float*   rowIy = rowM + (N + 1);
+    const int nrow = N + 1;
+    const int tid = (int)threadIdx.x, T = (int)blockDim.x;
+    const int w = M + 1;
+
+    for (int d = 0; d <= M + N; ++d) {
+        const int lo = (d > N) ? d - N : 0;
+        const int hi = (d < M) ? d : M;
+        const int cs = d % 3, p1 = (d + 2) % 3, p2 = (d + 1) % 3;
+        float*       cM = M3 + cs * w,  *cIx = Ix3 + cs * w,  *cIy = Iy3 + cs * w;
+        const float* qM = M3 + p2 * w,  *qIx = Ix3 + p2 * w,  *qIy = Iy3 + p2 * w;
+        const float* sM = M3 + p1 * w,  *sIx = Ix3 + p1 * w;
+        const float* tM = M3 + p1 * w,  *tIy = Iy3 + p1 * w;
+        for (int i = lo + tid; i <= hi; i += T) {
+            const int j = d - i;
+            float vM, vIx, vIy;
+            if (i == 0) {
+                vM  = (j == 0 || free_ends) ? 0.f : NEG;
+                vIx = NEG;
+                vIy = (j == 0) ? NEG
+                     : (free_ends ? 0.f : -(go * pp.B.occ[j - 1] + (j - 1) * ge));
+            } else if (j == 0) {
+                vM  = free_ends ? 0.f : NEG;
+                vIx = free_ends ? 0.f : -(go * pp.A.occ[i - 1] + (i - 1) * ge);
+                vIy = NEG;
+            } else {
+                // M[i][j]: diagonal predecessor (i-1,j-1) on d-2, row i-1.
+                float mx = qM[i - 1]; uint8_t h = MSA_H_M;
+                if (qIx[i - 1] > mx) { mx = qIx[i - 1]; h = MSA_H_IX; }
+                if (qIy[i - 1] > mx) { mx = qIy[i - 1]; h = MSA_H_IY; }
+                vM = msa_col_score(pp.A, i - 1, pp.B, j - 1, params) + mx;
+                // Ix[i][j]: (i-1,j) on d-1, row i-1.
+                const float oIx = sM[i - 1] - go * pp.A.occ[i - 1];
+                const float eIx = sIx[i - 1] - ge;
+                vIx = (oIx >= eIx) ? oIx : eIx;
+                const uint8_t xext = (eIx > oIx) ? MSA_X_EXT : 0;
+                // Iy[i][j]: (i,j-1) on d-1, row i.
+                const float oIy = tM[i] - go * pp.B.occ[j - 1];
+                const float eIy = tIy[i] - ge;
+                vIy = (oIy >= eIy) ? oIy : eIy;
+                const uint8_t yext = (eIy > oIy) ? MSA_Y_EXT : 0;
+                dir[i * nrow + j] = h | xext | yext;
+            }
+            cM[i] = vM; cIx[i] = vIx; cIy[i] = vIy;
+            if (j == N) { colM[i] = vM; colIx[i] = vIx; }
+            if (i == M) { rowM[j] = vM; rowIy[j] = vIy; }
+        }
+        __syncthreads();
+    }
+
+    if (tid != 0) return;
+
+    // ---- endpoint scan, exact reference order (single thread) --------------
+    float best = NEG; int ei = M, ej = N; char estate = 'M';
+    if (free_ends) {
+        for (int i = 0; i <= M; ++i) {
+            if (colM[i]  > best) { best = colM[i];  ei = i; ej = N; estate = 'M'; }
+            if (colIx[i] > best) { best = colIx[i]; ei = i; ej = N; estate = 'I'; }
+        }
+        for (int j = 0; j <= N; ++j) {
+            if (rowM[j]  > best) { best = rowM[j];  ei = M; ej = j; estate = 'M'; }
+            if (rowIy[j] > best) { best = rowIy[j]; ei = M; ej = j; estate = 'D'; }
+        }
+    } else {
+        best = rowM[N]; ei = M; ej = N; estate = 'M';
+    }
+
+    // ---- backward walk (single thread, identical to serial kernel) ---------
+    uint8_t* cig = cigar_buf + cig_base[pair_id];
+    int used = 0;
+    int i = ei, j = ej; char st = estate;
+    while ((i > 0 || j > 0) && used < cigar_cap) {
+        if (st == 'M') {
+            if (i == 0 || j == 0) break;
+            uint8_t b = dir[i * nrow + j];
+            cig[used++] = 0;
+            uint8_t h = b & 3;
+            --i; --j;
+            st = (h == MSA_H_M) ? 'M' : (h == MSA_H_IX ? 'I' : 'D');
+        } else if (st == 'I') {
+            if (i == 0) break;
+            cig[used++] = 1;
+            if (j > 0) st = (dir[i * nrow + j] & MSA_X_EXT) ? 'I' : 'M';
+            --i;
+        } else {
+            if (j == 0) break;
+            cig[used++] = 2;
+            if (i > 0) st = (dir[i * nrow + j] & MSA_Y_EXT) ? 'D' : 'M';
+            --j;
+        }
+    }
+    cigar_meta[pair_id * 2 + 0] = cigar_cap;
+    cigar_meta[pair_id * 2 + 1] = used;
+    out[pair_id] = MsaPPResult{best, i, j, ei, ej};
+}
+
 }  // namespace genoaligner
 
 #endif  // GENOALIGNER_MSA_PP_KERNEL_IMPL_HIP

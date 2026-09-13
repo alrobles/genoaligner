@@ -135,6 +135,23 @@ __global__ void msa_pp_trace_kernel(const MsaPPPair* __restrict__ pairs,
                                     const size_t* __restrict__ scr_avail,
                                     int n_pairs, int cigar_cap);
 
+// V2: same contract, one BLOCK per pair (blockIdx.x = pair id), anti-diagonal
+// parallel sweep. Pair p needs 11*(A.len+1) + 2*(B.len+1) scratch floats at
+// scr_base[p]. Semantics identical to msa_pp_trace_kernel.
+__global__ void msa_pp_trace_kernel_wf(const MsaPPPair* __restrict__ pairs,
+                                       MsaPPParams params,
+                                       MsaPPResult* __restrict__ out,
+                                       uint8_t* __restrict__ dirs,
+                                       const size_t* __restrict__ dir_base,
+                                       const size_t* __restrict__ dir_avail,
+                                       uint8_t* __restrict__ cigar_buf,
+                                       const size_t* __restrict__ cig_base,
+                                       int* __restrict__ cigar_meta,
+                                       float* __restrict__ scratch,
+                                       const size_t* __restrict__ scr_base,
+                                       const size_t* __restrict__ scr_avail,
+                                       int n_pairs, int cigar_cap);
+
 }  // namespace genoaligner
 
 #endif  // GENOALIGNER_MSA_PP_KERNEL_HIP

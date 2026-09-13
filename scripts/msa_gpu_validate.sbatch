@@ -59,10 +59,17 @@ else
     diff /tmp/sub_gpu.aln /tmp/sub_cpu.aln | head -10
 fi
 
-# ---- 3. full-gene GPU runs ----------------------------------------------
-echo; echo "### full $GENE (GPU) ###"
+# ---- 3. full-gene GPU runs (wavefront default; serial for A/B timing) -----
+echo; echo "### full $GENE (GPU, serial kernel) ###"
+GENOMSA_MSA_KERNEL=serial /tmp/genomsa "$FA" /tmp/${GENE}.serial.aln 2>&1 | tail -4
+echo; echo "### full $GENE (GPU, wavefront kernel) ###"
 /tmp/genomsa "$FA" "$OUT/${GENE}.genomsa.aln.fasta" 2>&1 | tail -4
-echo; echo "### full $BIG (GPU) ###"
+if diff -q /tmp/${GENE}.serial.aln "$OUT/${GENE}.genomsa.aln.fasta" >/dev/null; then
+    echo "KERNELS-AGREE: PASS (wf == serial, byte-identical)"
+else
+    echo "KERNELS-AGREE: FAIL"; RC=1
+fi
+echo; echo "### full $BIG (GPU, wavefront kernel) ###"
 time /tmp/genomsa "$FB" "$OUT/${BIG}.genomsa.aln.fasta" 2>&1 | tail -4
 
 # ---- 4. sanity stats vs MACSE trimmed alignment (if present) ------------

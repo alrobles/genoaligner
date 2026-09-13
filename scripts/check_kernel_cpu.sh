@@ -329,7 +329,7 @@ echo "--- [shim] MSA profile-profile kernel parity ---"
 # different code paths (direction bytes vs value re-derivation) asserting the
 # same score, span and column CIGAR. This is the gate every later MSA kernel
 # optimisation must keep green.
-if g++ -O2 -std=c++17 -DGENOALIGNER_HIP_SHIM -I"$SHIM_DIR" -I"$REPO_ROOT/include" \
+if g++ -O2 -std=c++17 -pthread -DGENOALIGNER_HIP_SHIM -I"$SHIM_DIR" -I"$REPO_ROOT/include" \
        -o "$BUILD_DIR/msa_pp_parity" \
        "$REPO_ROOT/tests/parity/msa_pp_parity.cpp" "$REPO_ROOT/src/msa/msa_ref.cpp" \
        2>"$BUILD_DIR/msa_pp_build.log"; then
@@ -354,7 +354,7 @@ echo "--- [shim] MSA level-batched pipeline parity ---"
 # aligned by the kernel and merged level-by-level must equal the sequential
 # post-order driver BIT-EXACTLY. A pipeline that differs from the sequential
 # reference is a scheduling bug no single-pair test can see.
-if g++ -O2 -std=c++17 -DGENOALIGNER_HIP_SHIM -I"$SHIM_DIR" -I"$REPO_ROOT/include" \
+if g++ -O2 -std=c++17 -pthread -DGENOALIGNER_HIP_SHIM -I"$SHIM_DIR" -I"$REPO_ROOT/include" \
        -o "$BUILD_DIR/msa_pipeline_parity" \
        "$REPO_ROOT/tests/parity/msa_pipeline_parity.cpp" "$REPO_ROOT/src/msa/msa_ref.cpp" \
        2>"$BUILD_DIR/msa_pipe_build.log"; then
@@ -379,7 +379,7 @@ echo "--- [shim] MSA GPU driver parity (shipped code) ---"
 # arithmetic, buffer sizing and level batching, not a paraphrase. Must equal
 # the sequential reference bit-exactly. This is the strongest statement the
 # CPU gate can make about the GPU path before a device run.
-if g++ -O2 -std=c++17 -DGENOALIGNER_HIP_SHIM -I"$SHIM_DIR" -I"$REPO_ROOT/include" \
+if g++ -O2 -std=c++17 -pthread -DGENOALIGNER_HIP_SHIM -I"$SHIM_DIR" -I"$REPO_ROOT/include" \
        -o "$BUILD_DIR/msa_driver_parity" \
        "$REPO_ROOT/tests/parity/msa_driver_parity.cpp" \
        "$REPO_ROOT/src/msa/msa_gpu.cpp" "$REPO_ROOT/src/msa/msa_ref.cpp" \
