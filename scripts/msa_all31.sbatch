@@ -92,7 +92,7 @@ for f in sorted(os.listdir(out)):
     gc=sum(c=="-" for s in g.values() for c in s)
     tot=sum(len(s) for s in g.values())
     mf=f"{pai}/data/alignments_qc/{gene}.aln.fasta"
-    mw=sps=sg=sm=""
+    mw=sps_s=sg=sm=""
     if os.path.exists(mf):
         m=load(mf); mw=len(next(iter(m.values())))
         ids=sorted(set(g)&set(m))
@@ -100,9 +100,9 @@ for f in sorted(os.listdir(out)):
             step=len(ids)/200.0
             ids=[ids[int(k*step)] for k in range(200)]
         if len(ids)>=2:
-            sps_v=sps(g,m,ids); sps=f"{sps_v:.3f}"
+            sps_v=sps(g,m,ids); sps_s=f"{sps_v:.3f}"
             sg=sp_cost(g,ids); sm=sp_cost(m,ids)
-    rows.append((gene,len(g),w,f"{100*gc/tot:.1f}",mw,sps,sg,sm))
+    rows.append((gene,len(g),w,f"{100*gc/tot:.1f}",mw,sps_s,sg,sm))
 tim={}
 if os.path.exists("/tmp/timings.tsv"):
     for line in open("/tmp/timings.tsv"):
