@@ -38,6 +38,12 @@ static constexpr int NJ_T = 32;
 static constexpr int NJ_T = 256;
 #endif
 static constexpr int NJ_T_MAX = 256;
+// Rowsum has only m threads of work; a narrow block spreads them over more CUs.
+#ifdef GENOALIGNER_HIP_SHIM
+static constexpr int NJ_RS_T = 32;
+#else
+static constexpr int NJ_RS_T = 64;
+#endif
 
 struct NjBest { double q; int a, b; };   // a < 0: empty
 

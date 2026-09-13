@@ -2,7 +2,7 @@
 // nj_tree_gpu returns the SAME Tree as genomsa::nj_tree (bit-exact, same
 // tie-break), or an empty Tree with `err` set -- never an approximate tree.
 //
-// Per round (m live nodes): rowsum (ceil(m/NJ_T) blocks), argmin (m blocks),
+// Per round (m live nodes): rowsum (ceil(m/NJ_RS_T) blocks), argmin (m blocks),
 // merge (1 block). No host<->device traffic inside the loop: the merges are
 // recorded on the device and downloaded once, then the Tree is assembled on
 // the host in O(n).
@@ -22,6 +22,7 @@
 namespace genomsa {
 
 using genoaligner::NJ_T;
+using genoaligner::NJ_RS_T;
 using genoaligner::NjBest;
 using genoaligner::nj_argmin_kernel;
 using genoaligner::nj_merge_kernel;
@@ -45,10 +46,10 @@ struct DevMem {
 // every block goes through shim::run_block (real threads, real barrier).
 void launch_rowsum(unsigned grid, const double* d, const int* alive, int m, int n,
                    double* r) {
-    gridDim = dim3{grid, 1, 1}; blockDim = dim3{(unsigned)NJ_T, 1, 1};
+    gridDim = dim3{grid, 1, 1}; blockDim = dim3{(unsigned)NJ_RS_T, 1, 1};
     for (unsigned bx = 0; bx < grid; ++bx) {
         blockIdx = uint3{bx, 0, 0};
-        shim::run_block(NJ_T, [&] { nj_rowsum_kernel(d, alive, m, n, r); });
+        shim::run_block(NJ_RS_T, [&] { nj_rowsum_kernel(d, alive, m, n, r); });
     }
 }
 void launch_argmin(unsigned grid, const double* d, const int* alive, const double* r,
@@ -70,7 +71,7 @@ void launch_merge(double* d, const int* ain, int* aout, int* slot_node,
 #else
 void launch_rowsum(unsigned grid, const double* d, const int* alive, int m, int n,
                    double* r) {
-    hipLaunchKernelGGL(nj_rowsum_kernel, dim3(grid), dim3(NJ_T), 0, nullptr,
+    hipLaunchKernelGGL(nj_rowsum_kernel, dim3(grid), dim3(NJ_RS_T), 0, nullptr,
                        d, alive, m, n, r);
 }
 void launch_argmin(unsigned grid, const double* d, const int* alive, const double* r,
@@ -159,7 +160,7 @@ Tree nj_tree_gpu(const std::vector<float>& Dp, int n, std::string& err,
     const int rounds = n - 2;
     for (int round = 0; round < rounds; ++round) {
         const int m = n - round;
-        launch_rowsum((unsigned)((m + NJ_T - 1) / NJ_T), d_d, d_alive[cur], m, n, d_r);
+        launch_rowsum((unsigned)((m + NJ_RS_T - 1) / NJ_RS_T), d_d, d_alive[cur], m, n, d_r);
         launch_argmin((unsigned)m, d_d, d_alive[cur], d_r, m, n, d_part);
         launch_merge(d_d, d_alive[cur], d_alive[cur ^ 1], d_slot, d_part, m, n,
                      round, d_merges);
