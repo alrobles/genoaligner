@@ -139,7 +139,11 @@ device; SeqAn3 150/150 sobre los resultados emitidos por la API en device;
 `examples/align_sw.cpp` compila y corre. Hallazgo colateral documentado:
 traceback WFA por API está limitado a `smax ≤ ~88` en MI210 por shared memory.
 
-Queda en la deuda honesta: NVIDIA no verificado; rendimiento no medido.
+NVIDIA verificado después (docs/RESULTADO_H11_SW_CUDA.md, job 29230631):
+V100 warpSize=32 real — score 210/210, trace 209/209, API PASS, SeqAn3
+201/201 + 150/150. SW corre en ambos vendors desde el mismo árbol.
+
+Queda en la deuda honesta: rendimiento no medido (Fase D).
 
 ---
 
