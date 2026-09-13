@@ -1,0 +1,16 @@
+# Oracle dependencies for genoaligner Fase 3 (external parity check).
+#
+# These are deliberately NOT the same algorithm as the WFA kernel, and not the
+# same as the in-repo DP in src/reference/edit_distance_cpu.hpp. Three
+# independent implementations agreeing is the claim Fase 3 makes.
+#
+#   edlib      Myers bit-vector. Purpose-built for exact edit distance.
+#   rapidfuzz  bit-parallel Levenshtein, independent C++ codebase.
+#
+# Install:
+#   python3 -m pip install --user -r tests/parity/requirements-oracle.txt
+#
+# NOTE: these live in ~/.local, not in a container. If the parity run moves into
+# an apptainer image, reinstall them inside that image.
+edlib==1.3.9.post1
+rapidfuzz==3.13.0
