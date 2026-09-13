@@ -22,11 +22,12 @@ TWB=/beegfs/a474r867/twilight/twilight-v100
 R=/kuhpc/sw/rocm/6.4.3
 C=/kuhpc/sw/nvhpc/Linux_x86_64/2024/cuda/12.4
 
+T() { local s=$SECONDS; "$@"; local rc=$?; echo "WALL $((SECONDS-s))s rc=$rc"; return $rc; }
+
 echo "=== host: $(hostname) $(date) ==="
 nvidia-smi -L | head -2
 [ -x "$TWB" ] || { echo "missing twilight binary $TWB"; exit 1; }
 
-# genomsa binary (same nvcc path as validation)
 "$C/bin/nvcc" -w -D__HIP_PLATFORM_NVIDIA__ -std=c++17 \
     -gencode arch=compute_70,code=sm_70 \
     -I "$R/include" -I "$C/include" -I "$C/targets/x86_64-linux/include" \
@@ -39,16 +40,16 @@ cd "$B" || exit 1
 echo; echo "########## SIM64 quality (same input, two guide trees) ##########"
 
 echo "--- TWILIGHT, genomsa NJ guide tree ---"
-/usr/bin/time -v "$TWB" -t sim64_njtree.nwk -i sim64_in.fasta -o tw_nj.aln --type n --overwrite 2>&1 | grep -E "Elapsed|Maximum resident|error|Error" | head -5
+T "$TWB" -t sim64_njtree.nwk -i sim64_in.fasta -o tw_nj.aln --type n --overwrite 2>&1 | tail -6
 
 echo "--- TWILIGHT, TRUE guide tree ---"
-/usr/bin/time -v "$TWB" -t sim64_truetree.nwk -i sim64_in.fasta -o tw_true.aln --type n --overwrite 2>&1 | grep -E "Elapsed|Maximum resident|error|Error" | head -5
+T "$TWB" -t sim64_truetree.nwk -i sim64_in.fasta -o tw_true.aln --type n --overwrite 2>&1 | tail -6
 
 echo "--- TWILIGHT, NJ tree, gappy removal OFF (-r 1) ---"
-"$TWB" -t sim64_njtree.nwk -i sim64_in.fasta -o tw_nj_r1.aln --type n -r 1 --overwrite 2>&1 | tail -3
+T "$TWB" -t sim64_njtree.nwk -i sim64_in.fasta -o tw_nj_r1.aln --type n -r 1 --overwrite 2>&1 | tail -6
 
 echo "--- genomsa (own NJ tree, wavefront) ---"
-/usr/bin/time -v /tmp/genomsa sim64_in.fasta gsa_sim64.aln 2>&1 | grep -E "Elapsed|Maximum resident|levels="
+T /tmp/genomsa sim64_in.fasta gsa_sim64.aln 2>&1 | tail -6
 
 echo; echo "--- SPS vs truth ---"
 for a in tw_nj tw_true tw_nj_r1 gsa_sim64; do
@@ -63,9 +64,8 @@ for GENE in COI CYTB; do
     FA="$PAI/data/genes_qc_pass/${GENE}.fasta"
     [ -s "$FA" ] || continue
     echo "=== $GENE ==="
-    # genomsa produces its own guide tree; export it for TWILIGHT
-    /usr/bin/time -v /tmp/genomsa "$FA" "$B/${GENE}.gsa.aln" --tree-out "$B/${GENE}.nwk" 2>&1 | grep -E "Elapsed|Maximum resident|levels="
-    /usr/bin/time -v "$TWB" -t "$B/${GENE}.nwk" -i "$FA" -o "$B/${GENE}.tw.aln" --type n --overwrite 2>&1 | grep -E "Elapsed|Maximum resident|rror"
+    T /tmp/genomsa "$FA" "$B/${GENE}.gsa.aln" --tree-out "$B/${GENE}.nwk" 2>&1 | tail -5
+    T "$TWB" -t "$B/${GENE}.nwk" -i "$FA" -o "$B/${GENE}.tw.aln" --type n --overwrite 2>&1 | tail -5
 done
 
 echo; echo "TW-BENCH: DONE"
