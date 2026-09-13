@@ -34,12 +34,16 @@ lscpu | grep -E "^Model name|^CPU\(s\)|Flags" | head -3 || true
 rocm-smi --showpids 2>/dev/null || true
 echo
 
-# parasail was built with the system gcc; its .a is plain host code, so hipcc
-# can link it. -pthread: the 8-thread parasail column uses std::thread.
+# parasail was built with the system gcc; its .a is plain host code. Two-stage
+# build because hipcc's driver passes .a files through the GPU compile pass as
+# if they were sources (they are not valid UTF-8, the job fails there) --
+# compile the TU first, then link.
 /kuhpc/sw/rocm/6.4.3/bin/hipcc -O2 -std=c++17 -pthread \
     -I. -Iinclude -I"$PS" \
-    -o "$B" bench/sw_parasail.cpp "$PS/build/libparasail.a" \
-    || { echo "BUILD FAILED"; exit 1; }
+    -c bench/sw_parasail.cpp -o "$B.o" || { echo "BUILD FAILED (compile)"; exit 1; }
+/kuhpc/sw/rocm/6.4.3/bin/hipcc -pthread \
+    -o "$B" "$B.o" "$PS/build/libparasail.a" \
+    || { echo "BUILD FAILED (link)"; exit 1; }
 
 echo "=== run ==="
 "$B" || { echo "=== H12: FAIL ==="; exit 1; }
