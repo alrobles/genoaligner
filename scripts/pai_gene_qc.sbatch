@@ -26,7 +26,11 @@ set -o pipefail
 
 PAI=/beegfs/a474r867/phylogenyAI
 REPO=/beegfs/a474r867/genoaligner/repo
-OUT=$PAI/data/gene_qc
+OUT=${OUT_DIR:-$PAI/data/gene_qc}
+# BAIT_DIR: which bait set to use. baits_qc2 > baits_qc > baits.
+BAIT_DIR=${BAIT_DIR:-}
+# GENES: space-separated subset to run; empty = all of genes_final.
+GENES=${GENES:-}
 mkdir -p "$OUT"
 cd "$REPO" || exit 1
 
@@ -39,11 +43,19 @@ MTDNA=" COI CYTB ND1 ND2 "
 
 echo -e "gene\tseqs\tOK\tNO_ALIGN\tLOW_COV\tFS\tSTOP\tinvalid" > "$OUT/summary.tsv"
 RC=0
-for FA in "$PAI"/data/genes_final/*.fasta; do
-    GENE=$(basename "$FA" .fasta)
-    # Prefer baits_qc (clean-CDS references chosen by stop-count) when present.
-    BAIT="$PAI/data/baits_qc/${GENE}.baits.fasta"
-    [ -s "$BAIT" ] || BAIT="$PAI/data/baits/${GENE}.baits.fasta"
+LIST="$GENES"
+[ -z "$LIST" ] && LIST=$(ls "$PAI"/data/genes_final/*.fasta | xargs -n1 basename | sed 's/.fasta//')
+for GENE in $LIST; do
+    FA="$PAI/data/genes_final/${GENE}.fasta"
+    [ -s "$FA" ] || { echo "$GENE: no genes_final fasta, skipped"; continue; }
+    BAIT=""
+    if [ -n "$BAIT_DIR" ]; then
+        BAIT="$PAI/data/${BAIT_DIR}/${GENE}.baits.fasta"
+    else
+        for cand in baits_qc2 baits_qc baits; do
+            [ -s "$PAI/data/$cand/${GENE}.baits.fasta" ] && { BAIT="$PAI/data/$cand/${GENE}.baits.fasta"; break; }
+        done
+    fi
     [ -s "$BAIT" ] || { echo "$GENE: no bait, skipped"; continue; }
     CODE=1; [[ "$MTDNA" == *" $GENE "* ]] && CODE=2
     echo; echo "### $GENE (code $CODE) ###"
