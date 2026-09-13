@@ -165,14 +165,14 @@ int main(int argc, char** argv)
 
     FILE* out = emit ? fopen(emit, "w") : stdout;
     if (!out) { std::fprintf(stderr, "cannot write %s\n", emit); return 1; }
-    fprintf(out, "acc\tlen\tscore\tsi\tsj\tei\tej\tcov_text\tfs_runs\tfs_net\tstops\tflag\n");
+    fprintf(out, "acc\tlen\tscore\tsi\tsj\tei\tej\tcov_text\tfs_runs\tfs_net\tstops\tstop_end\tflag\n");
 
     int n_ok = 0, n_noalign = 0, n_lowcov = 0, n_fs = 0, n_stop = 0, n_bad = 0;
     for (size_t k = 0; k < recs.size(); ++k) {
         const auto& r = results[k];
         const std::string& t = recs[k].sequence;
 
-        int fs = 0, fs_net = 0, stops = 0;
+        int fs = 0, fs_net = 0, stops = 0, stop_end = 0;
         double cov = 0.0;
         if (r.resolved && r.score > 0) {
             cov = (double)(r.end_i - r.start_i + 1) / (double)t.size();
@@ -181,6 +181,8 @@ int main(int argc, char** argv)
             int i = r.start_i, j = r.start_j;
             char codon[3]; int codon_fill = -1;   // ref codon being built
             int codon_i0 = -1;                    // text index of codon base 1
+            int last_codon_j = -1;                // ref pos of last complete codon
+            int stop_at = -1;                     // ref pos of last detected stop
             for (char op : r.cigar) {
                 if (op == 'M' || op == 'X') {
                     int pos = ((j - frame) % 3 + 3) % 3;
@@ -192,8 +194,13 @@ int main(int argc, char** argv)
                         // CONTIGUOUS in the text: an insertion inside it means
                         // these three bases are not a real codon (the indel is
                         // already counted as a frameshift signal).
-                        if (i == codon_i0 + 2 &&
-                            is_stop(codon[0], codon[1], codon[2], code)) ++stops;
+                        if (i == codon_i0 + 2) {
+                            last_codon_j = j - 2;
+                            if (is_stop(codon[0], codon[1], codon[2], code)) {
+                                ++stops;
+                                stop_at = j - 2;
+                            }
+                        }
                         codon_fill = -1;
                     }
                     ++i; ++j;
@@ -220,6 +227,12 @@ int main(int argc, char** argv)
             }
             fs_net = (int)(((ins - del) % 3 + 3) % 3);
             if (fs_net > 1) fs_net -= 3;   // report signed: -1, 0, +1
+
+            // A stop sitting in the LAST complete codon of the span is the
+            // CDS's own terminator whenever the bait covers the gene's end
+            // (verified on real data: most COI flags were this). Report it
+            // separately instead of flagging it as a defect.
+            if (stops > 0 && stop_at == last_codon_j) { stop_end = 1; --stops; }
         }
 
         std::string flag;
@@ -234,10 +247,10 @@ int main(int argc, char** argv)
             if (flag.empty()) flag = "OK";
         }
 
-        fprintf(out, "%s\t%zu\t%d\t%d\t%d\t%d\t%d\t%.3f\t%d\t%d\t%d\t%s\n",
+        fprintf(out, "%s\t%zu\t%d\t%d\t%d\t%d\t%d\t%.3f\t%d\t%d\t%d\t%d\t%s\n",
                 recs[k].id.c_str(), t.size(), r.score,
                 r.start_i, r.start_j, r.end_i, r.end_j,
-                cov, fs, fs_net, stops, flag.c_str());
+                cov, fs, fs_net, stops, stop_end, flag.c_str());
 
         if (flag == "OK") ++n_ok;
         else {
