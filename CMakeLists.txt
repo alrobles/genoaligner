@@ -242,6 +242,12 @@ target_include_directories(genomsa_ref PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/inclu
 add_executable(genomsa_ref_test tests/msa/test_msa_ref.cpp)
 target_link_libraries(genomsa_ref_test PRIVATE genomsa_ref)
 
+# Instrumented exact NJ: Recall@k of the NJ cherry in candidate sets
+# (docs/SPEC_NJ_GPU.md, NJ1 gate). Host only.
+find_package(Threads REQUIRED)
+add_executable(nj_trace tools/nj_trace.cpp)
+target_link_libraries(nj_trace PRIVATE genomsa_ref Threads::Threads)
+
 install(TARGETS genoaligner ARCHIVE DESTINATION lib)
 install(FILES include/genoaligner/api.hpp DESTINATION include/genoaligner)
 install(FILES include/genoaligner/io/fasta.hpp DESTINATION include/genoaligner/io)
