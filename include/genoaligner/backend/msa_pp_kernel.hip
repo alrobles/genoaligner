@@ -98,8 +98,9 @@ static constexpr uint8_t MSA_Y_EXT = 8;
 // inlined `x*y` feeding an add/sub into a single-rounding FMA, producing
 // results 1 ulp off the gcc-compiled reference -- enough to flip a `>`
 // tie in the DP and emit a different CIGAR (observed on V100). The
-// _rn intrinsics are opaque to contraction; under the CPU shim they map
-// to plain ops so the emulation stays the gcc reference itself.
+// _rn intrinsics are opaque to contraction UNDER NVCC; under ROCm they are
+// NOT (see warning below). Under the CPU shim they map to plain ops so the
+// emulation stays the gcc reference itself.
 #if defined(GENOALIGNER_HIP_SHIM) || \
     (!defined(__CUDA_ARCH__) && !defined(__HIP_DEVICE_COMPILE__))
 #define GA_FMUL_RN(a, b) ((a) * (b))
@@ -107,6 +108,15 @@ static constexpr uint8_t MSA_Y_EXT = 8;
 #else
 #define GA_FMUL_RN(a, b) __fmul_rn((a), (b))
 #define GA_FADD_RN(a, b) __fadd_rn((a), (b))
+#endif
+
+// WARNING: on ROCm/hipcc the _rn intrinsics do NOT stop the backend from
+// contracting a nearby mul+add into an FMA (observed on gfx90a: 57/2765
+// protein benchmark families diverged from V100/CPU until the build used
+// -ffp-contract=off). All HIP build recipes in scripts/ carry that flag;
+// the pragma below is belt-and-suspenders for clang-based toolchains.
+#if defined(__clang__) && defined(__HIP_DEVICE_COMPILE__)
+#pragma clang fp contract(off)
 #endif
 
 // Column-vs-column weighted sum-of-pairs. Device and host share it through

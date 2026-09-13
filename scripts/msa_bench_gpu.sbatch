@@ -24,14 +24,17 @@ cd "$REPO" || exit 1
 echo "=== host: $(hostname) tag=$TAG $(date) ==="
 rocm-smi --showproductname 2>/dev/null | head -3 || nvidia-smi --query-gpu=name --format=csv 2>/dev/null | head -3
 
-if command -v /kuhpc/sw/rocm/6.4.3/bin/hipcc >/dev/null; then
-    /kuhpc/sw/rocm/6.4.3/bin/hipcc -O2 -std=c++17 -I. -Iinclude \
+if [ "$TAG" = "v100" ]; then
+    R=/kuhpc/sw/rocm/6.4.3
+    C=/kuhpc/sw/nvhpc/Linux_x86_64/2024/cuda/12.4
+    "$C/bin/nvcc" -w -D__HIP_PLATFORM_NVIDIA__ -std=c++17 \
+        -gencode arch=compute_70,code=sm_70 \
+        -I "$R/include" -I "$C/include" -I "$C/targets/x86_64-linux/include" \
+        -I . -I include -lcuda -L "$C/lib64/stubs" -x cu \
         -o /tmp/genomsa_gpu tools/genomsa.cpp src/msa/msa_gpu.cpp \
         src/msa/msa_ref.cpp || { echo BUILD_FAILED; exit 1; }
 else
-    NVCC=/kuhpc/sw/nvhpc/Linux_x86_64/2024/cuda/12.4/bin/nvcc
-    $NVCC -x cu -O2 -std=c++17 -D__HIP_PLATFORM_NVIDIA__ \
-        -gencode arch=compute_70,code=sm_70 -I. -Iinclude \
+    /kuhpc/sw/rocm/6.4.3/bin/hipcc -O2 -ffp-contract=off -std=c++17 -I. -Iinclude \
         -o /tmp/genomsa_gpu tools/genomsa.cpp src/msa/msa_gpu.cpp \
         src/msa/msa_ref.cpp || { echo BUILD_FAILED; exit 1; }
 fi

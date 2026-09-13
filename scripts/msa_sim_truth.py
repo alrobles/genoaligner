@@ -130,7 +130,7 @@ if __name__ == "__main__":
                 cur = line[1:].split()[0]
                 got[cur] = ""
             elif cur:
-                got[cur] += line
+                got[cur] += line.upper()   # some tools emit lowercase
         got_rows = [got[f"s{i}"] for i in range(n)]
         # sanity: ungapped got rows must equal the leaf sequences
         for i, s in enumerate(seqs):
