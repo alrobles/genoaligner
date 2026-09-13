@@ -62,6 +62,44 @@ objetivo neutro (mismatch=1, gap=1, gap-gap=0).
 - SP-cost: repartido (~mitad para cada método); ND2 favorece claramente a
   MACSE (codon-aware en CDS limpio): 7.53M vs 10.6M.
 
+## Benchmark contra verdad conocida (scripts/msa_sim_truth.py)
+
+La paridad bit-exacta certifica que GPU == referencia CPU, pero no que el
+alineamiento sea biológicamente correcto. El benchmark de verdad simula
+un ancestro de 1500 bp evolucionando por un árbol balanceado con
+sustituciones e indels; cada base lleva su columna verdadera en una lista
+global ordenada de columnas (las inserciones crean columnas nuevas
+inmediatamente tras su ancla — el orden global es consistente con el
+orden interno de cada hoja). SPS = fracción de pares homólogos
+verdaderos reproducidos en el candidato.
+
+Nota: dos versiones previas del simulador renderizaban inserciones fuera
+de orden y reportaban SPS ~0.05 en alineamientos ~97% correctos — bug de
+la verdad, no del alineador. La versión actual se auto-valida
+(self-SPS = 1.0; ungapped(fila) == secuencia hoja, asertado).
+
+Resultados (semilla 4, 2% subs + 0.4% indels por rama → ~12% divergencia
+terminal):
+
+| n   | SIM-SPS | width_true | width_got |
+|-----|---------|------------|-----------|
+| 2   | 0.9953  | 1521       | 1521      |
+| 4   | 0.9928  | 1556       | 1552      |
+| 8   | 0.9790  | 1620       | 1607      |
+| 16  | 0.9753  | 1809       | 1765      |
+| 32  | 0.9360  | 2060       | 1932      |
+| 64  | 0.8964  | 2563       | 2208      |
+
+Robustez: n=16 con semillas 7/9 → 0.980 / 0.968. Régimen duro
+(5% subs + 1% indels por rama, ~30% divergencia): n=16 → 0.841.
+
+Lectura: el pairwise DP es casi exacto; la pérdida es progresiva con n —
+los merges del árbol guía acumulan errores de registro en regiones
+repetitivas/ambigüedad de gaps, el comportamiento esperado de un MSA
+progresivo. No es un defecto de implementación: es el techo del método
+Clustal-like. La brecha a n grande sugiere iterar sobre refinement
+(consistency / iterative realignment) si se quiere subir el techo.
+
 ## Lectura honesta
 
 - El kernel DP ya no es el cuello: en CYTB el alineamiento cuesta 3.4s de
@@ -70,6 +108,9 @@ objetivo neutro (mismatch=1, gap=1, gap-gap=0).
   Gotoh perfil-perfil. MACSE es codon-aware; en CDS limpio conserva fase
   mejor (ND2). La comparación definitiva es el árbol: IQ-TREE genomsa vs
   MACSE corriendo en paralelo.
+- Contra verdad simulada recupera ~97-99% de pares homólogos en régimen
+  de ortólogos de mamífero (n≤16) y ~90% a n=64 — evidencia de calidad
+  real, no solo de paridad interna.
 - Memoria: dir_peak CYTB = 1.3 GB; VWF width 16.6k columnas — la matriz de
   direcciones crece con el ancho al cuadrado; para perfiles muy anchos
   hará falta traceback con checkpoints (Hirschberg) o dirs en diagonal.
