@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <thread>
 #include <vector>
 
 #ifdef GENOALIGNER_HIP_SHIM
@@ -58,9 +59,16 @@ bool msa_align_gpu(const std::vector<std::string>& seqs, const Params& P,
         return fail("no HIP device");
 
     auto t0 = std::chrono::steady_clock::now();
-    std::vector<float> D = kmer_distances(seqs, P.kmer_k);
+    // Host-side stages run multithreaded; both _mt variants are bit-exact
+    // with the sequential reference semantics (gate: driver parity).
+    const int nthreads = [] {
+        const char* e = std::getenv("GENOMSA_THREADS");
+        int t = e ? std::atoi(e) : (int)std::thread::hardware_concurrency();
+        return t > 0 ? t : 1;
+    }();
+    std::vector<float> D = kmer_distances_mt(seqs, P.kmer_k, nthreads);
     auto t1 = std::chrono::steady_clock::now();
-    Tree tree = nj_tree(D, n);
+    Tree tree = nj_tree_mt(D, n, nthreads);
     auto levels = tree_levels(tree);
     auto t2 = std::chrono::steady_clock::now();
 

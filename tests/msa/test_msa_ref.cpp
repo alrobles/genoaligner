@@ -3,6 +3,7 @@
 #include <genoaligner/msa/msa.hpp>
 #include <cstdio>
 #include <cstring>
+#include <random>
 #include <string>
 #include <vector>
 using namespace genomsa;
@@ -130,6 +131,28 @@ int main() {
         auto o1 = msa_align(in, P);
         auto o2 = msa_align(in, P);
         CHECK(o1 == o2, "deterministic output");
+    }
+
+    // ---- 10. _mt host stages are bit-exact with the sequential spec
+    {
+        std::mt19937 rng(7);
+        static const char b[] = "ACGT";
+        for (int n : {2, 3, 5, 8, 17, 40}) {
+            std::vector<std::string> in(n);
+            for (auto& s : in) {
+                for (int i = 0; i < 20 + (int)(rng() % 60); ++i) s += b[rng() % 4];
+            }
+            auto D1 = kmer_distances(in, P.kmer_k);
+            auto D2 = kmer_distances_mt(in, P.kmer_k, 4);
+            CHECK(D1 == D2, "kmer_distances_mt not bit-exact");
+            auto T1 = nj_tree(D1, n);
+            auto T2 = nj_tree_mt(D1, n, 4);
+            bool same = T1.root == T2.root && T1.nodes.size() == T2.nodes.size();
+            if (same) for (size_t u = 0; u < T1.nodes.size(); ++u)
+                if (T1.nodes[u].left != T2.nodes[u].left ||
+                    T1.nodes[u].right != T2.nodes[u].right) same = false;
+            CHECK(same, "nj_tree_mt not bit-exact");
+        }
     }
 
     if (fails == 0) printf("ALL OK\n");

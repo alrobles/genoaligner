@@ -60,6 +60,9 @@ void    profile_update_counts(Profile& p);
 // Fragment-corrected k-mer Jaccard distance matrix (lower triangle packed).
 std::vector<float> kmer_distances(const std::vector<std::string>& seqs,
                                   int k);
+// Multithreaded variant: bit-exact same output (disjoint writes only).
+std::vector<float> kmer_distances_mt(const std::vector<std::string>& seqs,
+                                     int k, int threads);
 
 // --------------------------------------------------------------- NJ tree
 struct Node { int left = -1, right = -1; };  // children node ids; leaf if <0
@@ -68,6 +71,9 @@ struct Tree {
     int root = -1;
 };
 Tree nj_tree(const std::vector<float>& dist_packed, int n);
+// Multithreaded variant: bit-exact same tree (per-row sums keep sequential
+// order; the Q argmin merges per-range minima in scan order).
+Tree nj_tree_mt(const std::vector<float>& dist_packed, int n, int threads);
 
 // Internal nodes grouped by merge level: level(u) = max(level(children))+1,
 // leaves = 0. All nodes in one level are INDEPENDENT -- the batch unit the

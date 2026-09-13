@@ -5,6 +5,8 @@
 #include <unordered_map>
 #include <cassert>
 #include <cstring>
+#include <functional>
+#include <thread>
 
 namespace genomsa {
 
@@ -125,6 +127,67 @@ std::vector<float> kmer_distances(const std::vector<std::string>& seqs, int k) {
     return D;
 }
 
+// Contiguous-range parallel map: fn(lo,hi) on disjoint [lo,hi) slices whose
+// union is [0,total). Results are deterministic iff fn's writes are disjoint
+// (true for every caller below).
+static void parallel_for(int total, int nthreads,
+                         const std::function<void(int, int)>& fn) {
+    nthreads = std::min(nthreads, total);
+    if (nthreads <= 1) { fn(0, total); return; }
+    std::vector<std::thread> ts;
+    const int chunk = (total + nthreads - 1) / nthreads;
+    for (int t = 0; t < nthreads; ++t) {
+        const int lo = t * chunk, hi = std::min(total, lo + chunk);
+        if (lo >= hi) break;
+        ts.emplace_back([&fn, lo, hi] { fn(lo, hi); });
+    }
+    for (auto& th : ts) th.join();
+}
+
+// Multithreaded kmer_distances: same outputs, bit-exact (every write is to a
+// disjoint slot; no float accumulation is reordered).
+std::vector<float> kmer_distances_mt(const std::vector<std::string>& seqs,
+                                     int k, int threads) {
+    const int n = (int)seqs.size();
+    std::vector<std::unordered_map<uint64_t, bool>> sets(n);
+    const uint64_t kmask = (k >= 31) ? ~0ull : ((1ull << (2 * k)) - 1);
+    parallel_for(n, threads, [&](int lo, int hi) {
+        for (int s = lo; s < hi; ++s) {
+            const std::string& q = seqs[s];
+            uint64_t h = 0;
+            int run = 0;
+            for (size_t i = 0; i < q.size(); ++i) {
+                float cnt[4];
+                bool clean = iupac_counts(q[i], cnt) &&
+                             (cnt[0] == 1.f || cnt[1] == 1.f ||
+                              cnt[2] == 1.f || cnt[3] == 1.f);
+                if (!clean) { run = 0; h = 0; continue; }
+                int b = cnt[0] == 1.f ? 0 : cnt[1] == 1.f ? 1 : cnt[2] == 1.f ? 2 : 3;
+                h = (h << 2) | (uint64_t)b;
+                if (++run >= k) sets[s][h & kmask] = true;
+            }
+        }
+    });
+    std::vector<float> D((size_t)n * (n - 1) / 2);
+    auto idx = [n](int i, int j) {
+        if (i > j) std::swap(i, j);
+        return (size_t)i * n - (size_t)i * (i + 1) / 2 + (j - i - 1);
+    };
+    parallel_for(n, threads, [&](int lo, int hi) {
+        for (int i = lo; i < hi; ++i) {
+            for (int j = i + 1; j < n; ++j) {
+                const auto& A = sets[i].size() <= sets[j].size() ? sets[i] : sets[j];
+                const auto& B = sets[i].size() <= sets[j].size() ? sets[j] : sets[i];
+                size_t inter = 0;
+                for (const auto& kv : A) if (B.count(kv.first)) ++inter;
+                size_t mn = std::min(sets[i].size(), sets[j].size());
+                D[idx(i, j)] = mn ? 1.0f - (float)inter / (float)mn : 1.0f;
+            }
+        }
+    });
+    return D;
+}
+
 // -------------------------------------------------------------------- NJ
 // Deterministic neighbor joining over a dense matrix sized for all nodes
 // (leaves 0..n-1, internal nodes n..2n-2, root = 2n-2).
@@ -158,6 +221,79 @@ Tree nj_tree(const std::vector<float>& Dp, int n) {
                 double q = (m - 2) * d[alive[a]][alive[b]] - r[a] - r[b];
                 if (bi < 0 || q < best) { best = q; bi = a; bj = b; }
             }
+        int xi = alive[bi], xj = alive[bj];
+        int u = (int)t.nodes.size();
+        t.nodes.push_back({xi, xj});
+        std::vector<int> rest;
+        for (int a = 0; a < m; ++a) if (a != bi && a != bj) rest.push_back(alive[a]);
+        alive = rest;
+        for (int v : rest) {
+            d[u][v] = d[v][u] = 0.5 * (d[xi][v] + d[xj][v] - d[xi][xj]);
+        }
+        alive.push_back(u);
+    }
+    t.root = (int)t.nodes.size();
+    t.nodes.push_back({alive[0], alive[1]});
+    return t;
+}
+
+// Multithreaded nj_tree: bit-exact with the sequential version. Two rules
+// keep it so: (1) each r[a] accumulates over b in the same sequential order
+// -- only the ROWS are split across threads, no float sum is reordered;
+// (2) the Q-matrix argmin is a per-range minimum merged in (a,b) scan order,
+// which reproduces the sequential first-minimum-wins tie break exactly.
+Tree nj_tree_mt(const std::vector<float>& Dp, int n, int threads) {
+    Tree t;
+    if (n == 1) { t.nodes.resize(1); t.root = 0; return t; }
+    const int NN = 2 * n - 1;
+    auto idx = [n](int i, int j) {
+        if (i > j) std::swap(i, j);
+        return (size_t)i * n - (size_t)i * (i + 1) / 2 + (j - i - 1);
+    };
+    std::vector<std::vector<double>> d(NN, std::vector<double>(NN, 0));
+    for (int i = 0; i < n; ++i)
+        for (int j = i + 1; j < n; ++j)
+            d[i][j] = d[j][i] = Dp[idx(i, j)];
+
+    t.nodes.resize(n);
+    std::vector<int> alive(n);
+    for (int i = 0; i < n; ++i) alive[i] = i;
+
+    while (alive.size() > 2) {
+        int m = (int)alive.size();
+        std::vector<double> r(m, 0);
+        parallel_for(m, threads, [&](int lo, int hi) {
+            for (int a = lo; a < hi; ++a)
+                for (int b = 0; b < m; ++b) if (a != b)
+                    r[a] += d[alive[a]][alive[b]];
+        });
+        // per-range argmin, merged in scan order
+        const int nt = std::max(1, std::min(threads, m));
+        std::vector<double> tbest(nt, 0);
+        std::vector<int>    tbi(nt, -1), tbj(nt, -1);
+        {
+            const int chunk = (m + nt - 1) / nt;
+            std::vector<std::thread> ts;
+            for (int t = 0; t < nt; ++t) {
+                const int lo = t * chunk, hi = std::min(m, lo + chunk);
+                if (lo >= hi) break;
+                ts.emplace_back([&, t, lo, hi] {
+                    double best = 0; int bi = -1, bj = -1;
+                    for (int a = lo; a < hi; ++a)
+                        for (int b = a + 1; b < m; ++b) {
+                            double q = (m - 2) * d[alive[a]][alive[b]] - r[a] - r[b];
+                            if (bi < 0 || q < best) { best = q; bi = a; bj = b; }
+                        }
+                    tbest[t] = best; tbi[t] = bi; tbj[t] = bj;
+                });
+            }
+            for (auto& th : ts) th.join();
+        }
+        double best = 0; int bi = -1, bj = -1;
+        for (int t = 0; t < nt; ++t) {
+            if (tbi[t] < 0) continue;
+            if (bi < 0 || tbest[t] < best) { best = tbest[t]; bi = tbi[t]; bj = tbj[t]; }
+        }
         int xi = alive[bi], xj = alive[bj];
         int u = (int)t.nodes.size();
         t.nodes.push_back({xi, xj});
