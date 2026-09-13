@@ -143,15 +143,24 @@ int main(int argc, char** argv)
         reqs[i].scoring     = scoring;
         reqs[i].with_cigar  = true;
     }
-    // Chunked: the whole batch's dir workspace can exceed device memory.
+    // Chunked with auto-shrink: a chunk's dir workspace can exceed device
+    // memory depending on the sequences inside it. On a workspace failure
+    // the chunk is retried at half size, down to single pairs.
     std::vector<genoaligner::SWAlignResult> results;
     results.reserve(reqs.size());
-    for (size_t off = 0; off < reqs.size(); off += (size_t)batch_size) {
-        size_t end = std::min(off + (size_t)batch_size, reqs.size());
-        std::vector<genoaligner::SWRequest> chunk(reqs.begin() + off, reqs.begin() + end);
+    for (size_t off = 0; off < reqs.size();) {
+        size_t len = std::min((size_t)batch_size, reqs.size() - off);
+        std::vector<genoaligner::SWRequest> chunk(reqs.begin() + off, reqs.begin() + off + len);
         genoaligner::SWBatchResult br = genoaligner::align_sw_batch(chunk);
-        if (!br.ok()) { std::fprintf(stderr, "batch: %s\n", br.error); return 1; }
+        if (!br.ok()) {
+            if (len == 1) { std::fprintf(stderr, "batch: %s\n", br.error); return 1; }
+            batch_size = std::max(1, batch_size / 2);
+            std::fprintf(stderr, "batch of %zu too big (%s); retrying at %d\n",
+                         len, br.error, batch_size);
+            continue;
+        }
         results.insert(results.end(), br.results.begin(), br.results.end());
+        off += len;
     }
 
     FILE* out = emit ? fopen(emit, "w") : stdout;
@@ -171,14 +180,20 @@ int main(int argc, char** argv)
             // Walk the CIGAR. i = text pos, j = ref pos (both absolute).
             int i = r.start_i, j = r.start_j;
             char codon[3]; int codon_fill = -1;   // ref codon being built
+            int codon_i0 = -1;                    // text index of codon base 1
             for (char op : r.cigar) {
                 if (op == 'M' || op == 'X') {
                     int pos = ((j - frame) % 3 + 3) % 3;
-                    if (pos == 0) codon_fill = 0;
+                    if (pos == 0) { codon_fill = 0; codon_i0 = i; }
                     if (codon_fill == pos) codon[codon_fill++] = t[i];
                     else codon_fill = -1;
                     if (codon_fill == 3) {
-                        if (is_stop(codon[0], codon[1], codon[2], code)) ++stops;
+                        // The codon only exists if its three text bases are
+                        // CONTIGUOUS in the text: an insertion inside it means
+                        // these three bases are not a real codon (the indel is
+                        // already counted as a frameshift signal).
+                        if (i == codon_i0 + 2 &&
+                            is_stop(codon[0], codon[1], codon[2], code)) ++stops;
                         codon_fill = -1;
                     }
                     ++i; ++j;
