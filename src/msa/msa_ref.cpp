@@ -229,6 +229,15 @@ AlignResult align_profiles(const Profile& A, const Profile& B,
         mM[at(0, j)]  = P.free_end_gaps ? 0 : NEG;
     }
 
+    // Decisions are recorded per cell, not re-derived by float comparison at
+    // traceback time: (s+mx)-s is not guaranteed to equal mx in floating
+    // point, and a recomputed predecessor that matches NONE of the three
+    // states would silently fall through to a default op. The kernel records
+    // the same byte layout (hsrc|xext|yext); this IS the spec.
+    std::vector<uint8_t> dir((size_t)(M + 1) * (N + 1), 0);
+    auto dt = [N](int i, int j) { return (size_t)i * (N + 1) + j; };
+    constexpr uint8_t H_M = 0, H_IX = 1, H_IY = 2, X_EXT = 4, Y_EXT = 8;
+
     for (int i = 1; i <= M; ++i) {
         for (int j = 1; j <= N; ++j) {
             float s = col_score(A, i - 1, B, j - 1, P);
@@ -236,13 +245,17 @@ AlignResult align_profiles(const Profile& A, const Profile& B,
             float openB = P.gap_open * A.occ[i - 1];
             // gap in A opposite B_{j-1}: scaled by B's occupancy
             float openA = P.gap_open * B.occ[j - 1];
-            mIx[at(i, j)] = std::max(mM[at(i - 1, j)] - openB,
-                                     mIx[at(i - 1, j)] - P.gap_extend);
-            mIy[at(i, j)] = std::max(mM[at(i, j - 1)] - openA,
-                                     mIy[at(i, j - 1)] - P.gap_extend);
-            mM[at(i, j)] = s + std::max({mM[at(i - 1, j - 1)],
-                                         mIx[at(i - 1, j - 1)],
-                                         mIy[at(i - 1, j - 1)]});
+            float oIx = mM[at(i - 1, j)] - openB;
+            float eIx = mIx[at(i - 1, j)] - P.gap_extend;
+            float oIy = mM[at(i, j - 1)] - openA;
+            float eIy = mIy[at(i, j - 1)] - P.gap_extend;
+            mIx[at(i, j)] = std::max(oIx, eIx);
+            mIy[at(i, j)] = std::max(oIy, eIy);
+            float mx = mM[at(i - 1, j - 1)]; uint8_t h = H_M;
+            if (mIx[at(i - 1, j - 1)] > mx) { mx = mIx[at(i - 1, j - 1)]; h = H_IX; }
+            if (mIy[at(i - 1, j - 1)] > mx) { mx = mIy[at(i - 1, j - 1)]; h = H_IY; }
+            mM[at(i, j)] = s + mx;
+            dir[dt(i, j)] = h | (eIx > oIx ? X_EXT : 0) | (eIy > oIy ? Y_EXT : 0);
         }
     }
 
@@ -265,20 +278,18 @@ AlignResult align_profiles(const Profile& A, const Profile& B,
         if (st == 'M') {
             if (i == 0 || j == 0) break;
             cig.push_back('M');
-            float v = mM[at(i, j)] - col_score(A, i - 1, B, j - 1, P);
+            uint8_t h = dir[dt(i, j)] & 3;
             --i; --j;
-            st = (v == mM[at(i, j)]) ? 'M' : (v == mIx[at(i, j)] ? 'I' : 'D');
+            st = (h == H_M) ? 'M' : (h == H_IX ? 'I' : 'D');
         } else if (st == 'I') {
             if (i == 0) break;
             cig.push_back('I');
-            float open = P.gap_open * A.occ[i - 1];
-            st = (mIx[at(i, j)] == mM[at(i - 1, j)] - open) ? 'M' : 'I';
+            if (j > 0) st = (dir[dt(i, j)] & X_EXT) ? 'I' : 'M';
             --i;
         } else { // 'D'
             if (j == 0) break;
             cig.push_back('D');
-            float open = P.gap_open * B.occ[j - 1];
-            st = (mIy[at(i, j)] == mM[at(i, j - 1)] - open) ? 'M' : 'D';
+            if (i > 0) st = (dir[dt(i, j)] & Y_EXT) ? 'D' : 'M';
             --j;
         }
     }
@@ -338,6 +349,22 @@ Profile merge_profiles(const Profile& A, const Profile& B,
     out.ids.insert(out.ids.end(), B.ids.begin(), B.ids.end());
     for (auto& s : out.rows) assert((int)s.size() == w);
     profile_update_counts(out);
+    return out;
+}
+
+// --------------------------------------------------------------- levels
+std::vector<std::vector<int>> tree_levels(const Tree& t) {
+    std::vector<int> lvl(t.nodes.size(), 0);
+    std::vector<std::vector<int>> out;
+    // nodes were appended in join order (n, n+1, ..., root): parents always
+    // come after their children, so a single ascending pass assigns levels.
+    for (size_t u = 0; u < t.nodes.size(); ++u) {
+        const Node& nd = t.nodes[u];
+        if (nd.left < 0) continue;
+        lvl[u] = std::max(lvl[nd.left], lvl[nd.right]) + 1;
+        if ((int)out.size() < lvl[u]) out.resize(lvl[u]);
+        out[lvl[u] - 1].push_back((int)u);
+    }
     return out;
 }
 

@@ -348,6 +348,31 @@ else
     exit 1
 fi
 
+echo
+echo "--- [shim] MSA level-batched pipeline parity ---"
+# The parallel decomposition itself: independent nodes per guide-tree level
+# aligned by the kernel and merged level-by-level must equal the sequential
+# post-order driver BIT-EXACTLY. A pipeline that differs from the sequential
+# reference is a scheduling bug no single-pair test can see.
+if g++ -O2 -std=c++17 -DGENOALIGNER_HIP_SHIM -I"$SHIM_DIR" -I"$REPO_ROOT/include" \
+       -o "$BUILD_DIR/msa_pipeline_parity" \
+       "$REPO_ROOT/tests/parity/msa_pipeline_parity.cpp" "$REPO_ROOT/src/msa/msa_ref.cpp" \
+       2>"$BUILD_DIR/msa_pipe_build.log"; then
+    if ! "$BUILD_DIR/msa_pipeline_parity" | tee "$BUILD_DIR/msa_pipe.out" | tail -15; then
+        echo
+        echo "=== CPU GATE FAILED (MSA pipeline parity) — do not submit ==="
+        exit 1
+    fi
+    if ! grep -q "RESULT: PASS" "$BUILD_DIR/msa_pipe.out"; then
+        echo "  !!! MSA pipeline parity produced no PASS verdict — treating as FAILURE."
+        exit 1
+    fi
+else
+    echo "  !!! MSA pipeline parity failed to BUILD:"
+    sed -n '1,20p' "$BUILD_DIR/msa_pipe_build.log"
+    exit 1
+fi
+
 # --- Stage 6: REAL biological sequences -------------------------------------
 # Stage 5 exercises the API. This stage changes the INPUT: real mtDNA instead of
 # generated bases, because repeats, low-complexity and structured regions are where

@@ -118,19 +118,19 @@ __global__ void msa_pp_trace_kernel(const MsaPPPair* __restrict__ pairs,
         colM[i] = prevM[N]; colIx[i] = Ix[N];
     }
     // ---- endpoint scan, exact reference order ------------------------------
-    //   1. mM on column N, i ascending    2. mM on row M, j ascending
-    //   3. mIx on column N, i ascending   4. mIy on row M, j ascending
+    //   column N: per-i, mM then mIx       (i ascending)
+    //   row M   : per-j, mM then mIy       (j ascending)
     // Strict '>' everywhere: the first maximum found wins.
     float best = NEG; int ei = M, ej = N; char estate = 'M';
     if (free_ends) {
-        for (int i = 0; i <= M; ++i)
-            if (colM[i] > best) { best = colM[i]; ei = i; ej = N; estate = 'M'; }
-        for (int j = 0; j <= N; ++j)
-            if (prevM[j] > best) { best = prevM[j]; ei = M; ej = j; estate = 'M'; }
-        for (int i = 0; i <= M; ++i)
+        for (int i = 0; i <= M; ++i) {
+            if (colM[i]  > best) { best = colM[i];  ei = i; ej = N; estate = 'M'; }
             if (colIx[i] > best) { best = colIx[i]; ei = i; ej = N; estate = 'I'; }
-        for (int j = 0; j <= N; ++j)
+        }
+        for (int j = 0; j <= N; ++j) {
+            if (prevM[j]  > best) { best = prevM[j];  ei = M; ej = j; estate = 'M'; }
             if (prevIy[j] > best) { best = prevIy[j]; ei = M; ej = j; estate = 'D'; }
+        }
     } else {
         best = prevM[N]; ei = M; ej = N; estate = 'M';
     }

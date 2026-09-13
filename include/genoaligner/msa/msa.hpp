@@ -69,6 +69,13 @@ struct Tree {
 };
 Tree nj_tree(const std::vector<float>& dist_packed, int n);
 
+// Internal nodes grouped by merge level: level(u) = max(level(children))+1,
+// leaves = 0. All nodes in one level are INDEPENDENT -- the batch unit the
+// GPU launches one kernel per level over. Levels come back ascending, so
+// iterating them in order respects dependencies. Deterministic: within a
+// level, nodes keep ascending node-id order.
+std::vector<std::vector<int>> tree_levels(const Tree& t);
+
 // ------------------------------------------------------- profile-profile
 struct AlignResult {
     float score = 0;
