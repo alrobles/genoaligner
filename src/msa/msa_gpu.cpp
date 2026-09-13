@@ -167,8 +167,9 @@ bool msa_align_gpu(const std::vector<std::string>& seqs, const Params& P,
             }
         }
 
-        auto cp = [&](void* d, const void* s, size_t bytes, const char* what) {
-            if (bytes && hipMemcpy(d, s, bytes, hipMemcpyHostToDevice) != hipSuccess) {
+        auto cp = [&](void* d, const void* s, size_t bytes, const char* what,
+                      hipMemcpyKind kind = hipMemcpyHostToDevice) {
+            if (bytes && hipMemcpy(d, s, bytes, kind) != hipSuccess) {
                 err = std::string("hipMemcpy ") + what;
                 return false;
             }
@@ -248,9 +249,11 @@ bool msa_align_gpu(const std::vector<std::string>& seqs, const Params& P,
         std::vector<MsaPPResult> hres(np);
         std::vector<int>         hmeta(np * 2);
         std::vector<uint8_t>     hcig(ctot);
-        if (!cp(hres.data(), d_res, np * sizeof(MsaPPResult), "res") ||
-            !cp(hmeta.data(), d_meta, np * 2 * sizeof(int), "meta") ||
-            !cp(hcig.data(),  d_cig, ctot, "cig")) {
+        if (!cp(hres.data(), d_res, np * sizeof(MsaPPResult), "res",
+                hipMemcpyDeviceToHost) ||
+            !cp(hmeta.data(), d_meta, np * 2 * sizeof(int), "meta",
+                hipMemcpyDeviceToHost) ||
+            !cp(hcig.data(),  d_cig, ctot, "cig", hipMemcpyDeviceToHost)) {
             hip_free_all(dev);
             return false;
         }
