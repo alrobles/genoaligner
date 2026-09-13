@@ -126,17 +126,20 @@ sigue siendo exacto; Fase C lo rechaza explícitamente.
 
 ---
 
-## 4. Fase C — Integrar en la API pública
+## 4. Fase C — Integrar en la API pública ✅ (commit b25bf81, job 29227600)
 
-Hoy `align_batch()` solo hace WFA. Añadir SW exige decidir y **documentar**:
-- Un campo en `AlignRequest` (`algorithm = wfa | sw`) + los `SWParams`.
-- Qué significa `smax` para SW (no aplica: SW no es banded) — o se ignora o se prohíbe.
-- Que `AlignResult.score` cambia de **distancia de edición** a **puntuación**, y que el
-  signo se invierte. **Un cambio silencioso de semántica en el mismo campo es un bug
-  esperando**: hay que nombrarlo distinto o documentarlo en la cabecera.
+Decisión tomada: **superficie separada**, no un campo `algorithm` —
+`SWRequest`/`SWAlignResult`/`SWBatchResult` + `align_sw`/`align_sw_batch`.
+`AlignResult.score` (distancia) y `SWAlignResult.score` (puntuación) no pueden
+confundirse porque son tipos distintos; `smax` no existe en `SWRequest`.
 
-**Criterio:** el ejemplo del README (`examples/align_fasta.cpp`) sigue compilando y
-corriendo **sin cambios** para WFA, y hay un ejemplo SW nuevo.
+Verificado (docs/RESULTADO_H10_SW_API.md): CPU gate verde con correctitud SW
+real bajo el shim; MI210 job 29227600 — API test con hipcc PASS incl. SW en
+device; SeqAn3 150/150 sobre los resultados emitidos por la API en device;
+`examples/align_sw.cpp` compila y corre. Hallazgo colateral documentado:
+traceback WFA por API está limitado a `smax ≤ ~88` en MI210 por shared memory.
+
+Queda en la deuda honesta: NVIDIA no verificado; rendimiento no medido.
 
 ---
 

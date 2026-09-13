@@ -246,6 +246,12 @@ add_executable(genoaligner_example examples/align_fasta.cpp)
 target_link_libraries(genoaligner_example PRIVATE genoaligner)
 genoaligner_configure_hip(genoaligner_example)
 
+# The SW example -- same contract as genoaligner_example, through the public
+# SW entry points (align_sw_batch, not an algorithm field).
+add_executable(genoaligner_example_sw examples/align_sw.cpp)
+target_link_libraries(genoaligner_example_sw PRIVATE genoaligner)
+genoaligner_configure_hip(genoaligner_example_sw)
+
 if(GENOALIGNER_BUILD_TESTS)
     enable_testing()
     # These two need a GPU. On a host without one they exit 77 (the conventional

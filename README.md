@@ -120,6 +120,36 @@ Each pair differs by exactly one substitution, so `score=1` and a single `X` is
 correct — and `rescore`/`wellformed` are the library validating its own CIGAR before
 returning it.
 
+### Smith-Waterman (local alignment)
+
+SW is a **separate surface**, not a flag on the WFA types — `AlignResult.score`
+is an edit distance (lower is better) and `SWAlignResult.score` is an
+alignment score (higher is better), so they get different types rather than one
+field with two meanings. The runnable example is
+[examples/align_sw.cpp](examples/align_sw.cpp):
+
+```cpp
+genoaligner::SWRequest r;
+r.pattern     = pattern.data();  r.pattern_len = (int)pattern.size();
+r.text        = text.data();     r.text_len    = (int)text.size();
+r.scoring     = {2, -3, 3, 1};   // match, mismatch, gap_open, gap_extend
+r.with_cigar  = true;
+
+genoaligner::SWBatchResult batch = genoaligner::align_sw_batch({r});
+for (const auto& res : batch.results) {
+    if (!res.resolved) continue;   // only when the pair exceeds the size limit
+    if (res.score == 0) continue;  // no positive-scoring local alignment
+    std::printf("score=%d cigar=%s span text[%d..%d] pattern[%d..%d]\n",
+                res.score, res.cigar.c_str(), res.start_i, res.end_i,
+                res.start_j, res.end_j);
+}
+```
+
+There is no `smax`: local alignment has no distance budget. Results carry the
+local-alignment coordinates (`start`/`end` on both sequences). A gap of length
+`L` costs `gap_open + (L-1)*gap_extend`. One scoring scheme per batch, same
+rule as one `smax` per batch.
+
 ## Limits — read before you size a run
 
 - **`smax` must be in `[0, 511]`.** Above that the kernel's thread-to-diagonal mapping
@@ -141,6 +171,16 @@ returning it.
   numbers from concurrent calls. Details in `include/genoaligner/api.hpp`.
 - **Input is not validated as ACGT.** Real FASTA carries `N`, ambiguity codes and
   lowercase soft-masking; the reader preserves bytes as they are.
+- **WFA traceback is bounded by device shared memory.** The trace kernel holds
+  `(smax+1)(2·smax+3)` ints of shared per block, so with CIGAR the practical
+  `smax` ceiling is ~88 on a 64 KiB device (MI210); larger requests are refused
+  with an explicit error, not degraded. Score-only has no such limit.
+- **SW rejects `gap_extend > gap_open` when `with_cigar`** — under that regime
+  the DP prefers re-opening adjacent 1-gaps and no CIGAR can re-score to the
+  DP's own score (see `docs/RESULTADO_H9_SW2_TRACE.md`). Score-only accepts it;
+  the score stays exact.
+- **SW traceback memory is O(m·n)** — one direction byte per DP cell. Pairs
+  that would exceed `SW_MAX_TRACE_CELLS` come back `too_large`, not crashed.
 
 ## Verify
 

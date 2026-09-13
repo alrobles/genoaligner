@@ -243,6 +243,23 @@ else
     exit 1
 fi
 
+# The public SW example is part of the API contract: it is what a user's first
+# program looks like, so it must compile against the public headers and run on
+# the shim (where it produces real SW results -- not shape checks).
+if g++ -O2 -std=c++17 -pthread -DGENOALIGNER_HIP_SHIM -I"$SHIM_DIR" -I"$REPO_ROOT" -I"$REPO_ROOT/include" \
+       -o "$BUILD_DIR/example_sw" \
+       "$REPO_ROOT/examples/align_sw.cpp" "$REPO_ROOT/src/api/api.cpp" \
+       2>"$BUILD_DIR/example_sw_build.log"; then
+    if ! "$BUILD_DIR/example_sw" "$REPO_ROOT/tests/data/mtdna_human.fa" | tee "$BUILD_DIR/example_sw.out" | tail -8; then
+        echo "  !!! SW example failed to RUN."
+        exit 1
+    fi
+else
+    echo "  !!! SW example failed to BUILD:"
+    sed -n '1,20p' "$BUILD_DIR/example_sw_build.log"
+    exit 1
+fi
+
 echo
 echo "--- [host] build and run the FASTA reader test ---"
 if g++ -O2 -std=c++17 -I"$REPO_ROOT" -I"$REPO_ROOT/include" -o "$BUILD_DIR/test_fasta" \
