@@ -127,8 +127,9 @@ Params protein_params() {
     Params P;
     P.alpha = 20;
     P.kmer_k = 2;                  // ClustalW protein ktuple convention
-    P.gap_open = 11.0f;
-    P.gap_extend = 1.0f;
+    P.gap_open = 11.0f;            // ClustalW protein defaults; a 40-family
+    P.gap_extend = 1.0f;           // BAliBASE subset sweep found a flat
+    P.free_end_gaps = false;       // optimum here (protein MSA is global)
     for (int a = 0; a < 20; ++a)
         for (int b = 0; b < 20; ++b)
             P.sub[a * 20 + b] = BLOSUM62[a][b];
