@@ -50,6 +50,12 @@ __device__ inline bool nj_better(const NjBest& x, const NjBest& y) {
     return x.b < y.b;
 }
 
+#if defined(__HIP_DEVICE_COMPILE__) || defined(__CUDA_ARCH__)
+#define NJ_UNROLL _Pragma("unroll")
+#else
+#define NJ_UNROLL
+#endif
+
 __device__ inline double nj_mul(double x, double y) {
 #if defined(__HIP_DEVICE_COMPILE__) || defined(__CUDA_ARCH__)
     return __dmul_rn(x, y);
@@ -73,17 +79,35 @@ __global__ void nj_rowsum_kernel(const double* __restrict__ d,
                                  const int* __restrict__ alive,
                                  int m, int n, double* __restrict__ r)
 {
-    const int a = (int)(blockIdx.x * blockDim.x + threadIdx.x);
-    if (a >= m) return;
-    const int sa = alive[a];
+    __shared__ int sh_alive[NJ_T_MAX];
+    const int a  = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    const int sa = a < m ? alive[a] : 0;
     double s = 0;
     // d is symmetric: read column sa down the alive rows so neighbouring
-    // threads (neighbouring a) touch neighbouring addresses.
-    for (int b = 0; b < m; ++b) {
-        if (b == a) continue;
-        s += d[(size_t)alive[b] * (size_t)n + (size_t)sa];
+    // threads (neighbouring a) touch neighbouring addresses. alive[] is staged
+    // through shared memory per tile and the tile body is unrolled so the
+    // loads are in flight together; the adds stay strictly in host order.
+    constexpr int U = 8;
+    for (int b0 = 0; b0 < m; b0 += (int)blockDim.x) {
+        __syncthreads();
+        if (b0 + (int)threadIdx.x < m) sh_alive[threadIdx.x] = alive[b0 + threadIdx.x];
+        __syncthreads();
+        if (a >= m) continue;
+        const int tile = m - b0 < (int)blockDim.x ? m - b0 : (int)blockDim.x;
+        int k = 0;
+        for (; k + U <= tile; k += U) {
+            double v[U];
+NJ_UNROLL
+            for (int u = 0; u < U; ++u)
+                v[u] = d[(size_t)sh_alive[k + u] * (size_t)n + (size_t)sa];
+NJ_UNROLL
+            for (int u = 0; u < U; ++u)
+                if (b0 + k + u != a) s += v[u];
+        }
+        for (; k < tile; ++k)
+            if (b0 + k != a) s += d[(size_t)sh_alive[k] * (size_t)n + (size_t)sa];
     }
-    r[a] = s;
+    if (a < m) r[a] = s;
 }
 
 // grid = m blocks (one per a), block = NJ_T. part[a] = lexicographic argmin

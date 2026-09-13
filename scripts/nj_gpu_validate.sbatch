@@ -76,6 +76,16 @@ else
     echo "REAL-GENE PARITY: FAIL ($NFAIL of $NGENE genes)"; RC=1
 fi
 
+# ---- 3b. per-kernel profile on one gene (rocprof, optional) -----------------
+ROCPROF=$(dirname "$HIPCC")/rocprof
+if [ -x "$ROCPROF" ] && [ -s "$GENES_DIR/$GENE.fasta" ]; then
+    echo; echo "### rocprof --stats on $GENE ###"
+    ( cd "$BIN" && "$ROCPROF" --stats -o "$BIN/prof.csv" \
+        "$BIN/nj_bench" "$GENES_DIR/$GENE.fasta" --name "$GENE" --no-cpu >/dev/null 2>&1 )
+    [ -s "$BIN/prof.stats.csv" ] && { column -s, -t "$BIN/prof.stats.csv" | head -8; \
+        cp "$BIN/prof.stats.csv" "$OUT/nj_gpu0_${SLURM_JOB_ID:-local}_${GENE}.stats.csv"; }
+fi
+
 # ---- 4. end-to-end: genomsa with GPU tree vs CPU tree --------------------
 FG="$GENES_DIR/$GENE.fasta"
 if [ -s "$FG" ]; then

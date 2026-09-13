@@ -31,7 +31,7 @@ namespace {
 
 struct DevMem {
     std::vector<void*> ps;
-    ~DevMem() { for (void* p : ps) if (p) hipFree(p); }
+    ~DevMem() { for (void* p : ps) if (p) (void)hipFree(p); }
     bool alloc(void** p, size_t bytes) {
         if (bytes == 0) bytes = 8;
         if (hipMalloc(p, bytes) != hipSuccess) { *p = nullptr; return false; }
@@ -41,19 +41,14 @@ struct DevMem {
 };
 
 #ifdef GENOALIGNER_HIP_SHIM
-// Emulated launches: the shim has no scheduler, so the driver walks the grid.
-// Kernels with a block-wide reduction go through shim::run_block (real
-// threads, real barrier); the rowsum kernel has no barrier and is called
-// lane by lane.
+// Emulated launches: the shim has no scheduler, so the driver walks the grid;
+// every block goes through shim::run_block (real threads, real barrier).
 void launch_rowsum(unsigned grid, const double* d, const int* alive, int m, int n,
                    double* r) {
     gridDim = dim3{grid, 1, 1}; blockDim = dim3{(unsigned)NJ_T, 1, 1};
     for (unsigned bx = 0; bx < grid; ++bx) {
         blockIdx = uint3{bx, 0, 0};
-        for (unsigned tx = 0; tx < (unsigned)NJ_T; ++tx) {
-            threadIdx = uint3{tx, 0, 0};
-            nj_rowsum_kernel(d, alive, m, n, r);
-        }
+        shim::run_block(NJ_T, [&] { nj_rowsum_kernel(d, alive, m, n, r); });
     }
 }
 void launch_argmin(unsigned grid, const double* d, const int* alive, const double* r,
