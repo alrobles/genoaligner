@@ -91,10 +91,9 @@ Por ronda (m nodos vivos, cereza `(i,j)`):
    puede ser mucho mayor que el `r_b` de los candidatos reales. Con
    ≥ 94 % de fallbacks exactos en los genes que importan, NJ1 costaría más
    que NJ0 (candidatos + certificación + reducción densa casi siempre).
-   Una cota más fina (p. ej. `r_b` real ordenado, o cota de RapidNJ
-   `(m-2)·d_a^{(k)} − r_a − r_max` con `r_max` restringido a los no
-   candidatos) es posible pero ya no es "barata" y sigue sin garantizar la
-   tasa de fallbacks.
+   Una cota más fina (p. ej. `r_max` restringido a los `b ∉ E_k(a)`, o
+   usar el `r_b` real de cada candidato) es posible pero ya no es "barata"
+   y sigue sin garantizar la tasa de fallbacks.
 4. **Empates de `Q`**: 83 de 19 094 rondas (0.43 %) tienen dos pares a
    ≤ 4 ulp. Cualquier argmin paralelo (GPU) **debe** reproducir el
    desempate "primer par en orden `(a<b)` sobre `alive`" del host o
@@ -102,7 +101,8 @@ Por ronda (m nodos vivos, cereza `(i,j)`):
    topología. Esto fija la decisión D1 del spec: reducción por bloques con
    comparador `(q, a, b)` lexicográfico, no `atomicMin` sobre `q`.
 5. **Escala**: `nj_tree_mt` con 16 hilos ya baja CYTB a 11.8 s (el 60 s
-   de RESULTADO_MSA_GPU2 era con 8 hilos y otra carga). Esto acota la
+   de RESULTADO_MSA_GPU2 salió de un job con `--cpus-per-task=8`;
+   probablemente hilos + nodo distinto). Esto acota la
    ganancia de NJ0: el objetivo razonable es ≤ 2 s en MI210 para
    n=3523, no "de minutos a segundos".
 
