@@ -137,6 +137,34 @@ Paridad: `msa_pp_parity`, `msa_pipeline_parity`, `msa_driver_parity` con
 variantes default/legacy/psgp/gappy/psgp+gappy — todas bit-exactas.
 Flags: `--psgp/--no-psgp`, `--gappy T/--no-gappy`.
 
+### Bug hunt V100: OOB en el mini-alineamiento gappy (commit `5e7c01b`)
+
+La combinación psgp+gappy falló en V100 (salida no determinista, 1 fila
+distinta vs CPU) mientras el shim pasaba. Diagnóstico por checksums por
+nivel (`GENOMSA_LVL_DEBUG`): todas las entradas empaquetadas y todas las
+salidas de kernel eran idénticas entre corridas — solo divergía el merge
+de la **raíz**. Causa raíz: `sub_profile()` cortaba `cols`/`occ` del
+perfil **reducido** con índices en coordenadas **originales**
+(`run_start`/`run_len`) → rango de iteradores fuera de los vectores →
+`align_profiles()` del mini-bloque coincidente consumía basura de heap.
+
+- Solo se manifestaba con psgp+gappy: psgp ensancha los perfiles lo
+  suficiente para que ambos lados tengan runs gappy en la misma ancla —
+  y eso solo pasa en niveles altos del árbol (la raíz).
+- Por eso pairdbg estaba limpio: el kernel era correcto; el bug vivía en
+  la expansión host posterior.
+- Fix: reconstruir los conteos del mini-perfil desde las filas
+  originales con `profile_update_counts` — exacto, sin OOB.
+- Post-fix V100: `g1==g2==g3==cpu` (determinista), subset PARITY PASS,
+  COI completo X-VENDOR PASS (V100 == MI210 byte-idéntico, width 3182).
+- Lección ya incorporada al gate: el sweep ASan+UBSan lo habría cazado
+  localmente; corre en `check_kernel_cpu.sh`.
+
+Hardening adicional que queda: `GA_FMUL_RN`/`GA_FADD_RN` en el kernel
+(intrínsecos no-contraíbles bajo nvcc, ops planas en el shim) — defensa
+contra contracción FMA en decisiones `>` de la DP; no era la causa aquí
+pero elimina una clase entera de divergencias nvcc-vs-gcc.
+
 ## Lectura honesta
 
 - El kernel DP ya no es el cuello: en CYTB el alineamiento cuesta 3.4s de
