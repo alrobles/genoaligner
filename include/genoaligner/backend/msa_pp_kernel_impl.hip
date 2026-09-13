@@ -20,10 +20,15 @@ namespace genoaligner {
 __global__ void msa_pp_trace_kernel(const MsaPPPair* __restrict__ pairs,
                                     MsaPPParams params,
                                     MsaPPResult* __restrict__ out,
-                                    uint8_t* __restrict__ dirs, size_t dir_stride,
+                                    uint8_t* __restrict__ dirs,
+                                    const size_t* __restrict__ dir_base,
+                                    const size_t* __restrict__ dir_avail,
                                     uint8_t* __restrict__ cigar_buf,
+                                    const size_t* __restrict__ cig_base,
                                     int* __restrict__ cigar_meta,
-                                    float* __restrict__ scratch, size_t scratch_stride,
+                                    float* __restrict__ scratch,
+                                    const size_t* __restrict__ scr_base,
+                                    const size_t* __restrict__ scr_avail,
                                     int n_pairs, int cigar_cap)
 {
     const int pair_id = (int)(blockIdx.x * blockDim.x + threadIdx.x);
@@ -41,16 +46,16 @@ __global__ void msa_pp_trace_kernel(const MsaPPPair* __restrict__ pairs,
         cigar_meta[pair_id * 2 + 1] = 0;
         return;
     }
-    if ((size_t)(M + 1) * (size_t)(N + 1) > dir_stride ||
-        (size_t)(3 * (N + 1) + 2 * (M + 1)) > scratch_stride) {
+    if ((size_t)(M + 1) * (size_t)(N + 1) > dir_avail[pair_id] ||
+        (size_t)(3 * (N + 1) + 2 * (M + 1)) > scr_avail[pair_id]) {
         out[pair_id] = MsaPPResult{MSA_PP_TOO_BIG, 0, 0, 0, 0};
         cigar_meta[pair_id * 2 + 0] = cigar_cap;
         cigar_meta[pair_id * 2 + 1] = 0;
         return;
     }
 
-    uint8_t* dir  = dirs + (size_t)pair_id * dir_stride;
-    float* prevM  = scratch + (size_t)pair_id * scratch_stride;
+    uint8_t* dir  = dirs + dir_base[pair_id];
+    float* prevM  = scratch + scr_base[pair_id];
     float* Ix     = prevM + (N + 1);
     float* prevIy = Ix + (N + 1);
     float* colM   = prevIy + (N + 1);             // M[i][N] snapshots, i=0..M
@@ -138,7 +143,7 @@ __global__ void msa_pp_trace_kernel(const MsaPPPair* __restrict__ pairs,
     // ---- backward walk -----------------------------------------------------
     // Emits ops into the pair's cigar slice in WALK order (reversed relative
     // to the alignment); the caller reverses the used range.
-    uint8_t* cig = cigar_buf + (size_t)pair_id * cigar_cap;
+    uint8_t* cig = cigar_buf + cig_base[pair_id];
     int used = 0;
     int i = ei, j = ej; char st = estate;
     while ((i > 0 || j > 0) && used < cigar_cap) {

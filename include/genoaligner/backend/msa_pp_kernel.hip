@@ -106,26 +106,33 @@ __device__ __host__ inline float msa_col_score(
 // ---- launch contract ---------------------------------------------------------
 //
 //   pair_id    = blockIdx.x * blockDim.x + threadIdx.x   (one thread per pair)
-//   dirs       : n_pairs * dir_stride bytes; dir_stride >= (A.len+1)*(B.len+1)
-//                for the largest pair. Cell (i,j) of pair p sits at
-//                dirs[p*dir_stride + i*(B.len+1) + j].
-//   cigar_buf  : n_pairs * cigar_cap bytes of ops ('M','I','D' as chars 0/1/2:
-//                0=M both, 1=A only, 2=B only), filled in REVERSE order.
+//   Buffers are PACKED: each pair owns a variable-size slice given by a base
+//   offset array, so a level batch mixing 1 kb leaves with 20 kb profiles
+//   wastes nothing.
+//   dir_base   : n_pairs offsets into dirs (bytes). Pair p needs
+//                (A.len+1)*(B.len+1) bytes at dirs[dir_base[p]].
+//   scr_base   : n_pairs offsets into scratch (floats). Pair p needs
+//                3*(B.len+1) + 2*(A.len+1) floats.
+//   cig_base   : n_pairs offsets into cigar_buf (bytes). Pair p needs
+//                cigar_cap bytes (ops: 0=M both, 1=A only, 2=B only, stored
+//                in WALK order -- the caller reverses the used range).
+//   dir_avail  : for each pair, the byte budget at dir_base[p] (n_pairs).
+//                A pair whose matrix exceeds it reports MSA_PP_TOO_BIG and
+//                emits nothing -- the caller packs tight, this guards the
+//                packing arithmetic itself.
 //   cigar_meta : n_pairs * 2 ints = {cap, used}.
-//   scratch    : n_pairs * scratch_stride floats;
-//                scratch_stride >= 3*(B.len+1) + 2*(A.len+1) for the largest
-//                pair (rows prevM/Ix/prevIy + last-column M/Ix snapshots,
-//                needed because the endpoint scan order is 4 separate phases).
-//
-// A pair whose (A.len+1)*(B.len+1) exceeds dir_stride reports
-// MSA_PP_TOO_BIG and emits nothing.
 __global__ void msa_pp_trace_kernel(const MsaPPPair* __restrict__ pairs,
                                     MsaPPParams params,
                                     MsaPPResult* __restrict__ out,
-                                    uint8_t* __restrict__ dirs, size_t dir_stride,
+                                    uint8_t* __restrict__ dirs,
+                                    const size_t* __restrict__ dir_base,
+                                    const size_t* __restrict__ dir_avail,
                                     uint8_t* __restrict__ cigar_buf,
+                                    const size_t* __restrict__ cig_base,
                                     int* __restrict__ cigar_meta,
-                                    float* __restrict__ scratch, size_t scratch_stride,
+                                    float* __restrict__ scratch,
+                                    const size_t* __restrict__ scr_base,
+                                    const size_t* __restrict__ scr_avail,
                                     int n_pairs, int cigar_cap);
 
 }  // namespace genoaligner

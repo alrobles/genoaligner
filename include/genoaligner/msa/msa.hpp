@@ -102,4 +102,18 @@ std::vector<std::string> msa_align_with_tree(const std::vector<std::string>& seq
                                              const Tree& tree,
                                              const Params& P);
 
+// ------------------------------------------------------------- GPU path
+// Level-batched driver: one kernel launch per guide-tree level over its
+// independent pairs, reference merge on host. Bit-exact with
+// msa_align_with_tree (gated by tests/parity/msa_pipeline_parity.cpp).
+// Compiled only under a HIP compiler (src/msa/msa_gpu.cpp).
+struct GpuStats {
+    double dist_s = 0, tree_s = 0, align_s = 0;
+    int    levels = 0, pairs = 0;
+    size_t dir_bytes = 0;
+};
+bool msa_align_gpu(const std::vector<std::string>& seqs, const Params& P,
+                   std::vector<std::string>& out, std::string& err,
+                   GpuStats* stats = nullptr);
+
 } // namespace genomsa

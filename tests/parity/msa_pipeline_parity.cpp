@@ -69,10 +69,11 @@ static genomsa::AlignResult kernel_align(const Profile& A, const Profile& B,
     std::vector<float>   scr(scr_sz);
     int meta[2];
     MsaPPResult res;
+    const size_t zero[1] = {0}, av_d[1] = {dir_sz}, av_s[1] = {scr_sz};
     blockIdx = uint3{0,0,0}; threadIdx = uint3{0,0,0};
     blockDim = dim3{1,1,1};  gridDim  = dim3{1,1,1};
-    msa_pp_trace_kernel(&pp, to_params(P), &res, dirs.data(), dir_sz,
-                        cig.data(), meta, scr.data(), scr_sz, 1, cap);
+    msa_pp_trace_kernel(&pp, to_params(P), &res, dirs.data(), zero, av_d,
+                        cig.data(), zero, meta, scr.data(), zero, av_s, 1, cap);
     genomsa::AlignResult r;
     r.score = res.score; r.ai = res.ai; r.aj = res.aj; r.bi = res.bi; r.bj = res.bj;
     static const char ops[] = "MID";
