@@ -323,6 +323,31 @@ else
     exit 1
 fi
 
+echo
+echo "--- [shim] MSA profile-profile kernel parity ---"
+# The shipped msa_pp_trace_kernel body under the CPU shim vs the M1 reference:
+# different code paths (direction bytes vs value re-derivation) asserting the
+# same score, span and column CIGAR. This is the gate every later MSA kernel
+# optimisation must keep green.
+if g++ -O2 -std=c++17 -DGENOALIGNER_HIP_SHIM -I"$SHIM_DIR" -I"$REPO_ROOT/include" \
+       -o "$BUILD_DIR/msa_pp_parity" \
+       "$REPO_ROOT/tests/parity/msa_pp_parity.cpp" "$REPO_ROOT/src/msa/msa_ref.cpp" \
+       2>"$BUILD_DIR/msa_pp_build.log"; then
+    if ! "$BUILD_DIR/msa_pp_parity" | tee "$BUILD_DIR/msa_pp.out" | tail -15; then
+        echo
+        echo "=== CPU GATE FAILED (MSA pp kernel parity) — do not submit ==="
+        exit 1
+    fi
+    if ! grep -q "RESULT: PASS" "$BUILD_DIR/msa_pp.out"; then
+        echo "  !!! MSA pp parity produced no PASS verdict — treating as FAILURE."
+        exit 1
+    fi
+else
+    echo "  !!! MSA pp parity failed to BUILD:"
+    sed -n '1,20p' "$BUILD_DIR/msa_pp_build.log"
+    exit 1
+fi
+
 # --- Stage 6: REAL biological sequences -------------------------------------
 # Stage 5 exercises the API. This stage changes the INPUT: real mtDNA instead of
 # generated bases, because repeats, low-complexity and structured regions are where
