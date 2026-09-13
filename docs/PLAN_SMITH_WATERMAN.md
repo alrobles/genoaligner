@@ -143,17 +143,25 @@ NVIDIA verificado después (docs/RESULTADO_H11_SW_CUDA.md, job 29230631):
 V100 warpSize=32 real — score 210/210, trace 209/209, API PASS, SeqAn3
 201/201 + 150/150. SW corre en ambos vendors desde el mismo árbol.
 
-Queda en la deuda honesta: rendimiento no medido (Fase D).
+Rendimiento medido en Fase D (sección 5).
 
 ---
 
-## 5. Fase D — Rendimiento y evidencia
+## 5. Fase D — Rendimiento y evidencia ✅ (primera medición; commit 5a5700f, job 29230691)
 
-- Medir con el diseño de B6 (intercalado, dentro de un job, media + dispersión).
-- Comparar con **parasail** (CPU, SIMD) y, si corre, con la implementación CUDA de
-  referencia — declarando **cuál** se midió y cuál se cita.
-- **No prometer nada hasta tener los números.** Un SW correcto y lento es un resultado
-  válido y publicable; un SW rápido y mal medido, no.
+Medido (docs/RESULTADO_H12_SW_PARASAIL.md): diseño B6 intercalado, 7 reps,
+600 pares/105.3 Mcells, **0 mismatches** contra la referencia en todos los reps.
+
+| | throughput |
+|---|---|
+| nuestro score kernel, MI210 | 3.20 GCUPS |
+| parasail, 1 hilo (EPYC 9454P) | 0.67 GCUPS |
+| parasail, 8 hilos | 1.17 GCUPS |
+
+**4.8x vs parasail-1t, 2.7x vs parasail-8t** — real pero modesto; no redondear.
+La implementación CUDA de referencia externa no se midió (no hay una candidata
+que corra en el cluster); parasail queda como baseline CPU declarada. La
+medición es score-only; el trace kernel no está en estos números.
 
 ---
 
