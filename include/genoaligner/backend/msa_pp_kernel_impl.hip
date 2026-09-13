@@ -20,15 +20,15 @@ namespace genoaligner {
 // Position-specific gap penalties -- must match genomsa::psgp_open/ext in
 // msa.hpp exactly (identical float ops, same branch order).
 __device__ __host__ inline float pp_open(float occ, const MsaPPParams& p) {
-    if (!p.psgp || occ >= 1.0f) return p.gap_open * occ;
-    const float q  = p.psgp_scale * p.gap_open * occ;
-    const float fl = p.psgp_min_open * p.gap_open;
+    if (!p.psgp || occ >= 1.0f) return GA_FMUL_RN(p.gap_open, occ);
+    const float q  = GA_FMUL_RN(GA_FMUL_RN(p.psgp_scale, p.gap_open), occ);
+    const float fl = GA_FMUL_RN(p.psgp_min_open, p.gap_open);
     return q > fl ? q : fl;
 }
 __device__ __host__ inline float pp_ext(float occ, const MsaPPParams& p) {
     if (!p.psgp || occ >= 1.0f) return p.gap_extend;
-    const float q  = p.gap_extend * occ;
-    const float fl = p.psgp_min_ext * p.gap_extend;
+    const float q  = GA_FMUL_RN(p.gap_extend, occ);
+    const float fl = GA_FMUL_RN(p.psgp_min_ext, p.gap_extend);
     return q > fl ? q : fl;
 }
 
@@ -85,7 +85,7 @@ __global__ void msa_pp_trace_kernel(const MsaPPPair* __restrict__ pairs,
         prevM[j]  = free_ends ? 0.f : NEG;
         Ix[j]     = NEG;
         prevIy[j] = free_ends ? 0.f
-                              : -(pp_open(pp.B.occ[j - 1], params) + (j - 1) * ge);
+                              : -GA_FADD_RN(pp_open(pp.B.occ[j - 1], params), GA_FMUL_RN((float)(j - 1), ge));
     }
 
     // Snapshot the i=0 boundary column so the endpoint scan can run in the
@@ -97,7 +97,7 @@ __global__ void msa_pp_trace_kernel(const MsaPPPair* __restrict__ pairs,
         // values of cell (i,0)
         float curM0  = free_ends ? 0.f : NEG;
         float curIx0 = free_ends ? 0.f
-                                 : -(pp_open(pp.A.occ[i - 1], params) + (i - 1) * ge);
+                                 : -GA_FADD_RN(pp_open(pp.A.occ[i - 1], params), GA_FMUL_RN((float)(i - 1), ge));
         // diagonal predecessors start as the (i-1,0) cell's states
         float dM  = prevM[0];
         float dIx = Ix[0];
@@ -274,10 +274,10 @@ __global__ void msa_pp_trace_kernel_wf(const MsaPPPair* __restrict__ pairs,
                 vM  = (j == 0 || free_ends) ? 0.f : NEG;
                 vIx = NEG;
                 vIy = (j == 0) ? NEG
-                     : (free_ends ? 0.f : -(pp_open(pp.B.occ[j - 1], params) + (j - 1) * ge));
+                     : (free_ends ? 0.f : -GA_FADD_RN(pp_open(pp.B.occ[j - 1], params), GA_FMUL_RN((float)(j - 1), ge)));
             } else if (j == 0) {
                 vM  = free_ends ? 0.f : NEG;
-                vIx = free_ends ? 0.f : -(pp_open(pp.A.occ[i - 1], params) + (i - 1) * ge);
+                vIx = free_ends ? 0.f : -GA_FADD_RN(pp_open(pp.A.occ[i - 1], params), GA_FMUL_RN((float)(i - 1), ge));
                 vIy = NEG;
             } else {
                 // M[i][j]: diagonal predecessor (i-1,j-1) on d-2, row i-1.

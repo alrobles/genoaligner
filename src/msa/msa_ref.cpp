@@ -522,14 +522,17 @@ GappyStrip profile_strip(const Profile& p, float thr) {
 }
 
 namespace {
-// Build a profile holding only columns [start, start+len) of `p`.
+// Build a profile holding only ORIGINAL columns [start, start+len) of `p`.
+// `p` may be a reduced (stripped) profile whose cols/occ no longer span the
+// original coordinates -- but its rows always do. Slicing reduced cols by
+// original indices would read out of bounds; recounting from the row
+// substrings reproduces the original column data exactly.
 Profile sub_profile(const Profile& p, int start, int len) {
     Profile q;
-    q.cols.assign(p.cols.begin() + start, p.cols.begin() + start + len);
-    q.occ.assign (p.occ.begin()  + start, p.occ.begin()  + start + len);
     q.rows.reserve(p.rows.size());
     for (const auto& r : p.rows) q.rows.push_back(r.substr(start, len));
     q.ids = p.ids; q.nseq = p.nseq;
+    profile_update_counts(q);
     return q;
 }
 } // namespace

@@ -84,6 +84,21 @@ static constexpr uint8_t MSA_H_IY = 2;
 static constexpr uint8_t MSA_X_EXT = 4;
 static constexpr uint8_t MSA_Y_EXT = 8;
 
+// Non-contractible float ops. nvcc's default -fmad=true will fuse an
+// inlined `x*y` feeding an add/sub into a single-rounding FMA, producing
+// results 1 ulp off the gcc-compiled reference -- enough to flip a `>`
+// tie in the DP and emit a different CIGAR (observed on V100). The
+// _rn intrinsics are opaque to contraction; under the CPU shim they map
+// to plain ops so the emulation stays the gcc reference itself.
+#if defined(GENOALIGNER_HIP_SHIM) || \
+    (!defined(__CUDA_ARCH__) && !defined(__HIP_DEVICE_COMPILE__))
+#define GA_FMUL_RN(a, b) ((a) * (b))
+#define GA_FADD_RN(a, b) ((a) + (b))
+#else
+#define GA_FMUL_RN(a, b) __fmul_rn((a), (b))
+#define GA_FADD_RN(a, b) __fadd_rn((a), (b))
+#endif
+
 // Column-vs-column weighted sum-of-pairs. Device and host share it through
 // the CPU shim: the same body must compile under g++ (tests/parity/hip_cpu_shim).
 __device__ __host__ inline float msa_col_score(
@@ -101,7 +116,7 @@ __device__ __host__ inline float msa_col_score(
                         : ((a == 0 && b == 2) || (a == 2 && b == 0) ||
                            (a == 1 && b == 3) || (a == 3 && b == 1))
                             ? p.ts : p.tv;
-            s += fa * fb * sub;
+            s = GA_FADD_RN(s, GA_FMUL_RN(GA_FMUL_RN(fa, fb), sub));
         }
     }
     return s;
