@@ -184,7 +184,7 @@ rule as one `smax` per batch.
 
 ## Verify
 
-The gate needs no GPU and runs in seconds — it executes the shipped kernel body on
+The gate runs in CI on every push (`.github/workflows/cpu-gate.yml`) and needs no GPU — it executes the shipped kernel body on
 host memory against an independent dynamic program:
 
 ```bash
@@ -238,6 +238,10 @@ measurements (superseded for comparison purposes): [docs/BENCHMARK_FASE6.md](doc
 - [docs/OPTION_A_ANALYSIS.md](docs/OPTION_A_ANALYSIS.md) — why one HIP source.
 - [docs/CONTAINERS.md](docs/CONTAINERS.md) — apptainer images and 3-host
   replicability.
+- The SW work: [docs/PLAN_SMITH_WATERMAN.md](docs/PLAN_SMITH_WATERMAN.md) and the
+  `RESULTADO_H8/H9/H10/H11/H12` files — kernel, traceback, API, NVIDIA, parasail.
+- `scripts/*.sbatch` are the validation jobs as actually run on the KU HPC
+  cluster (hardcoded cluster paths, kept as evidence; they are not portable).
 
 ## Licence
 
