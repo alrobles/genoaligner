@@ -41,7 +41,9 @@ echo -e "gene\tseqs\tOK\tNO_ALIGN\tLOW_COV\tFS\tSTOP\tinvalid" > "$OUT/summary.t
 RC=0
 for FA in "$PAI"/data/genes_final/*.fasta; do
     GENE=$(basename "$FA" .fasta)
-    BAIT="$PAI/data/baits/${GENE}.baits.fasta"
+    # Prefer baits_qc (clean-CDS references chosen by stop-count) when present.
+    BAIT="$PAI/data/baits_qc/${GENE}.baits.fasta"
+    [ -s "$BAIT" ] || BAIT="$PAI/data/baits/${GENE}.baits.fasta"
     [ -s "$BAIT" ] || { echo "$GENE: no bait, skipped"; continue; }
     CODE=1; [[ "$MTDNA" == *" $GENE "* ]] && CODE=2
     echo; echo "### $GENE (code $CODE) ###"
