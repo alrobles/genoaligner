@@ -11,10 +11,12 @@
 // tests/api/test_api.cpp verify the API -- including the documented example -- on a
 // machine with no accelerator, which is the same discipline the parity gate uses.
 //
-// The score kernel is the flat (fixed-block) one from Fase 7 when WFA_API_USE_FLAT
-// is defined, otherwise the original. The flat variant was measured at 1.5-4.4x on
-// MI210/PRO 6000 and is documented in docs/RESULTADO_FASE7_OPTIMIZACION.md; it is
-// behind a flag rather than default because it is still a candidate, not merged.
+// The score kernel is the flat (fixed-block) one from Fase 7 -- merged as the
+// default for the API's score-only path after being measured 1.5-4.4x faster
+// AND free of the original kernel's 4.4x intra-process instability (idle lanes
+// synchronising; docs/RESULTADO_FASE7_OPTIMIZACION.md). It uses the identical
+// algebra, layout, sentinels and shared-memory envelope as the original, which
+// remains in wfa_kernel.hip as the parity baseline the H2 gate checks.
 
 // Include the public headers by the path a CONSUMER would use, resolved relative to
 // this file. The previous form ("include/genoaligner/api.hpp", root-relative) worked
@@ -205,28 +207,23 @@ struct LaunchCfg {
     size_t shmem;     // dynamic shared bytes
 };
 
-static LaunchCfg cfg_for(int smax, bool flat)
+static LaunchCfg cfg_for(int smax)
 {
     LaunchCfg c{};
-    const int need = 2 * smax + 1;
-    int b = 1;
-    while (b < need) b <<= 1;
-    // DO NOT clamp silently. The kernel maps diagonal k = threadIdx.x - s, so a
-    // block smaller than 2*smax+1 skips diagonals WITHOUT RAISING AN ERROR -- the
-    // kernel header says so explicitly. Clamping here (the first version did) would
-    // therefore turn a legitimate request for a large smax into quietly wrong
-    // alignments. smax is validated in align_batch before this is reached; the
-    // capping branch survives only as a defensive assertion that must never fire.
-    if (b > 1024) b = 1024;
-    c.block = b;
-    if (flat) c.block = WFA_FLAT_BLOCK;
-    c.shmem = (size_t)2 * (2 * smax + 3) * sizeof(int);
+    // The flat kernel sweeps diagonals in an interior grid-stride loop, so its
+    // block does NOT need to cover 2*smax+1 slots -- WFA_FLAT_BLOCK is a cost
+    // choice, not a coverage choice, and smaller smax requests do not shrink it
+    // (see wfa_score_flat.hip for why a fixed block was the whole point).
+    c.block  = WFA_FLAT_BLOCK;
+    c.shmem  = (size_t)2 * (2 * smax + 3) * sizeof(int);
     return c;
 }
 
-// The largest smax the score kernel can cover with a 1024-thread block. Above this
-// the thread-to-diagonal mapping cannot cover [0, 2s] and the kernel silently skips
-// diagonals, so the API REFUSES rather than degrading. 511 = (1024 - 1) / 2.
+// The API contract caps smax at 511. The original kernel NEEDED that cap (its
+// thread-to-diagonal mapping could not cover [0,2s] past a 1024-thread block and
+// would silently skip diagonals). The flat kernel's grid-stride has no such
+// limit -- only the shared-memory envelope -- but the contract stays at the
+// validated bound rather than silently widening it.
 static constexpr int kMaxSmax = 511;
 
 }  // namespace
@@ -472,16 +469,12 @@ BatchResult align_batch(const std::vector<AlignRequest>& reqs)
         }
         hipFree(d_ws);
     } else {
-        // Score-only path.
-#ifdef WFA_API_USE_FLAT
-        LaunchCfg c = cfg_for(smax, true);
+        // Score-only path: always the flat kernel (merged default -- see the
+        // header comment for the evidence and why the original stays in
+        // wfa_kernel.hip as the parity baseline).
+        LaunchCfg c = cfg_for(smax);
         hipLaunchKernelGGL(wfa_score_kernel_flat, dim3((unsigned)N), dim3(c.block), c.shmem,
                            (hipStream_t)0, d_pairs, d_scores, smax);
-#else
-        LaunchCfg c = cfg_for(smax, false);
-        hipLaunchKernelGGL(wfa_score_kernel, dim3((unsigned)N), dim3(c.block), c.shmem,
-                           (hipStream_t)0, d_pairs, d_scores, smax);
-#endif
         hipError_t le = hipGetLastError();
         if (le != hipSuccess) { return fail("wfa_score_kernel launch"); }
         hipError_t se = hipDeviceSynchronize();

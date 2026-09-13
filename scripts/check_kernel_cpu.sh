@@ -139,6 +139,27 @@ run_pass() {
             pass_fail=1
         fi
     fi
+
+    # --- the flat score kernel, now the API's default for score-only ---------
+    # wfa_score_kernel_flat is a thread remapping of the same recurrence -- the
+    # class of change that looks right and is wrong -- so its parity against the
+    # independent CPU DP is gated on every pass, not just at merge time.
+    local fsrc="$REPO_ROOT/bench/h7_flat_parity.cpp"
+    local fbin="$BUILD_DIR/h7_flat_parity"
+    echo "--- [${label}] build h7_flat_parity (shim) ---"
+    # shellcheck disable=SC2086
+    if ! "$CXX" $extra -std=c++17 -DGENOALIGNER_HIP_SHIM \
+            -I"$SHIM_DIR" -I"$REPO_ROOT" -I"$REPO_ROOT/include" \
+            -o "$fbin" "$fsrc"; then
+        echo "BUILD FAILED (${label}): h7_flat_parity.cpp (shim)"
+        pass_fail=1
+    else
+        echo "--- [${label}] run h7_flat_parity ---"
+        if ! "$fbin" | tail -12; then
+            echo "RUN FAILED (${label}): h7_flat_parity (shim)"
+            pass_fail=1
+        fi
+    fi
     echo
     return $pass_fail
 }

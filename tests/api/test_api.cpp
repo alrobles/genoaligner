@@ -267,6 +267,25 @@ int main(int argc, char** argv)
         check_exec(mismatch == 0, "API scores match the CPU DP");
         check_exec(cigar_bad == 0, "API CIGARs pass both validators");
         check_exec(b.resolved_count == resolved, "resolved_count matches the per-result flags");
+
+        // Score-only re-run of the same pairs: this is the path that launches
+        // the FLAT kernel (the merged default). Scores must match the CPU DP
+        // exactly -- without this, the GPU run only ever checked the score
+        // path's SHAPE, and the flat merge would have shipped verified only on
+        // the shim.
+        for (auto& r : reqs) r.with_cigar = false;
+        BatchResult bs = align_batch(reqs);
+        check_exec(bs.ok(), "score-only batch reported ok");
+        int smism = 0;
+        for (int c = 0; c < NP; ++c) {
+            const AlignResult& r = bs.results[(size_t)c];
+            if (!r.resolved) continue;
+            const int want = edit_distance_cpu(pats[(size_t)c].data(), (int)pats[(size_t)c].size(),
+                                               texts[(size_t)c].data(), (int)texts[(size_t)c].size());
+            if (r.score != want) { ++smism; if (smism <= 5) printf("  score-only mismatch: api=%d cpu=%d\n", r.score, want); }
+        }
+        printf("  score-only path (flat kernel): mismatches=%d\n", smism);
+        check_exec(smism == 0, "score-only (flat kernel) scores match the CPU DP");
     }
 
     // ---- heterogeneous batch lengths: the case that broke cigar_cap ------
