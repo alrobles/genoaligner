@@ -300,6 +300,29 @@ else
     exit 1
 fi
 
+echo
+echo "--- [host] MSA CPU reference test ---"
+# Pure host code (no HIP, no shim): the M1 reference that fixes the semantics
+# every later GPU kernel must reproduce. Same rule as everywhere: silence is
+# not a pass, so the explicit ALL OK verdict is required.
+if g++ -O2 -std=c++17 -I"$REPO_ROOT/include" -o "$BUILD_DIR/test_msa_ref" \
+       "$REPO_ROOT/src/msa/msa_ref.cpp" "$REPO_ROOT/tests/msa/test_msa_ref.cpp" \
+       2>"$BUILD_DIR/msa_build.log"; then
+    if ! "$BUILD_DIR/test_msa_ref" | tee "$BUILD_DIR/msa_test.out" | tail -12; then
+        echo
+        echo "=== CPU GATE FAILED (MSA reference) — do not submit to the cluster ==="
+        exit 1
+    fi
+    if ! grep -q "ALL OK" "$BUILD_DIR/msa_test.out"; then
+        echo "  !!! MSA ref test produced no ALL OK verdict — treating as FAILURE."
+        exit 1
+    fi
+else
+    echo "  !!! MSA ref test failed to BUILD:"
+    sed -n '1,20p' "$BUILD_DIR/msa_build.log"
+    exit 1
+fi
+
 # --- Stage 6: REAL biological sequences -------------------------------------
 # Stage 5 exercises the API. This stage changes the INPUT: real mtDNA instead of
 # generated bases, because repeats, low-complexity and structured regions are where

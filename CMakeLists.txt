@@ -234,6 +234,14 @@ genoaligner_configure_hip(genoaligner_api_test)
 add_executable(genoaligner_fasta_test tests/io/test_fasta.cpp)
 target_include_directories(genoaligner_fasta_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 
+# The MSA CPU reference (genomsa): pure host code, no HIP. It fixes the
+# profile/merge/DP semantics that every later GPU kernel is validated against.
+add_library(genomsa_ref STATIC src/msa/msa_ref.cpp)
+target_include_directories(genomsa_ref PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+
+add_executable(genomsa_ref_test tests/msa/test_msa_ref.cpp)
+target_link_libraries(genomsa_ref_test PRIVATE genomsa_ref)
+
 install(TARGETS genoaligner ARCHIVE DESTINATION lib)
 install(FILES include/genoaligner/api.hpp DESTINATION include/genoaligner)
 install(FILES include/genoaligner/io/fasta.hpp DESTINATION include/genoaligner/io)
@@ -266,6 +274,7 @@ if(GENOALIGNER_BUILD_TESTS)
 
     # Pure host code: must pass everywhere, so no skip code.
     add_test(NAME fasta_runs COMMAND genoaligner_fasta_test)
+    add_test(NAME msa_ref_runs COMMAND genomsa_ref_test)
 
     # Real biological sequences (tests/data/mtdna_*.fa). Needs a GPU; exits 77 on a
     # device-less host, so it is reported as skipped rather than failed.
