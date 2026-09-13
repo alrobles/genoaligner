@@ -51,6 +51,7 @@ int main(int argc, char** argv) {
     }
 
     std::vector<genoaligner::io::FastaRecord> recs;
+    auto tr0 = std::chrono::steady_clock::now();
     std::string err;
     if (!genoaligner::io::read_fasta_file(in_path, &recs, &err)) {
         fprintf(stderr, "read %s: %s\n", in_path, err.c_str());
@@ -58,7 +59,9 @@ int main(int argc, char** argv) {
     }
     std::vector<std::string> seqs;
     for (auto& r : recs) seqs.push_back(r.sequence);
-    fprintf(stderr, "read %zu records from %s\n", recs.size(), in_path);
+    fprintf(stderr, "read %zu records from %s (%.2fs)\n", recs.size(), in_path,
+            std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - tr0).count());
 
     auto t0 = std::chrono::steady_clock::now();
     std::vector<std::string> msa;

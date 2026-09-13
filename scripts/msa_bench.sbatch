@@ -31,13 +31,20 @@ g++ -O2 -std=c++17 -DGENOALIGNER_HIP_SHIM \
     src/msa/msa_ref.cpp || { echo BUILD_FAILED; exit 1; }
 echo "build ok"
 
+TIMES=/beegfs/a474r867/bench/genomsa_cpu_times.tsv
 align_one() {
     d=$1; f=$2
+    s=$EPOCHREALTIME
     /tmp/genomsa_bench "$BENCH/$d/in/$f" "$OUT/$d/$f" --cpu --protein \
         >/dev/null 2>&1
+    rc=$?
+    e=$EPOCHREALTIME
+    ok=ok; { [ $rc -ne 0 ] || [ ! -s "$OUT/$d/$f" ]; } && ok=FAIL
+    printf "genomsa_cpu\t%s\t%s\t%.3f\t%s\n" "$d" "$f" \
+        "$(echo "$e - $s" | bc)" "$ok" >> "$TIMES"
 }
 export -f align_one
-export BENCH OUT
+export BENCH OUT TIMES
 
 for d in bali3 sabrem ox prefab4; do
     mkdir -p "$OUT/$d"
