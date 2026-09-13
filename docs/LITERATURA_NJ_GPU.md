@@ -159,4 +159,55 @@ evitar la sincronización por ronda, y soporte CUDA+HIP desde una sola fuente.
   cerezas; sin literatura que lo haga exacto para NJ canónico.
 - FastNJ / relaxed NJ / DIPPER placement: no son NJ canónico ⇒ violan I1.
 - Soft-NJ / embeddings hiperbólicos / diferenciabilidad: fuera del alcance
-  del árbol guía.
+  del árbol guía (ver §6).
+
+## 6. Bibliografía del draft original (aportada por A. Robles) y su lugar aquí
+
+Lo que fija el contrato y lo que NJ0 implementa:
+
+- **Saitou & Nei 1987** (MBE 4(4):406–425, doi 10.1093/oxfordjournals.molbev.a040454).
+  Define NJ. Nota: la forma `Q_ij = (m−2) d_ij − r_i − r_j` que usa `nj_tree`
+  es la reformulación de Studier & Keppler (1988), equivalente en argmin a la
+  suma de longitudes de rama de Saitou–Nei; NJ0 replica **esa** forma con la
+  aritmética del host, no la original.
+- **Semple & Steel 2003**, *Phylogenetics* (OUP). Métricas aditivas, condición
+  de los cuatro puntos, consistencia de NJ sobre métricas de árbol. Es la
+  base del caso `additive tree metric` de `tests/msa/test_nj_gpu.cpp`: sobre
+  una métrica aditiva NJ recupera el árbol, así que la paridad host/device
+  ahí ejercita el camino "verdadero" además de los empates sintéticos.
+- **Felsenstein 1981** (JME 17:368–376). Verosimilitud: el paso posterior al
+  árbol guía. Relevante sólo para la evaluación de calidad biológica
+  (`SPEC_NJ_GPU.md` §experimentos), no para el kernel.
+
+Lo que motiva NJ1/NJ2 y queda pospuesto (gate de `RESULTADO_NJ_TRACE.md`):
+
+- **Macaulay & Fourment 2024**, Dodonaphy (Bioinf. Adv. 4(1):vbae082; arXiv
+  2309.11732). Soft-NJ: sustituye el argmin duro por SoftSort sobre la
+  triangular superior de Q. Es una *relajación* diferenciable, no NJ
+  canónico; violaría I1. Útil si más adelante se refina el árbol guía por
+  verosimilitud. Su observación de que embed→decode no devuelve el árbol
+  original coincide con nuestro hallazgo: la vecindad por distancia no
+  predice la cereza NJ (Recall@32 ≈ 0.90 en CYTB).
+- **Mimori & Hamada 2023**, GeoPhy (NeurIPS 36; arXiv 2307.03675). Decoder
+  discreto + distribución variacional sobre coordenadas continuas. Igual que
+  arriba: pertenece a la etapa de inferencia, no a la construcción exacta.
+- **Chen et al. 2025**, VCSMC hiperbólico (AISTATS 258; arXiv 2501.17965).
+  Motiva la geometría hiperbólica por el crecimiento `(2n−3)!!` de
+  topologías. Sirve como generador de *propuestas* de candidatos para un
+  NJ1 futuro; el tracer ya midió que candidatos por distancia k-mer no bastan,
+  un embedding hiperbólico tendría que demostrar Recall@32 > 0.95 con el
+  mismo `tools/nj_trace.cpp` antes de justificar kernels.
+- **Nickel & Kiela 2017** (Poincaré), **Ganea et al. 2018** (HNN), **Sarkar
+  2012** (embedding Delaunay de árboles en H²): fundamentos del embedding
+  hiperbólico. Sarkar da distorsión baja para *árboles*, no para matrices
+  ruidosas derivadas de secuencias; eso es exactamente la brecha que
+  separa "vecino cercano" de "cereza NJ".
+- **Lewandowski, Kurowicka & Joe 2009** (LKJ; JMA 100(9):1989–2001). El
+  draft lo usa como analogía de parametrización con validez estructural. Como
+  señala el propio draft, una matriz SPD no codifica un árbol; la restricción
+  relevante es la aditividad (cuatro puntos), no la positividad.
+
+Conclusión para esta rama: la bibliografía hiperbólica/diferenciable define
+un posible NJ1' (candidatos por embedding + certificación exacta) y la etapa
+de refinamiento por verosimilitud; ninguna de ellas cambia el contrato ni la
+implementación de NJ0.
