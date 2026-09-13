@@ -34,9 +34,9 @@ int main(int argc, char** argv) {
         else { fprintf(stderr, "unknown arg: %s\n", a.c_str()); return 2; }
     }
 
-    std::vector<genoaligner::FastaRecord> recs;
+    std::vector<genoaligner::io::FastaRecord> recs;
     std::string err;
-    if (!genoaligner::read_fasta_file(in_path, &recs, &err)) {
+    if (!genoaligner::io::read_fasta_file(in_path, &recs, &err)) {
         fprintf(stderr, "read %s: %s\n", in_path, err.c_str());
         return 1;
     }
