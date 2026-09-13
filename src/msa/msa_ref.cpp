@@ -41,22 +41,116 @@ static bool iupac_counts(char c, float cnt[4]) {
     return true;
 }
 
-Profile profile_from_seq(const std::string& seq) {
+// Amino-acid index in BLOSUM order ARNDCQEGHILKMFPSTWYV.
+static int aa_index(char c) {
+    switch (c) {
+        case 'A': case 'a': return 0;
+        case 'R': case 'r': return 1;
+        case 'N': case 'n': return 2;
+        case 'D': case 'd': return 3;
+        case 'C': case 'c': return 4;
+        case 'Q': case 'q': return 5;
+        case 'E': case 'e': return 6;
+        case 'G': case 'g': return 7;
+        case 'H': case 'h': return 8;
+        case 'I': case 'i': return 9;
+        case 'L': case 'l': return 10;
+        case 'K': case 'k': return 11;
+        case 'M': case 'm': return 12;
+        case 'F': case 'f': return 13;
+        case 'P': case 'p': return 14;
+        case 'S': case 's': return 15;
+        case 'T': case 't': return 16;
+        case 'W': case 'w': return 17;
+        case 'Y': case 'y': return 18;
+        case 'V': case 'v': return 19;
+        default: return -1;
+    }
+}
+
+// Each letter contributes fractional counts to the symbol subset it
+// represents (1/|set| each). alpha==4 -> IUPAC DNA; alpha==20 ->
+// amino acids (B: N/D, Z: Q/E, J: I/L, X/O: uniform, U -> C).
+// Returns false for '-' or unmapped letters (counted as gap).
+static bool sym_counts(char c, float* cnt, int alpha) {
+    if (alpha == 4) return iupac_counts(c, cnt);
+    for (int i = 0; i < alpha; ++i) cnt[i] = 0;
+    switch (c) {
+        case 'B': cnt[2] = cnt[3] = 0.5f;      return true;
+        case 'Z': cnt[5] = cnt[6] = 0.5f;      return true;
+        case 'J': cnt[9] = cnt[10] = 0.5f;     return true;
+        case 'U': case 'u': cnt[4] = 1.f;      return true;
+        case 'X': case 'x': case 'O': case 'o':
+            for (int i = 0; i < alpha; ++i) cnt[i] = 1.f / alpha;
+            return true;
+        default: break;
+    }
+    int s = aa_index(c);
+    if (s < 0) return false;
+    cnt[s] = 1.f;
+    return true;
+}
+
+// Index of a letter's symbol when it is unambiguous, else -1.
+static int sym_index(char c, int alpha) {
+    float cnt[MSA_MAX_SYMS];
+    if (!sym_counts(c, cnt, alpha)) return -1;
+    for (int i = 0; i < alpha; ++i) if (cnt[i] == 1.f) return i;
+    return -1;
+}
+
+// BLOSUM62, rows/cols in ARNDCQEGHILKMFPSTWYV order.
+static const float BLOSUM62[20][20] = {
+ { 4,-1,-2,-2, 0,-1,-1, 0,-2,-1,-1,-1,-1,-2,-1, 1, 0,-3,-2, 0},
+ {-1, 5, 0,-2,-3, 1, 0,-2, 0,-3,-2, 2,-1,-3,-2,-1,-1,-3,-2,-3},
+ {-2, 0, 6, 1,-3, 0, 0, 0, 1,-3,-3, 0,-2,-3,-2, 1, 0,-4,-2,-3},
+ {-2,-2, 1, 6,-3, 0, 2,-1,-1,-3,-4,-1,-3,-3,-1, 0,-1,-4,-3,-3},
+ { 0,-3,-3,-3, 9,-3,-4,-3,-3,-1,-1,-3,-1,-2,-3,-1,-1,-2,-2,-1},
+ {-1, 1, 0, 0,-3, 5, 2,-2, 0,-3,-2, 1, 0,-3,-1, 0,-1,-2,-1,-2},
+ {-1, 0, 0, 2,-4, 2, 5,-2, 0,-3,-3, 1,-2,-3,-1, 0,-1,-3,-2,-2},
+ { 0,-2, 0,-1,-3,-2,-2, 6,-2,-4,-4,-2,-3,-3,-2, 0,-2,-2,-3,-3},
+ {-2, 0, 1,-1,-3, 0, 0,-2, 8,-3,-3,-1,-2,-1,-2,-1,-2,-2, 2,-3},
+ {-1,-3,-3,-3,-1,-3,-3,-4,-3, 4, 2,-3, 1, 0,-3,-2,-1,-3,-1, 3},
+ {-1,-2,-3,-4,-1,-2,-3,-4,-3, 2, 4,-2, 2, 0,-3,-2,-1,-2,-1, 1},
+ {-1, 2, 0,-1,-3, 1, 1,-2,-1,-3,-2, 5,-1,-3,-1, 0,-1,-3,-2,-2},
+ {-1,-1,-2,-3,-1, 0,-2,-3,-1, 1, 2,-1, 5, 0,-2,-1,-1,-1,-1, 1},
+ {-2,-3,-3,-3,-2,-3,-3,-3,-1, 0, 0,-3, 0, 6,-4,-2,-2, 1, 3,-1},
+ {-1,-2,-2,-1,-3,-1,-1,-2,-2,-3,-3,-1,-2,-4, 7,-1,-1,-4,-3,-2},
+ { 1,-1, 1, 0,-1, 0, 0, 0,-1,-2,-2, 0,-1,-2,-1, 4, 1,-3,-2,-2},
+ { 0,-1, 0,-1,-1,-1,-1,-2,-2,-1,-1,-1,-1,-2,-1, 1, 5,-2,-2, 0},
+ {-3,-3,-4,-4,-2,-2,-3,-2,-2,-3,-2,-3,-1, 1,-4,-3,-2,11, 2,-3},
+ {-2,-2,-2,-3,-2,-1,-2,-3, 2,-1,-1,-2,-1, 3,-3,-2,-2, 2, 7,-1},
+ { 0,-3,-3,-3,-1,-2,-2,-3,-3, 3, 1,-2, 1,-1,-2,-2, 0,-3,-1, 4},
+};
+
+Params protein_params() {
+    Params P;
+    P.alpha = 20;
+    P.kmer_k = 2;                  // ClustalW protein ktuple convention
+    P.gap_open = 11.0f;
+    P.gap_extend = 1.0f;
+    for (int a = 0; a < 20; ++a)
+        for (int b = 0; b < 20; ++b)
+            P.sub[a * 20 + b] = BLOSUM62[a][b];
+    return P;
+}
+
+Profile profile_from_seq(const std::string& seq, int alpha) {
     Profile p;
     p.nseq = 1;
+    p.alpha = alpha;
     p.rows.push_back(seq);
     p.ids.push_back(0);          // caller may overwrite with the true index
     p.cols.resize(seq.size());
     p.occ.resize(seq.size());
     for (size_t i = 0; i < seq.size(); ++i) {
-        float cnt[4];
-        if (iupac_counts(seq[i], cnt)) {
-            for (int b = 0; b < 4; ++b) p.cols[i][b] = cnt[b];
-            p.cols[i][4] = 0.f;
+        p.cols[i].fill(0.f);
+        float cnt[MSA_MAX_SYMS];
+        if (sym_counts(seq[i], cnt, alpha)) {
+            for (int b = 0; b < alpha; ++b) p.cols[i][b] = cnt[b];
             p.occ[i] = 1.f;
         } else {
-            for (int b = 0; b < 4; ++b) p.cols[i][b] = 0.f;
-            p.cols[i][4] = 1.f;
+            p.cols[i][alpha] = 1.f;
             p.occ[i] = 0.f;
         }
     }
@@ -64,23 +158,24 @@ Profile profile_from_seq(const std::string& seq) {
 }
 
 void profile_update_counts(Profile& p) {
+    const int al = p.alpha;
     const int L = p.rows.empty() ? 0 : (int)p.rows[0].size();
-    p.cols.assign(L, {0.f, 0.f, 0.f, 0.f, 0.f});
+    p.cols.assign(L, decltype(p.cols)::value_type{});
     p.occ.assign(L, 0.f);
     for (const auto& row : p.rows) {
         assert((int)row.size() == L);
         for (int i = 0; i < L; ++i) {
-            float cnt[4];
-            if (iupac_counts(row[i], cnt)) {
-                for (int b = 0; b < 4; ++b) p.cols[i][b] += cnt[b];
+            float cnt[MSA_MAX_SYMS];
+            if (sym_counts(row[i], cnt, al)) {
+                for (int b = 0; b < al; ++b) p.cols[i][b] += cnt[b];
                 p.occ[i] += 1.f;
             } else {
-                p.cols[i][4] += 1.f;
+                p.cols[i][al] += 1.f;
             }
         }
     }
     for (int i = 0; i < L; ++i) {
-        for (int b = 0; b < 5; ++b) p.cols[i][b] /= (float)p.nseq;
+        for (int b = 0; b <= al; ++b) p.cols[i][b] /= (float)p.nseq;
         p.occ[i] /= (float)p.nseq;
     }
 }
@@ -89,24 +184,29 @@ void profile_update_counts(Profile& p) {
 // S_ij = |kmers_i ∩ kmers_j|,  D = 1 - S / min(|k_i|, |k_j|)
 // (MAFFT-style fragment correction: a fragment contained in a longer
 // sequence is close to it, not distant).
-std::vector<float> kmer_distances(const std::vector<std::string>& seqs, int k) {
+// Rolling base-alpha k-mer hash kept mod alpha^k (for alpha=4 this is
+// exactly the old 2-bit shift + mask). k must satisfy alpha^k <= 2^63.
+static uint64_t kmer_base(int alpha, int k) {
+    uint64_t base = 1;
+    for (int i = 0; i < k; ++i) base *= (uint64_t)alpha;
+    return base;
+}
+
+std::vector<float> kmer_distances(const std::vector<std::string>& seqs,
+                                  int k, int alpha) {
     const int n = (int)seqs.size();
     std::vector<std::unordered_map<uint64_t, bool>> sets(n);
-    const uint64_t kmask = (k >= 31) ? ~0ull : ((1ull << (2 * k)) - 1);
+    const uint64_t kbase = kmer_base(alpha, k);
     for (int s = 0; s < n; ++s) {
         const std::string& q = seqs[s];
         uint64_t h = 0;
         int run = 0;
         for (size_t i = 0; i < q.size(); ++i) {
-            float cnt[4];
-            // only unambiguous ACGT may extend a k-mer
-            bool clean = iupac_counts(q[i], cnt) &&
-                         (cnt[0] == 1.f || cnt[1] == 1.f ||
-                          cnt[2] == 1.f || cnt[3] == 1.f);
-            if (!clean) { run = 0; h = 0; continue; }
-            int b = cnt[0] == 1.f ? 0 : cnt[1] == 1.f ? 1 : cnt[2] == 1.f ? 2 : 3;
-            h = (h << 2) | (uint64_t)b;
-            if (++run >= k) sets[s][h & kmask] = true;
+            // only unambiguous letters may extend a k-mer
+            int b = sym_index(q[i], alpha);
+            if (b < 0) { run = 0; h = 0; continue; }
+            h = (h * (uint64_t)alpha + (uint64_t)b) % kbase;
+            if (++run >= k) sets[s][h] = true;
         }
     }
     std::vector<float> D((size_t)n * (n - 1) / 2);
@@ -147,24 +247,20 @@ static void parallel_for(int total, int nthreads,
 // Multithreaded kmer_distances: same outputs, bit-exact (every write is to a
 // disjoint slot; no float accumulation is reordered).
 std::vector<float> kmer_distances_mt(const std::vector<std::string>& seqs,
-                                     int k, int threads) {
+                                     int k, int threads, int alpha) {
     const int n = (int)seqs.size();
     std::vector<std::unordered_map<uint64_t, bool>> sets(n);
-    const uint64_t kmask = (k >= 31) ? ~0ull : ((1ull << (2 * k)) - 1);
+    const uint64_t kbase = kmer_base(alpha, k);
     parallel_for(n, threads, [&](int lo, int hi) {
         for (int s = lo; s < hi; ++s) {
             const std::string& q = seqs[s];
             uint64_t h = 0;
             int run = 0;
             for (size_t i = 0; i < q.size(); ++i) {
-                float cnt[4];
-                bool clean = iupac_counts(q[i], cnt) &&
-                             (cnt[0] == 1.f || cnt[1] == 1.f ||
-                              cnt[2] == 1.f || cnt[3] == 1.f);
-                if (!clean) { run = 0; h = 0; continue; }
-                int b = cnt[0] == 1.f ? 0 : cnt[1] == 1.f ? 1 : cnt[2] == 1.f ? 2 : 3;
-                h = (h << 2) | (uint64_t)b;
-                if (++run >= k) sets[s][h & kmask] = true;
+                int b = sym_index(q[i], alpha);
+                if (b < 0) { run = 0; h = 0; continue; }
+                h = (h * (uint64_t)alpha + (uint64_t)b) % kbase;
+                if (++run >= k) sets[s][h] = true;
             }
         }
     });
@@ -322,14 +418,16 @@ static float sub_score(int a, int b, const Params& P) {
 // never participates.
 static float col_score(const Profile& A, int i, const Profile& B, int j,
                        const Params& P) {
+    const int al = P.alpha;
     float s = 0;
-    for (int a = 0; a < 4; ++a) {
+    for (int a = 0; a < al; ++a) {
         float fa = A.cols[i][a];
         if (fa == 0) continue;
-        for (int b = 0; b < 4; ++b) {
+        for (int b = 0; b < al; ++b) {
             float fb = B.cols[j][b];
             if (fb == 0) continue;
-            s += fa * fb * sub_score(a, b, P);
+            s += fa * fb * (al == 4 ? sub_score(a, b, P)
+                                    : P.sub[a * al + b]);
         }
     }
     return s;
@@ -452,6 +550,7 @@ Profile merge_profiles(const Profile& A, const Profile& B,
                        const AlignResult& aln) {
     Profile out;
     out.nseq = A.nseq + B.nseq;
+    out.alpha = A.alpha;
     const int w = aln.ai + aln.aj + (int)aln.cigar.size()
                   + (A.ncols() - aln.bi) + (B.ncols() - aln.bj);
 
@@ -500,9 +599,9 @@ GappyStrip profile_strip(const Profile& p, float thr) {
     GappyStrip s;
     const int n = p.ncols();
     for (int c = 0; c < n;) {
-        if (p.cols[c][4] > thr) {               // gappy column -> run
+        if (p.cols[c][p.alpha] > thr) {         // gappy column -> run
             int len = 0;
-            while (c + len < n && p.cols[c + len][4] > thr) ++len;
+            while (c + len < n && p.cols[c + len][p.alpha] > thr) ++len;
             s.run_pos.push_back((int)s.prof.cols.size()); // anchor in reduced
             s.run_start.push_back(c);
             s.run_len.push_back(len);
@@ -514,9 +613,10 @@ GappyStrip profile_strip(const Profile& p, float thr) {
         }
     }
     // rows keep the ORIGINAL columns (needed for reinsertion / merge)
-    s.prof.rows = p.rows;
-    s.prof.ids  = p.ids;
-    s.prof.nseq = p.nseq;
+    s.prof.rows  = p.rows;
+    s.prof.ids   = p.ids;
+    s.prof.nseq  = p.nseq;
+    s.prof.alpha = p.alpha;
     s.orig_cols = n;
     return s;
 }
@@ -531,7 +631,7 @@ Profile sub_profile(const Profile& p, int start, int len) {
     Profile q;
     q.rows.reserve(p.rows.size());
     for (const auto& r : p.rows) q.rows.push_back(r.substr(start, len));
-    q.ids = p.ids; q.nseq = p.nseq;
+    q.ids = p.ids; q.nseq = p.nseq; q.alpha = p.alpha;
     profile_update_counts(q);
     return q;
 }
@@ -624,7 +724,7 @@ std::vector<std::string> msa_align_with_tree(
     const int n = (int)seqs.size();
     std::vector<Profile> profs(tree.nodes.size());
     for (int i = 0; i < n; ++i) {
-        profs[i] = profile_from_seq(seqs[i]);
+        profs[i] = profile_from_seq(seqs[i], P.alpha);
         profs[i].ids[0] = i;
     }
     std::vector<int> order;
@@ -652,7 +752,7 @@ std::vector<std::string> msa_align_with_tree(
 
 std::vector<std::string> msa_align(const std::vector<std::string>& seqs,
                                    const Params& P, Tree* guide_out) {
-    std::vector<float> D = kmer_distances(seqs, P.kmer_k);
+    std::vector<float> D = kmer_distances(seqs, P.kmer_k, P.alpha);
     Tree t = nj_tree(D, (int)seqs.size());
     if (guide_out) *guide_out = t;
     return msa_align_with_tree(seqs, t, P);

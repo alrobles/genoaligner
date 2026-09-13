@@ -39,11 +39,16 @@
 
 namespace genoaligner {
 
+// Alphabet ceiling shared with genomsa::MSA_MAX_SYMS (msa.hpp): symbols
+// 0..alpha-1, gap fraction lives at index `alpha` on the host side (the
+// kernel never reads it -- gap scaling comes from occ).
+#define MSA_MAX_SYMS 20
+
 // Scoring parameters, float to match the reference exactly.
 struct MsaPPParams {
-    float match;          // S(a,a)
-    float ts;             // transition mismatch  (A<->G, C<->T)
-    float tv;             // transversion mismatch
+    float match;          // S(a,a)              (alpha==4 only)
+    float ts;             // transition mismatch (alpha==4 only)
+    float tv;             // transversion        (alpha==4 only)
     float gap_open;       // scaled by opposing occupancy
     float gap_extend;
     int   free_end_gaps;  // 1 = semiglobal (fragments), 0 = global
@@ -51,12 +56,17 @@ struct MsaPPParams {
     float psgp_scale;
     float psgp_min_open;
     float psgp_min_ext;
+    int   alpha;          // alphabet size: 4 = DNA, 20 = protein
+    // Row-major alpha*alpha substitution matrix (alpha>4; e.g. BLOSUM62).
+    // Carried by value in the launch params (~1.6 KB, inside the 4 KB
+    // sm_70 limit) so no extra device buffer is needed.
+    float sub[MSA_MAX_SYMS * MSA_MAX_SYMS];
 };
 
-// One profile, SoA on device. cols[b] has `len` floats, b in 0..4
-// (0=A,1=C,2=G,3=T,4=gap). occ has `len` floats.
+// One profile, SoA on device. cols[b] has `len` floats, b in 0..alpha-1
+// (DNA: 0=A,1=C,2=G,3=T). occ has `len` floats.
 struct MsaProfileView {
-    const float* cols[5];
+    const float* cols[MSA_MAX_SYMS];
     const float* occ;
     int          len;
 };
@@ -105,17 +115,23 @@ __device__ __host__ inline float msa_col_score(
         const MsaProfileView& A, int i,
         const MsaProfileView& B, int j,
         const MsaPPParams& p) {
+    const int al = p.alpha;
     float s = 0.f;
-    for (int a = 0; a < 4; ++a) {
+    for (int a = 0; a < al; ++a) {
         float fa = A.cols[a][i];
         if (fa == 0.f) continue;
-        for (int b = 0; b < 4; ++b) {
+        for (int b = 0; b < al; ++b) {
             float fb = B.cols[b][j];
             if (fb == 0.f) continue;
-            float sub = (a == b) ? p.match
-                        : ((a == 0 && b == 2) || (a == 2 && b == 0) ||
-                           (a == 1 && b == 3) || (a == 3 && b == 1))
-                            ? p.ts : p.tv;
+            float sub;
+            if (al == 4) {
+                sub = (a == b) ? p.match
+                      : ((a == 0 && b == 2) || (a == 2 && b == 0) ||
+                         (a == 1 && b == 3) || (a == 3 && b == 1))
+                          ? p.ts : p.tv;
+            } else {
+                sub = p.sub[a * al + b];
+            }
             s = GA_FADD_RN(s, GA_FMUL_RN(GA_FMUL_RN(fa, fb), sub));
         }
     }

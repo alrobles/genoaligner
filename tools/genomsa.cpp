@@ -20,19 +20,28 @@
 int main(int argc, char** argv) {
     if (argc < 3) {
         fprintf(stderr, "usage: %s input.fasta output.fasta [--cpu] [--kmer K] [--global] "
-                        "[--psgp] [--gappy T] [--tree-out F]\n", argv[0]);
+                        "[--protein] [--gap-open G] [--gap-extend G] "
+                        "[--psgp|--no-psgp] [--gappy T|--no-gappy] [--tree-out F]\n",
+                argv[0]);
         return 2;
     }
     const char* in_path = argv[1];
     const char* out_path = argv[2];
+    // --protein must be parsed before the numeric overrides so users can
+    // still tune the preset; do a first pass for it.
     genomsa::Params P;
+    for (int i = 3; i < argc; ++i)
+        if (std::string(argv[i]) == "--protein") P = genomsa::protein_params();
     bool use_cpu = false;
     std::string tree_out;
     for (int i = 3; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--cpu") use_cpu = true;
+        else if (a == "--protein") { /* already applied */ }
         else if (a == "--kmer" && i + 1 < argc) P.kmer_k = atoi(argv[++i]);
         else if (a == "--global") P.free_end_gaps = false;
+        else if (a == "--gap-open" && i + 1 < argc) P.gap_open = atof(argv[++i]);
+        else if (a == "--gap-extend" && i + 1 < argc) P.gap_extend = atof(argv[++i]);
         else if (a == "--psgp") P.psgp = true;
         else if (a == "--no-psgp") P.psgp = false;
         else if (a == "--gappy" && i + 1 < argc) P.gappy = atof(argv[++i]);

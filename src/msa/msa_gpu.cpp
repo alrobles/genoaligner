@@ -66,7 +66,7 @@ bool msa_align_gpu(const std::vector<std::string>& seqs, const Params& P,
         int t = e ? std::atoi(e) : (int)std::thread::hardware_concurrency();
         return t > 0 ? t : 1;
     }();
-    std::vector<float> D = kmer_distances_mt(seqs, P.kmer_k, nthreads);
+    std::vector<float> D = kmer_distances_mt(seqs, P.kmer_k, nthreads, P.alpha);
     auto t1 = std::chrono::steady_clock::now();
     Tree tree = nj_tree_mt(D, n, nthreads);
     if (guide_out) *guide_out = tree;
@@ -75,13 +75,15 @@ bool msa_align_gpu(const std::vector<std::string>& seqs, const Params& P,
 
     std::vector<Profile> profs(tree.nodes.size());
     for (int i = 0; i < n; ++i) {
-        profs[i] = profile_from_seq(seqs[i]);
+        profs[i] = profile_from_seq(seqs[i], P.alpha);
         profs[i].ids[0] = i;
     }
-    const MsaPPParams kp{P.match, P.ts, P.tv, P.gap_open, P.gap_extend,
-                         P.free_end_gaps ? 1 : 0,
-                         P.psgp ? 1 : 0, P.psgp_scale, P.psgp_min_open,
-                         P.psgp_min_ext};
+    MsaPPParams kp{P.match, P.ts, P.tv, P.gap_open, P.gap_extend,
+                   P.free_end_gaps ? 1 : 0,
+                   P.psgp ? 1 : 0, P.psgp_scale, P.psgp_min_open,
+                   P.psgp_min_ext, P.alpha, {}};
+    if (P.alpha > 4)
+        std::memcpy(kp.sub, P.sub.data(), sizeof(kp.sub));
 
     static const bool lvldbg = std::getenv("GENOMSA_LVL_DEBUG") != nullptr;
     auto fnv = [](const void* p, size_t n, uint64_t h) {
@@ -141,7 +143,7 @@ bool msa_align_gpu(const std::vector<std::string>& seqs, const Params& P,
                 const Profile& S = side ? B : A;
                 MsaProfileView& v = side ? hp[k].B : hp[k].A;
                 // record byte offsets now; patch to device pointers below
-                for (int b = 0; b < 5; ++b) {
+                for (int b = 0; b < P.alpha; ++b) {
                     v.cols[b] = (const float*)(size_t)fdata.size();
                     for (const auto& c : S.cols) fdata.push_back(c[b]);
                 }
@@ -204,7 +206,7 @@ bool msa_align_gpu(const std::vector<std::string>& seqs, const Params& P,
         for (int k = 0; k < np; ++k) {
             for (int side = 0; side < 2; ++side) {
                 MsaProfileView& v = side ? hp[k].B : hp[k].A;
-                for (int b = 0; b < 5; ++b)
+                for (int b = 0; b < P.alpha; ++b)
                     v.cols[b] = d_fdata + (size_t)v.cols[b];
                 v.occ = d_fdata + (size_t)v.occ;
             }

@@ -36,26 +36,30 @@ static int fails = 0;
     printf("FAIL: "); printf(__VA_ARGS__); printf("\n"); ++fails; } } while (0)
 
 struct SoAHolder {
-    std::vector<float> c[5];
+    std::vector<float> c[MSA_MAX_SYMS];
     std::vector<float> occ;
     MsaProfileView view;
 };
 static SoAHolder to_soa(const Profile& p) {
     SoAHolder h;
     h.occ = p.occ;
-    for (int b = 0; b < 5; ++b) {
+    for (int b = 0; b < p.alpha; ++b) {
         h.c[b].resize(p.cols.size());
         for (size_t i = 0; i < p.cols.size(); ++i) h.c[b][i] = p.cols[i][b];
+        h.view.cols[b] = h.c[b].data();
     }
-    for (int b = 0; b < 5; ++b) h.view.cols[b] = h.c[b].data();
     h.view.occ = h.occ.data();
     h.view.len = p.ncols();
     return h;
 }
 static MsaPPParams to_params(const Params& P) {
-    return {P.match, P.ts, P.tv, P.gap_open, P.gap_extend,
-            P.free_end_gaps ? 1 : 0,
-            P.psgp ? 1 : 0, P.psgp_scale, P.psgp_min_open, P.psgp_min_ext};
+    MsaPPParams k{P.match, P.ts, P.tv, P.gap_open, P.gap_extend,
+                  P.free_end_gaps ? 1 : 0,
+                  P.psgp ? 1 : 0, P.psgp_scale, P.psgp_min_open,
+                  P.psgp_min_ext, P.alpha, {}};
+    if (P.alpha > 4)
+        memcpy(k.sub, P.sub.data(), sizeof(k.sub));
+    return k;
 }
 
 // One node of one level, through the kernel body (the GPU thread's work).
