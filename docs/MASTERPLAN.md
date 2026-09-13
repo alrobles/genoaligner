@@ -451,8 +451,15 @@ lanzamientos del mismo proceso). Verificado: gate CPU 0 discrepancias, gate GPU
 se midió que la varianza entre nodos es 3-4x y domina cualquier efecto. Los ms
 absolutos no son comparables entre jobs; el ratio por ronda sí.
 
-No fusionado todavía: es score-only y la librería aún no expone API (Fase 8). El
-**hallazgo** (blockDim desproporcionado) se aplica al diseño de SW desde el inicio.
+~~No fusionado todavía~~ **FUSIONADO** (2026-09-12, commit e95316a, job
+29230707): el flat es ahora el kernel por defecto del path score-only de la
+API — el "sin consumidor" dejó de aplicar cuando la API existió. El kernel
+original permanece en `wfa_kernel.hip` como baseline del gate H2 y del bench
+tcus. Gate continuo: `bench/h7_flat_parity.cpp` es stage del CPU gate, y
+`test_api` verifica scores del path score-only contra la DP CPU en device
+(`score-only path (flat kernel): mismatches=0` en MI210). Resultado:
+`docs/RESULTADO_H13_FLAT_MERGE.md`. El **hallazgo** (blockDim desproporcionado)
+se aplicó al diseño de SW desde el inicio.
 
 
 ### Fase 8 — Integración en phylogenyAI + paper (2 semanas) ⏳ EVALUADA, BLOQUEADA
