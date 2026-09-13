@@ -97,10 +97,14 @@ por qué `mergeInsertions` difiere del pipeline CPU — más investigación.
 
 - Penalizaciones de gap **posición-específicas** por columna
   (`gapOpen[]`/`gapExtend[]` arrays) — probablemente la mayor parte
-  del gap de calidad de 6.6 puntos.
+  del gap de calidad de 6.6 puntos. **IMPLEMENTADO** (`Params::psgp`,
+  commit 969c274): SIM-SPS n=64 0.883→0.930 solo con esto.
 - Heurístico `--remove-gappy` (columnas con >95% gaps no se alinean a
-  fondo) — acelera sin costo de calidad (tw_nj vs tw_nj_r1 ≈ igual).
+  fondo) — acelera sin costo de calidad. **IMPLEMENTADO**
+  (`Params::gappy`, mismo commit): strip→DP→reinserción en CIGAR,
+  runs coincidentes mini-alineados. Con ambos: 0.944.
 - DP bandeado con X-drop + checkpoints de convergencia → memoria de
   traceback constante (nosotros: O(m·n) direction bytes, 1.3 GB CYTB).
+  **Pendiente** — siguiente paso de escalabilidad.
 - Divide-and-conquer por sub-árboles (`--max-subtree`) para escala
-  masiva.
+  masiva. **Pendiente.**

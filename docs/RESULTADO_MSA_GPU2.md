@@ -100,6 +100,43 @@ progresivo. No es un defecto de implementación: es el techo del método
 Clustal-like. La brecha a n grande sugiere iterar sobre refinement
 (consistency / iterative realignment) si se quiere subir el techo.
 
+## Mejora de calidad: PSGP + gappy-strip (post-TWILIGHT audit)
+
+Tras la comparación con TWILIGHT (`RESULTADO_MSA_TWILIGHT.md`), se
+implementaron sus dos heurísticos de scoring en genomsa (commit
+`969c274`), ambos ON por defecto:
+
+- **PSGP** (`Params::psgp`, convención ClustalW/TWILIGHT): una columna que
+  ya contiene gaps acepta gaps nuevos más barato —
+  `open[c] = occ==1 ? go : max(0.1·go, 0.5·go·occ)`,
+  `ext[c] = occ==1 ? ge : max(0.2·ge, ge·occ)`. Implementado en la
+  referencia (`msa.hpp` = spec) e idénticamente en ambos kernels
+  (`pp_open`/`pp_ext` desde el array `occ`, sin cambio de layout).
+- **Gappy-strip** (`Params::gappy = 0.95`): runs contiguos de columnas con
+  fracción de gap > umbral se quitan antes del DP y se reinsertan en el
+  CIGAR como bloques de inserción; runs coincidentes en ambos perfiles se
+  mini-alinean globalmente. El driver GPU strippea antes de empaquetar y
+  expande tras el download → el kernel ve perfiles reducidos, paridad
+  estructural.
+
+Sim-truth n=64, mismo benchmark que arriba:
+
+| cfg | SIM-SPS | width (true) |
+|-----|---------|--------------|
+| base (ambos off)      | 0.8831 | 2300/2800 |
+| psgp solo             | 0.9299 | 2513/2800 |
+| gappy 0.95 solo       | 0.9045 | 2392/2800 |
+| **psgp + gappy**      | **0.9436** | 2603/2800 |
+
+Semillas 7/9: 0.9018→0.9443, 0.8810→0.9470. Determinista (runs repetidos
+byte-idénticos). El alineamiento ya no sobre-compacta (2300→2603 vs
+verdad 2800). vs TWILIGHT 0.963: cierra ~65% de la brecha restante;
+lo que queda es probablemente su modelo de inserciones + refinement.
+
+Paridad: `msa_pp_parity`, `msa_pipeline_parity`, `msa_driver_parity` con
+variantes default/legacy/psgp/gappy/psgp+gappy — todas bit-exactas.
+Flags: `--psgp/--no-psgp`, `--gappy T/--no-gappy`.
+
 ## Lectura honesta
 
 - El kernel DP ya no es el cuello: en CYTB el alineamiento cuesta 3.4s de
