@@ -94,24 +94,35 @@ del propio proyecto, y A1 ataca la dependencia real (intra-fila) sin barreras ex
 
 ---
 
-## 3. Fase B — Traceback (el CIGAR)
+## 3. Fase B — Traceback (el CIGAR)  ✅ COMPLETA
 
 **Por qué va después y por qué es la parte peligrosa.** En WFA, el camino del CIGAR
 **nunca funcionó por la API y su test pasaba** — los pares del test eran tan cortos que
 un tamaño de shared equivocado era aceptado por casualidad. Aquí no se repite: el
 traceback SW tendrá su propio gate **contra el CIGAR de SeqAn3**, no solo contra el score.
 
-**Diseño:** retener la matriz (o el camino de decisiones) y recorrer hacia atrás desde
-`(end_i, end_j)` mientras `H > 0`. La matriz completa es O(mn) de memoria: para 400×160
-son 256 KB por par, aceptable; para genomas habrá que decidir (banda, checkpointing, o
-no soportarlo). **Esa decisión hay que tomarla explícitamente, no por omisión.**
+**Diseño implementado (2026-09-12, commit 7640de6):** `sw_trace_kernel` — un hilo por
+par, pase forward serial que graba **un byte de dirección por celda** (hsrc/esrc/fsrc),
+walk hacia atrás leyendo solo la tabla. Workspace `(m+1)(n+1)` bytes/par con límite
+declarado (`SW_TRACE_TOO_BIG`) — decisión de memoria tomada explícitamente, como pedía
+el plan. Detalles y evidencia: `docs/RESULTADO_H9_SW2_TRACE.md`.
 
 **Criterio de éxito:**
 1. El CIGAR reconstruye las secuencias (consume exactamente los tramos alineados).
+   → ✅ well-formed sobre el tramo alineado, 113/113 × 2 esquemas CPU, 209/209 GPU.
 2. Re-puntuado: `score(CIGAR) == score` del kernel.
+   → ✅ re-score exacto en todos los casos; además CIGAR idéntico al walk
+   independiente por valores.
 3. **Comparado contra SeqAn3** en ambos backends — el oráculo externo, no el propio.
+   → ✅ SeqAn3 local+afín: 201/201 filas del job GPU, 0 discrepancias
+   (job 29227484). "Ambos backends" (NVIDIA) queda pendiente con la portabilidad.
 4. Los empates se manejan: distintos CIGARs pueden ser óptimos, así que se compara
    **score**, nunca la cadena de operaciones.
+   → ✅ el gate externo compara score; los spans difieren solo en empates legítimos.
+
+**Hallazgo documentado:** `gap_extend > gap_open` es degenerado para traceback (la DP
+re-abre gaps; el CIGAR los fusiona y el re-score diverge por construcción). El score
+sigue siendo exacto; Fase C lo rechaza explícitamente.
 
 ---
 
