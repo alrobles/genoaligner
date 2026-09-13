@@ -17,6 +17,21 @@
 
 namespace genoaligner {
 
+// Position-specific gap penalties -- must match genomsa::psgp_open/ext in
+// msa.hpp exactly (identical float ops, same branch order).
+__device__ __host__ inline float pp_open(float occ, const MsaPPParams& p) {
+    if (!p.psgp || occ >= 1.0f) return p.gap_open * occ;
+    const float q  = p.psgp_scale * p.gap_open * occ;
+    const float fl = p.psgp_min_open * p.gap_open;
+    return q > fl ? q : fl;
+}
+__device__ __host__ inline float pp_ext(float occ, const MsaPPParams& p) {
+    if (!p.psgp || occ >= 1.0f) return p.gap_extend;
+    const float q  = p.gap_extend * occ;
+    const float fl = p.psgp_min_ext * p.gap_extend;
+    return q > fl ? q : fl;
+}
+
 __global__ void msa_pp_trace_kernel(const MsaPPPair* __restrict__ pairs,
                                     MsaPPParams params,
                                     MsaPPResult* __restrict__ out,
@@ -37,7 +52,7 @@ __global__ void msa_pp_trace_kernel(const MsaPPPair* __restrict__ pairs,
     const MsaPPPair pp = pairs[pair_id];
     const int M = pp.A.len, N = pp.B.len;
     const bool free_ends = (params.free_end_gaps != 0);
-    const float go = params.gap_open, ge = params.gap_extend;
+    const float ge = params.gap_extend;
     const float NEG = -1e30f;
 
     if (M <= 0 || N <= 0) {
@@ -70,7 +85,7 @@ __global__ void msa_pp_trace_kernel(const MsaPPPair* __restrict__ pairs,
         prevM[j]  = free_ends ? 0.f : NEG;
         Ix[j]     = NEG;
         prevIy[j] = free_ends ? 0.f
-                              : -(go * pp.B.occ[j - 1] + (j - 1) * ge);
+                              : -(pp_open(pp.B.occ[j - 1], params) + (j - 1) * ge);
     }
 
     // Snapshot the i=0 boundary column so the endpoint scan can run in the
@@ -82,7 +97,7 @@ __global__ void msa_pp_trace_kernel(const MsaPPPair* __restrict__ pairs,
         // values of cell (i,0)
         float curM0  = free_ends ? 0.f : NEG;
         float curIx0 = free_ends ? 0.f
-                                 : -(go * pp.A.occ[i - 1] + (i - 1) * ge);
+                                 : -(pp_open(pp.A.occ[i - 1], params) + (i - 1) * ge);
         // diagonal predecessors start as the (i-1,0) cell's states
         float dM  = prevM[0];
         float dIx = Ix[0];
@@ -93,7 +108,8 @@ __global__ void msa_pp_trace_kernel(const MsaPPPair* __restrict__ pairs,
 
         float curMprev = curM0;                   // M[i][j-1]
         float curIyprev = NEG;                    // Iy[i][j-1]
-        const float openB = go * pp.A.occ[i - 1]; // gap in B opposite A_i-1
+        const float openB = pp_open(pp.A.occ[i - 1], params); // gap in B
+        const float extB  = pp_ext (pp.A.occ[i - 1], params);
 
         for (int j = 1; j <= N; ++j) {
             const float sM = prevM[j], sIx = Ix[j], sIy = prevIy[j]; // (i-1,j)
@@ -104,13 +120,13 @@ __global__ void msa_pp_trace_kernel(const MsaPPPair* __restrict__ pairs,
             const float curM = msa_col_score(pp.A, i - 1, pp.B, j - 1, params) + mx;
             // Ix[i][j]: consume A_i-1 vs gap in B (vertical state)
             const float oIx = sM - openB;
-            const float eIx = sIx - ge;
+            const float eIx = sIx - extB;
             const float nIx = (oIx >= eIx) ? oIx : eIx;
             const uint8_t xext = (eIx > oIx) ? MSA_X_EXT : 0;
             // Iy[i][j]: consume B_j-1 vs gap in A (horizontal state)
-            const float openA = go * pp.B.occ[j - 1];
+            const float openA = pp_open(pp.B.occ[j - 1], params);
             const float oIy = curMprev - openA;
-            const float eIy = curIyprev - ge;
+            const float eIy = curIyprev - pp_ext(pp.B.occ[j - 1], params);
             const float cIy = (oIy >= eIy) ? oIy : eIy;
             const uint8_t yext = (eIy > oIy) ? MSA_Y_EXT : 0;
 
@@ -210,7 +226,7 @@ __global__ void msa_pp_trace_kernel_wf(const MsaPPPair* __restrict__ pairs,
     const MsaPPPair pp = pairs[pair_id];
     const int M = pp.A.len, N = pp.B.len;
     const bool free_ends = (params.free_end_gaps != 0);
-    const float go = params.gap_open, ge = params.gap_extend;
+    const float ge = params.gap_extend;
     const float NEG = -1e30f;
 
     if (M <= 0 || N <= 0) {
@@ -258,10 +274,10 @@ __global__ void msa_pp_trace_kernel_wf(const MsaPPPair* __restrict__ pairs,
                 vM  = (j == 0 || free_ends) ? 0.f : NEG;
                 vIx = NEG;
                 vIy = (j == 0) ? NEG
-                     : (free_ends ? 0.f : -(go * pp.B.occ[j - 1] + (j - 1) * ge));
+                     : (free_ends ? 0.f : -(pp_open(pp.B.occ[j - 1], params) + (j - 1) * ge));
             } else if (j == 0) {
                 vM  = free_ends ? 0.f : NEG;
-                vIx = free_ends ? 0.f : -(go * pp.A.occ[i - 1] + (i - 1) * ge);
+                vIx = free_ends ? 0.f : -(pp_open(pp.A.occ[i - 1], params) + (i - 1) * ge);
                 vIy = NEG;
             } else {
                 // M[i][j]: diagonal predecessor (i-1,j-1) on d-2, row i-1.
@@ -270,13 +286,13 @@ __global__ void msa_pp_trace_kernel_wf(const MsaPPPair* __restrict__ pairs,
                 if (qIy[i - 1] > mx) { mx = qIy[i - 1]; h = MSA_H_IY; }
                 vM = msa_col_score(pp.A, i - 1, pp.B, j - 1, params) + mx;
                 // Ix[i][j]: (i-1,j) on d-1, row i-1.
-                const float oIx = sM[i - 1] - go * pp.A.occ[i - 1];
-                const float eIx = sIx[i - 1] - ge;
+                const float oIx = sM[i - 1] - pp_open(pp.A.occ[i - 1], params);
+                const float eIx = sIx[i - 1] - pp_ext(pp.A.occ[i - 1], params);
                 vIx = (oIx >= eIx) ? oIx : eIx;
                 const uint8_t xext = (eIx > oIx) ? MSA_X_EXT : 0;
                 // Iy[i][j]: (i,j-1) on d-1, row i.
-                const float oIy = tM[i] - go * pp.B.occ[j - 1];
-                const float eIy = tIy[i] - ge;
+                const float oIy = tM[i] - pp_open(pp.B.occ[j - 1], params);
+                const float eIy = tIy[i] - pp_ext(pp.B.occ[j - 1], params);
                 vIy = (oIy >= eIy) ? oIy : eIy;
                 const uint8_t yext = (eIy > oIy) ? MSA_Y_EXT : 0;
                 dir[i * nrow + j] = h | xext | yext;

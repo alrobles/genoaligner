@@ -79,7 +79,9 @@ bool msa_align_gpu(const std::vector<std::string>& seqs, const Params& P,
         profs[i].ids[0] = i;
     }
     const MsaPPParams kp{P.match, P.ts, P.tv, P.gap_open, P.gap_extend,
-                         P.free_end_gaps ? 1 : 0};
+                         P.free_end_gaps ? 1 : 0,
+                         P.psgp ? 1 : 0, P.psgp_scale, P.psgp_min_open,
+                         P.psgp_min_ext};
 
     std::vector<void*> dev;
     for (const auto& level : levels) {
@@ -91,9 +93,21 @@ bool msa_align_gpu(const std::vector<std::string>& seqs, const Params& P,
         std::vector<float> fdata;                   // all column data, packed
         size_t dtot = 0, stot = 0, ctot = 0;
         int cap = 0;
+        // gappy-column heuristic: strip before packing, expand after the
+        // kernel (same strip as the reference -> parity preserved)
+        std::vector<GappyStrip> strips_a(np), strips_b(np);
+        std::vector<Profile>    pa(np), pb(np);
         for (int k = 0; k < np; ++k) {
-            const Profile& A = profs[tree.nodes[level[k]].left];
-            const Profile& B = profs[tree.nodes[level[k]].right];
+            if (P.gappy > 0.0f) {
+                strips_a[k] = profile_strip(profs[tree.nodes[level[k]].left],  P.gappy);
+                strips_b[k] = profile_strip(profs[tree.nodes[level[k]].right], P.gappy);
+                pa[k] = strips_a[k].prof;
+                pb[k] = strips_b[k].prof;
+            }
+        }
+        for (int k = 0; k < np; ++k) {
+            const Profile& A = P.gappy > 0.0f ? pa[k] : profs[tree.nodes[level[k]].left];
+            const Profile& B = P.gappy > 0.0f ? pb[k] : profs[tree.nodes[level[k]].right];
             hp[k].A.len = A.ncols(); hp[k].B.len = B.ncols();
             dir_base[k] = dtot;
             dir_av[k]   = (size_t)(A.ncols() + 1) * (B.ncols() + 1);
@@ -274,6 +288,8 @@ bool msa_align_gpu(const std::vector<std::string>& seqs, const Params& P,
             const uint8_t* cb = hcig.data() + cig_base[k];
             for (int q = hmeta[k * 2 + 1] - 1; q >= 0; --q)
                 r.cigar.push_back(ops[cb[q]]);
+            if (P.gappy > 0.0f)
+                r = cigar_expand_gappy(r, strips_a[k], strips_b[k], P);
             const auto& nd = tree.nodes[u];
             profs[u] = merge_profiles(profs[nd.left], profs[nd.right], r);
         }

@@ -37,8 +37,7 @@ static std::string mutate(const std::string& s, int ps, int pi, int pd) {
     return o;
 }
 
-int main() {
-    Params P;
+static void run_suite(Params P, const char* tag0) {
     for (int n : {2, 3, 4, 5, 7, 8, 11, 16, 24}) {
         std::string anc = rand_dna(50 + rng() % 100);
         std::vector<std::string> in;
@@ -49,22 +48,34 @@ int main() {
         auto ref = msa_align(in, P);
         std::vector<std::string> gpu; std::string err; GpuStats st;
         bool ok = msa_align_gpu(in, P, gpu, err, &st);
-        CHECK(ok, "n=%d driver error: %s", n, err.c_str());
+        CHECK(ok, "%sn=%d driver error: %s", tag0, n, err.c_str());
         if (!ok) continue;
-        CHECK(gpu == ref, "n=%d driver != reference", n);
+        CHECK(gpu == ref, "%sn=%d driver != reference", tag0, n);
         CHECK(st.levels >= 1 && st.pairs == n - 1,
-              "n=%d stats levels=%d pairs=%d", n, st.levels, st.pairs);
+              "%sn=%d stats levels=%d pairs=%d", tag0, n, st.levels, st.pairs);
         for (int i = 0; i < n; ++i) {
             std::string u = gpu[i];
             u.erase(std::remove(u.begin(), u.end(), '-'), u.end());
-            CHECK(u == in[i], "n=%d seq %d corrupted", n, i);
+            CHECK(u == in[i], "%sn=%d seq %d corrupted", tag0, n, i);
         }
     }
+}
+
+int main() {
+    run_suite(Params{}, "default:");
+    Params l; l.psgp = false; l.gappy = 0;
+    run_suite(l, "legacy:");
+    Params p; p.gappy = 0;
+    run_suite(p, "psgp:");
+    Params g; g.psgp = false; g.gappy = 0.9f;
+    run_suite(g, "gappy:");
+    Params pg; pg.gappy = 0.9f;
+    run_suite(pg, "psgp+gappy:");
     // n=1 degenerate
     {
         std::vector<std::string> one = {"ACGTACGT"};
         std::vector<std::string> gpu; std::string err;
-        CHECK(msa_align_gpu(one, P, gpu, err) && gpu == one,
+        CHECK(msa_align_gpu(one, Params{}, gpu, err) && gpu == one,
               "n=1 degenerate");
     }
 

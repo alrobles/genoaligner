@@ -47,6 +47,10 @@ struct MsaPPParams {
     float gap_open;       // scaled by opposing occupancy
     float gap_extend;
     int   free_end_gaps;  // 1 = semiglobal (fragments), 0 = global
+    int   psgp;           // 1 = position-specific gap penalties (see msa.hpp)
+    float psgp_scale;
+    float psgp_min_open;
+    float psgp_min_ext;
 };
 
 // One profile, SoA on device. cols[b] has `len` floats, b in 0..4

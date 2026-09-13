@@ -2,6 +2,7 @@
 // progressive alignment), with a CPU reference mode for verification.
 //
 //   genomsa input.fasta output.fasta [--cpu] [--kmer K] [--global]
+//          [--psgp] [--gappy T]
 //
 // The output rows are written in INPUT record order (the driver restores it
 // from the guide-tree merge order). --cpu runs the M1 reference on host; the
@@ -18,8 +19,8 @@
 
 int main(int argc, char** argv) {
     if (argc < 3) {
-        fprintf(stderr, "usage: %s input.fasta output.fasta [--cpu] [--kmer K] [--global]\n",
-                argv[0]);
+        fprintf(stderr, "usage: %s input.fasta output.fasta [--cpu] [--kmer K] [--global] "
+                        "[--psgp] [--gappy T] [--tree-out F]\n", argv[0]);
         return 2;
     }
     const char* in_path = argv[1];
@@ -32,6 +33,10 @@ int main(int argc, char** argv) {
         if (a == "--cpu") use_cpu = true;
         else if (a == "--kmer" && i + 1 < argc) P.kmer_k = atoi(argv[++i]);
         else if (a == "--global") P.free_end_gaps = false;
+        else if (a == "--psgp") P.psgp = true;
+        else if (a == "--no-psgp") P.psgp = false;
+        else if (a == "--gappy" && i + 1 < argc) P.gappy = atof(argv[++i]);
+        else if (a == "--no-gappy") P.gappy = 0.0f;
         else if (a == "--tree-out" && i + 1 < argc) tree_out = argv[++i];
         else { fprintf(stderr, "unknown arg: %s\n", a.c_str()); return 2; }
     }

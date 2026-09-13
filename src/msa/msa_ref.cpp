@@ -357,11 +357,13 @@ AlignResult align_profiles(const Profile& A, const Profile& B,
 
     mM[0] = 0;
     for (int i = 1; i <= M; ++i) {
-        mIx[at(i, 0)] = P.free_end_gaps ? 0 : -(P.gap_open * A.occ[i - 1] + (i - 1) * P.gap_extend);
+        // end-gap run: open at the last consumed column's position-specific
+        // price; extensions flat (TWILIGHT gapEnds defaults to gapExtend)
+        mIx[at(i, 0)] = P.free_end_gaps ? 0 : -(psgp_open(A.occ[i - 1], P) + (i - 1) * P.gap_extend);
         mM[at(i, 0)]  = P.free_end_gaps ? 0 : NEG;
     }
     for (int j = 1; j <= N; ++j) {
-        mIy[at(0, j)] = P.free_end_gaps ? 0 : -(P.gap_open * B.occ[j - 1] + (j - 1) * P.gap_extend);
+        mIy[at(0, j)] = P.free_end_gaps ? 0 : -(psgp_open(B.occ[j - 1], P) + (j - 1) * P.gap_extend);
         mM[at(0, j)]  = P.free_end_gaps ? 0 : NEG;
     }
 
@@ -377,14 +379,16 @@ AlignResult align_profiles(const Profile& A, const Profile& B,
     for (int i = 1; i <= M; ++i) {
         for (int j = 1; j <= N; ++j) {
             float s = col_score(A, i - 1, B, j - 1, P);
-            // gap in B opposite A_{i-1}: scaled by A's occupancy
-            float openB = P.gap_open * A.occ[i - 1];
-            // gap in A opposite B_{j-1}: scaled by B's occupancy
-            float openA = P.gap_open * B.occ[j - 1];
+            // gap in B opposite A_{i-1}: position-specific penalty
+            float openB = psgp_open(A.occ[i - 1], P);
+            float extB  = psgp_ext (A.occ[i - 1], P);
+            // gap in A opposite B_{j-1}
+            float openA = psgp_open(B.occ[j - 1], P);
+            float extA  = psgp_ext (B.occ[j - 1], P);
             float oIx = mM[at(i - 1, j)] - openB;
-            float eIx = mIx[at(i - 1, j)] - P.gap_extend;
+            float eIx = mIx[at(i - 1, j)] - extB;
             float oIy = mM[at(i, j - 1)] - openA;
-            float eIy = mIy[at(i, j - 1)] - P.gap_extend;
+            float eIy = mIy[at(i, j - 1)] - extA;
             mIx[at(i, j)] = std::max(oIx, eIx);
             mIy[at(i, j)] = std::max(oIy, eIy);
             float mx = mM[at(i - 1, j - 1)]; uint8_t h = H_M;
@@ -488,6 +492,104 @@ Profile merge_profiles(const Profile& A, const Profile& B,
     return out;
 }
 
+// -------------------------------------------------- gappy-column heuristic
+// TWILIGHT --remove-gappy equivalent: contiguous runs of columns whose gap
+// fraction exceeds the threshold are removed before the DP and re-inserted
+// into the CIGAR afterwards (see cigar_expand_gappy).
+GappyStrip profile_strip(const Profile& p, float thr) {
+    GappyStrip s;
+    const int n = p.ncols();
+    for (int c = 0; c < n;) {
+        if (p.cols[c][4] > thr) {               // gappy column -> run
+            int len = 0;
+            while (c + len < n && p.cols[c + len][4] > thr) ++len;
+            s.run_pos.push_back((int)s.prof.cols.size()); // anchor in reduced
+            s.run_start.push_back(c);
+            s.run_len.push_back(len);
+            c += len;
+        } else {
+            s.prof.cols.push_back(p.cols[c]);
+            s.prof.occ.push_back(p.occ[c]);
+            ++c;
+        }
+    }
+    // rows keep the ORIGINAL columns (needed for reinsertion / merge)
+    s.prof.rows = p.rows;
+    s.prof.ids  = p.ids;
+    s.prof.nseq = p.nseq;
+    s.orig_cols = n;
+    return s;
+}
+
+namespace {
+// Build a profile holding only columns [start, start+len) of `p`.
+Profile sub_profile(const Profile& p, int start, int len) {
+    Profile q;
+    q.cols.assign(p.cols.begin() + start, p.cols.begin() + start + len);
+    q.occ.assign (p.occ.begin()  + start, p.occ.begin()  + start + len);
+    q.rows.reserve(p.rows.size());
+    for (const auto& r : p.rows) q.rows.push_back(r.substr(start, len));
+    q.ids = p.ids; q.nseq = p.nseq;
+    return q;
+}
+} // namespace
+
+// Reinsert stripped runs into a reduced-coordinate CIGAR. The walk counts
+// REDUCED columns consumed (i for A, j for B); a run anchored at pos sits
+// before the pos-th kept column. Semiglobal skipped ends are emitted as
+// plain I/D ops so the result fully consumes both originals (ai=aj=0).
+AlignResult cigar_expand_gappy(const AlignResult& aln,
+                               const GappyStrip& sa,
+                               const GappyStrip& sb,
+                               const Params& P) {
+    AlignResult r;
+    r.score = aln.score;
+    int i = 0, j = 0;                    // reduced columns consumed
+    size_t ra = 0, rb = 0;               // run cursors
+    const int Ka = sa.prof.ncols(), Kb = sb.prof.ncols();
+
+    Params g = P; g.free_end_gaps = false;   // coincident runs: global mini
+    // flush runs anchored at (i,j); when both sides coincide, mini-align
+    // their column blocks against each other
+    auto flush = [&] {
+        for (;;) {
+            bool ha = ra < sa.run_pos.size() && sa.run_pos[ra] == i;
+            bool hb = rb < sb.run_pos.size() && sb.run_pos[rb] == j;
+            if (!ha && !hb) return;
+            if (ha && hb) {
+                Profile qa = sub_profile(sa.prof, sa.run_start[ra], sa.run_len[ra]);
+                Profile qb = sub_profile(sb.prof, sb.run_start[rb], sb.run_len[rb]);
+                AlignResult mini = align_profiles(qa, qb, g);
+                r.cigar += mini.cigar;
+                ++ra; ++rb;
+            } else if (ha) {
+                r.cigar.append((size_t)sa.run_len[ra], 'I'); ++ra;
+            } else {
+                r.cigar.append((size_t)sb.run_len[rb], 'D'); ++rb;
+            }
+        }
+    };
+
+    // skipped prefixes (semiglobal): kept cols + anchored runs, as raw ops
+    for (; i < aln.ai; ++i) { flush(); r.cigar += 'I'; } flush();
+    for (; j < aln.aj; ++j) { flush(); r.cigar += 'D'; } flush();
+    for (char op : aln.cigar) {
+        flush();
+        r.cigar += op;
+        if (op == 'M') { ++i; ++j; }
+        else if (op == 'I') ++i; else ++j;
+    }
+    // suffixes
+    for (; i < Ka; ++i) { flush(); r.cigar += 'I'; } flush();
+    for (; j < Kb; ++j) { flush(); r.cigar += 'D'; } flush();
+    // The cigar now consumes every ORIGINAL column of both profiles, so the
+    // merge span covers the whole profiles: ai=aj=0, bi/bj = orig widths.
+    r.ai = 0; r.aj = 0;
+    r.bi = sa.orig_cols;
+    r.bj = sb.orig_cols;
+    return r;
+}
+
 // --------------------------------------------------------------- levels
 std::vector<std::vector<int>> tree_levels(const Tree& t) {
     std::vector<int> lvl(t.nodes.size(), 0);
@@ -527,7 +629,15 @@ std::vector<std::string> msa_align_with_tree(
     for (int u : order) {
         const Node& nd = tree.nodes[u];
         if (nd.left < 0) continue;
-        AlignResult aln = align_profiles(profs[nd.left], profs[nd.right], P);
+        AlignResult aln;
+        if (P.gappy > 0.0f) {
+            GappyStrip sa = profile_strip(profs[nd.left],  P.gappy);
+            GappyStrip sb = profile_strip(profs[nd.right], P.gappy);
+            aln = cigar_expand_gappy(
+                align_profiles(sa.prof, sb.prof, P), sa, sb, P);
+        } else {
+            aln = align_profiles(profs[nd.left], profs[nd.right], P);
+        }
         profs[u] = merge_profiles(profs[nd.left], profs[nd.right], aln);
     }
     // return rows in INPUT order (merge order follows the guide tree)

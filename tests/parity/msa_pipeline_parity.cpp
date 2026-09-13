@@ -54,7 +54,8 @@ static SoAHolder to_soa(const Profile& p) {
 }
 static MsaPPParams to_params(const Params& P) {
     return {P.match, P.ts, P.tv, P.gap_open, P.gap_extend,
-            P.free_end_gaps ? 1 : 0};
+            P.free_end_gaps ? 1 : 0,
+            P.psgp ? 1 : 0, P.psgp_scale, P.psgp_min_open, P.psgp_min_ext};
 }
 
 // One node of one level, through the kernel body (the GPU thread's work).
@@ -95,8 +96,17 @@ static std::vector<std::string> msa_align_batched(
     for (const auto& level : genomsa::tree_levels(tree)) {
         for (int u : level) {                    // independent: one GPU launch
             const auto& nd = tree.nodes[u];
-            genomsa::AlignResult r =
-                kernel_align(profs[nd.left], profs[nd.right], P);
+            genomsa::AlignResult r;
+            if (P.gappy > 0.0f) {          // same strip/expand as the driver
+                genomsa::GappyStrip sa =
+                    genomsa::profile_strip(profs[nd.left],  P.gappy);
+                genomsa::GappyStrip sb =
+                    genomsa::profile_strip(profs[nd.right], P.gappy);
+                r = genomsa::cigar_expand_gappy(
+                    kernel_align(sa.prof, sb.prof, P), sa, sb, P);
+            } else {
+                r = kernel_align(profs[nd.left], profs[nd.right], P);
+            }
             profs[u] = genomsa::merge_profiles(profs[nd.left], profs[nd.right], r);
         }
     }
@@ -123,9 +133,7 @@ static std::string mutate(const std::string& s, int ps, int pi, int pd) {
     return o;
 }
 
-int main() {
-    Params P;
-
+static void run_suite(Params P, const char* tag0) {
     // related families, several sizes incl. non-powers of two and a
     // degenerate n=2 (single level, single node)
     for (int n : {2, 3, 4, 5, 7, 8, 11, 16}) {
@@ -140,14 +148,26 @@ int main() {
         Tree t = genomsa::nj_tree(D, n);
         auto ref = genomsa::msa_align_with_tree(in, t, P);
         auto bat = msa_align_batched(in, t, P);
-        CHECK(bat == ref, "n=%d batched != sequential", n);
+        CHECK(bat == ref, "%sn=%d batched != sequential", tag0, n);
         // invariants on the batched output too
         for (int i = 0; i < n; ++i) {
             std::string u = bat[i];
             u.erase(std::remove(u.begin(), u.end(), '-'), u.end());
-            CHECK(u == in[i], "n=%d seq %d corrupted", n, i);
+            CHECK(u == in[i], "%sn=%d seq %d corrupted", tag0, n, i);
         }
     }
+}
+
+int main() {
+    run_suite(Params{}, "default:");           // psgp + gappy(0.95) on
+    Params l; l.psgp = false; l.gappy = 0;
+    run_suite(l, "legacy:");
+    Params p; p.gappy = 0;
+    run_suite(p, "psgp:");
+    Params g; g.psgp = false; g.gappy = 0.9f;  // strip runs >90% gap
+    run_suite(g, "gappy:");
+    Params pg; pg.gappy = 0.9f;
+    run_suite(pg, "psgp+gappy:");
 
     if (!fails) printf("RESULT: PASS -- level-batched kernel pipeline == sequential reference\n");
     else        printf("%d FAILURES\n", fails);
