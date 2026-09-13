@@ -7,7 +7,10 @@
 // next to the same task done with per-pair MAFFT calls.
 //
 // Usage:  vs_reference <gene.fasta> [--ref <index>] [--emit <tsv>]
-//                      [--no-cigar] [--reps <n>]
+//                      [--no-cigar] [--reps <n>] [--scoring m,x,go,ge]
+//
+// Default scoring {1,-1,2,1} matches the SeqAn3 oracle's hardcoded scheme
+// (tests/sw/seqan3_sw_oracle.cpp), which is what --emit exists to feed.
 //
 // Prints per-rep wall/dev times and a summary; with --emit it writes the TSV
 // the SeqAn3 oracle (tests/sw/seqan3_sw_oracle.cpp) can score.
@@ -32,11 +35,15 @@ int main(int argc, char** argv)
     int ref_idx = 0, reps = 7;
     bool with_cigar = true;
     const char* emit = nullptr;
+    genoaligner::SWScoring scoring{1, -1, 2, 1};   // the oracle-pinned scheme
     for (int a = 2; a < argc; ++a) {
         if (!std::strcmp(argv[a], "--ref") && a + 1 < argc)      ref_idx = std::atoi(argv[++a]);
         else if (!std::strcmp(argv[a], "--emit") && a + 1 < argc) emit = argv[++a];
         else if (!std::strcmp(argv[a], "--no-cigar"))             with_cigar = false;
         else if (!std::strcmp(argv[a], "--reps") && a + 1 < argc) reps = std::atoi(argv[++a]);
+        else if (!std::strcmp(argv[a], "--scoring") && a + 1 < argc)
+            std::sscanf(argv[++a], "%d,%d,%d,%d", &scoring.match, &scoring.mismatch,
+                        &scoring.gap_open, &scoring.gap_extend);
     }
 
     std::vector<genoaligner::io::FastaRecord> recs;
@@ -62,7 +69,7 @@ int main(int argc, char** argv)
         r.text_len    = (int)recs[i].sequence.size();
         r.pattern     = ref.data();
         r.pattern_len = (int)ref.size();
-        r.scoring     = {2, -3, 3, 1};   // the same scheme the gates pin
+        r.scoring     = scoring;
         r.with_cigar  = with_cigar;
         reqs.push_back(r);
         cells += (double)r.text_len * (double)r.pattern_len;

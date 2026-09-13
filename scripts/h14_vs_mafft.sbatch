@@ -50,6 +50,14 @@ echo "input: $IN ($(grep -c '^>' "$IN") seqs)"
 
 # --- split the gene file into per-pair 2-seq files for mafft ------------------
 # Record 0 is the reference (declared); every other record is a pair partner.
+# REUSE_DIR=<dir with pairs/*.aln> skips the split and BOTH mafft runs --
+# used to re-verify against a previous job's mafft output without paying
+# the ~38-minute serial run again.
+REUSE_DIR=${REUSE_DIR:-}
+if [ -n "$REUSE_DIR" ]; then
+    ln -sfn "$REUSE_DIR/pairs" "$D/pairs"
+    MAFFT_SERIAL_S=reused MAFFT_PAR_S=reused
+else
 python3 - "$IN" "$D/pairs" <<'PY'
 import sys, os
 src, outdir = sys.argv[1], sys.argv[2]
@@ -70,6 +78,7 @@ with open(os.path.join(outdir, 'order.txt'), 'w') as order:
         order.write(f'{i}\n')
 print(f'pairs: {len(recs)-1}, ref={ref_name} ({len(ref_seq)} bp)')
 PY
+fi
 
 RC=0
 
@@ -79,6 +88,8 @@ echo; echo "=== genoaligner: ALL pairs, WITH CIGAR (capability) ==="
 echo; echo "=== genoaligner: ALL pairs, score-only (throughput) ==="
 "$D/vs_ref" "$IN" --no-cigar --emit "$D/geno_scoreonly.tsv" --reps 7 || RC=1
 
+NPAIRS=$(wc -l < "$D/pairs/order.txt")
+if [ -z "$REUSE_DIR" ]; then
 # --- C: MAFFT serial, one process per pair -----------------------------------
 # Time-boxed: if serial cannot finish inside the job we report the measured
 # rate over completed pairs, NOT an extrapolated total.
@@ -89,8 +100,7 @@ timeout 2400 sh -c 'while read -r i; do
     mafft --auto --thread 1 --quiet "'$D'/pairs/$f.fa" > "'$D'/pairs/$f.aln" 2>/dev/null
 done < "'$D'/pairs/order.txt"'
 MAFFT_SERIAL_S=$((SECONDS - T0))
-MAFFT_DONE=$(ls "$D"/pairs/*.aln 2>/dev/null | wc -l)
-NPAIRS=$(wc -l < "$D/pairs/order.txt")
+MAFFT_DONE=$(ls "$D"/pairs/*.aln 2>/dev/null | grep -v p8 | wc -l)
 echo "  serial wall: ${MAFFT_SERIAL_S} s; completed ${MAFFT_DONE}/${NPAIRS} pairs"
 
 # --- D: MAFFT, 8 concurrent processes ----------------------------------------
@@ -101,6 +111,7 @@ xargs -P 8 -I{} sh -c \
     'mafft --auto --thread 1 --quiet "'$D'/pairs/{}.fa" > "'$D'/pairs/{}.p8.aln" 2>/dev/null'
 MAFFT_PAR_S=$((SECONDS - T0))
 echo "  8-way wall: ${MAFFT_PAR_S} s for $NPAIRS pairs"
+fi
 
 # --- E: SeqAn3 verifies genoaligner's scores on the real data ----------------
 echo; echo "=== SeqAn3 on genoaligner's real-data scores ==="
@@ -141,10 +152,11 @@ for i in [int(x) for x in open(orderf)]:
     a, b = s
     same = sum(1 for x, y in zip(a, b) if x == y and x != '-')
     mafft_id = same / len(a) if a else 0
-    # genoaligner local identity = M ops / aligned ops
-    ops = re.findall(r'(\d+)([MXID])', geno[i][8])
-    m = sum(int(c) for c, o in ops if o == 'M')
-    tot = sum(int(c) for c, o in ops)
+    # genoaligner local identity = M ops / aligned ops.
+    # CIGARs are EXPANDED single-char ops ('MMMMII'), not run-length ('4M2I').
+    cig = geno[i][8]
+    m = cig.count('M')
+    tot = sum(cig.count(o) for o in 'MXID')
     geno_id = m / tot if tot else (1.0 if int(geno[i][3]) == 0 else 0)
     diffs.append(abs(mafft_id - geno_id))
     worst.append((abs(mafft_id - geno_id), i, mafft_id, geno_id))
