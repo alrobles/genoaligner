@@ -480,11 +480,15 @@ accidental de includes. **La red de seguridad de todas las fases no construía d
 cero.** Corregido (commits d1c7522, 75f71f3) y re-verificado: AMD RC=0, NVIDIA RC=0,
 gate CPU COMPLETE con edlib 0 desacuerdos.
 
-**Integración en phylogenyAI: EVALUADA, no enchufable hoy** —
-`docs/INTEGRACION_PHYLOGENYAI.md`. MAFFT es MSA y genoaligner es pairwise: **no son
-intercambiables**. El único encaje real es ortología (DIAMOND/MMseqs2 + RBH), donde
-el valor es correr en MI210 (ni DIAMOND ni MMseqs2-GPU corren en AMD). Bloqueante:
-no existe `api.hpp` (previsto en §2.2, no escrito).
+**Integración en phylogenyAI: EVALUADA + benchmark real ejecutado** —
+`docs/INTEGRACION_PHYLOGENYAI.md` y `docs/RESULTADO_H14_PHYLOGENYAI.md`.
+MAFFT es MSA y genoaligner es pairwise: **no son intercambiables** — pero la
+tarea pairwise-vs-referencia (forma de ortología/RBH) ya se midió sobre los
+datos reales del pipeline (CYTB, 3558 pares): genoaligner con CIGAR ~2.1 s
+vs 2258 s de `mafft --auto` serial (~1100×), scores SeqAn3-exactos en los
+3242 pares ACGT-puros, colocaciones de fragmentos idénticas a
+`mafft --localpair`. Semántica IUPAC declarada (literal vs crédito parcial).
+El encaje real sigue siendo ortología, no MSA.
 
 **Preprint: CONTENIDO SÍ, REQUISITOS NO** — `docs/PREPRINT_ESTADO.md`. Hay material
 para JOSS (paridad en 6 GPUs, 3 oráculos externos, test sin GPU para el revisor),

@@ -55,6 +55,7 @@ echo "input: $IN ($(grep -c '^>' "$IN") seqs)"
 # the ~38-minute serial run again.
 REUSE_DIR=${REUSE_DIR:-}
 if [ -n "$REUSE_DIR" ]; then
+    rm -rf "$D/pairs"          # mkdir -p above created it; ln -sfn would nest
     ln -sfn "$REUSE_DIR/pairs" "$D/pairs"
     MAFFT_SERIAL_S=reused MAFFT_PAR_S=reused
 else
