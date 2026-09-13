@@ -71,8 +71,8 @@ for m in methods():
                                         read_fasta(os.path.join(rdir, fam)))
             except Exception:
                 continue
-            key = (m if m.startswith("genomsa_") else m, d, fam)
-            secs = times.get(key, (float("nan"), "?"))[0]
+            tkey = "genomsa_cpu" if m == "genomsa" else m
+            secs = times.get((tkey, d, fam), (float("nan"), "?"))[0]
             sub = subset_of(fam, d)
             data[m][d].setdefault(sub, []).append((fam, sp, tc, secs))
 
