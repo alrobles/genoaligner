@@ -133,6 +133,12 @@ Umbral para abrir NJ1: Recall@32 ≥ 0.95 en los genes con n ≥ 1000 y
 fallbacks estimados ≤ 10 % de rondas. Si no se cumple, NJ1 se descarta y
 NJ0 es la entrega.
 
+**Resultado (job 29238504, `docs/RESULTADO_NJ_TRACE.md`): gate NO
+superado.** Recall@32 = 0.90 (CYTB) y 0.93 (COI); la cota de
+certificación por filas sólo cierra 1.6 % (CYTB) / 5.8 % (COI) de las
+rondas a k=32, es decir ≥ 94 % de fallbacks exactos. NJ1 queda como
+propuesta no habilitada; NJ0 es la entrega.
+
 Generadores de candidatos, en orden de coste (el draft §5.2):
 (a) top-k sobre `d` actual (recomputado por ronda: Θ(m·k·log) en GPU),
 (b) grafo estático de hojas propagado por unión al fusionar (cero
