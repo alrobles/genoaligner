@@ -146,6 +146,8 @@ set(GENOALIGNER_ALL_HIP_SOURCES
     # api.cpp is a .cpp, but it includes the kernel headers, so on the CUDA backend
     # nvcc needs the same -x cu override. It belongs in this list for that reason.
     src/api/api.cpp
+    include/genoaligner/backend/nj_kernel_impl.hip
+    src/msa/nj_gpu.cpp
 )
 
 # The LANGUAGE property must be set on the SOURCE before add_executable, and
@@ -247,6 +249,20 @@ target_link_libraries(genomsa_ref_test PRIVATE genomsa_ref)
 find_package(Threads REQUIRED)
 add_executable(nj_trace tools/nj_trace.cpp)
 target_link_libraries(nj_trace PRIVATE genomsa_ref Threads::Threads)
+
+# NJ0: exact dense Neighbor Joining on the device (nj_tree_gpu), bit-exact with
+# nj_tree. Kernels are header-only; nj_gpu.cpp is the driver.
+add_library(genomsa_nj_gpu STATIC src/msa/nj_gpu.cpp)
+target_link_libraries(genomsa_nj_gpu PUBLIC genomsa_ref)
+genoaligner_configure_hip(genomsa_nj_gpu)
+
+add_executable(nj_gpu_test tests/msa/test_nj_gpu.cpp)
+target_link_libraries(nj_gpu_test PRIVATE genomsa_nj_gpu Threads::Threads)
+genoaligner_configure_hip(nj_gpu_test)
+
+add_executable(nj_bench tools/nj_bench.cpp)
+target_link_libraries(nj_bench PRIVATE genomsa_nj_gpu Threads::Threads)
+genoaligner_configure_hip(nj_bench)
 
 install(TARGETS genoaligner ARCHIVE DESTINATION lib)
 install(FILES include/genoaligner/api.hpp DESTINATION include/genoaligner)
