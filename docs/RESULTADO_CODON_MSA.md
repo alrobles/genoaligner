@@ -70,10 +70,26 @@ ties/loses marginally at saturation (c4-c6, sub=0.06-0.10 x ~9 branch
 depths = heavily diverged, where every method collapses toward the
 noise floor). Walltime is 20-30x lower in every cell.
 
+vs **refined MACSE** (default unbounded refinement; each cell costs
+~3.6 h so only the endpoints completed within the 5 h job window):
+
+| cell | sub | indel | genomsa | MACSE-refined | genomsa s | MACSE s |
+|------|-----|-------|--------:|--------------:|----------:|--------:|
+| c1 | 0.02 | 0.005 | **0.762** | 0.557 | 202 | 12842 |
+| (0.10, 0.005) | 0.10 | 0.005 | **0.015** | 0.008 | 273 | 13042 |
+
+genomsa beats even fully-refined MACSE on both regimes measured — and
+on the saturated cell refinement actually moved MACSE *away* from the
+truth (init 0.034 -> refined 0.008): MACSE's iterate-until-convergence
+objective is its own sum-of-pairs score, which need not track the true
+alignment. A bounded `-max_refine_iter 2` arm (job 29326829) fills in
+the refinement curve.
+
 Honest caveats: (a) the sim substitutes at nt level, so in-frame stops
 accumulate — realistic but punishing for codon scoring at high rates;
-(b) refined MACSE may close part of the gap (its iteration is exactly
-what the no-refine arm removes); (c) during development this benchmark
+(b) refined MACSE does NOT close the gap on the cells measured (0.557
+vs our 0.762 on the easy cell; it degraded below its own init on the
+saturated cell); (c) during development this benchmark
 caught a truth-tracking bug — the 3 nt of each ancestral codon shared
 one column id, collapsing them and showing SPS~0.02 for every aligner
 (commit bbe5eba). Kept here as a reminder that benchmark
