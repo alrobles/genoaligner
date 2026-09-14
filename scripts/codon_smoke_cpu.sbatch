@@ -16,13 +16,14 @@ set -u
 PAI=/beegfs/a474r867/phylogenyAI
 REPO=/beegfs/a474r867/genoaligner/repo
 GRID=$REPO/scripts/codon_smoke_grid.json
-OUT=$PAI/data/codon_smoke
+OUT=${CODON_SMOKE_OUT:-$PAI/data/codon_smoke}
 BIN=$OUT/bin
 ENV=/home/a474r867/miniconda3/envs/genoml-phylo
 mkdir -p "$OUT" "$BIN"
 
 # CPU-shim build: no HIP runtime needed at run time. Lock to avoid the
-# 160-task stampede compiling at once.
+# array stampede compiling at once; build to a temp path and mv so the
+# -x test never sees a half-linked binary (caused EACCES on v2.1 run).
 if [ ! -x "$BIN/genomsa_cpu" ]; then
     (
         flock -x 9
@@ -32,7 +33,8 @@ if [ ! -x "$BIN/genomsa_cpu" ]; then
                 -pthread "$REPO/tools/genomsa.cpp" \
                 "$REPO/src/msa/msa_gpu.cpp" "$REPO/src/msa/msa_ref.cpp" \
                 "$REPO/src/msa/nj_gpu.cpp" \
-                -o "$BIN/genomsa_cpu" 2>>"$OUT/build_cpu.log"
+                -o "$BIN/genomsa_cpu.tmp.$$" 2>>"$OUT/build_cpu.log" \
+                && mv "$BIN/genomsa_cpu.tmp.$$" "$BIN/genomsa_cpu"
         fi
     ) 9>"$OUT/build.lock"
 fi

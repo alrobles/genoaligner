@@ -47,7 +47,7 @@ import json
 import random
 import sys
 
-VERSION = "codon_sim_v2.1"
+VERSION = "codon_sim_v2.2"
 
 BASES = "ACGT"
 
@@ -134,9 +134,12 @@ def simulate(n_leaves, L, seed, sub_rate, indel_rate, omega=0.3,
         next_cid[0] += n_codons
         blk = []
         for j in range(n_codons):
+            # whole-codon insertions draw from sense codons: random bases
+            # would create in-frame stops at 3/64 per codon, leaking ~2-3
+            # spurious stops per leaf into every cell (incl. "clean" ones)
+            cod = rng.choice(sense)
             for k in range(3):
-                blk.append([rng.choice(BASES), new_cols[3 * j + k],
-                            new_cids[j]])
+                blk.append([cod[k], new_cols[3 * j + k], new_cids[j]])
         if ci > 0:
             oi = order.index(s[3 * ci - 1][1]) + 1
             # anchor on the nearest preceding residue with a codon id
