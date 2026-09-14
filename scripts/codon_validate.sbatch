@@ -55,7 +55,7 @@ fi
 BIN=/tmp/codon_${SLURM_JOB_ID:-local}
 mkdir -p "$BIN"
 build "$BIN/genomsa" tools/genomsa.cpp src/msa/msa_gpu.cpp src/msa/nj_gpu.cpp \
-    src/msa/msa_ref.cpp src/io/fasta.cpp || { echo "BUILD FAILED (genomsa)"; exit 1; }
+    src/msa/msa_ref.cpp || { echo "BUILD FAILED (genomsa)"; exit 1; }
 g++ -O2 -std=c++17 -Iinclude -o "$BIN/test_codon" \
     src/msa/msa_ref.cpp tests/msa/test_codon.cpp -lpthread \
     || { echo "BUILD FAILED (test_codon)"; exit 1; }
