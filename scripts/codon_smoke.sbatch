@@ -64,7 +64,7 @@ mkdir -p "$WD"
 # Per-instance file: parallel array tasks must not interleave writes.
 python3 "$REPO/scripts/codon_bench_grid.py" "$WD" \
     --cell "$CELL" --rep "$REP" $CARGS \
-    --tools genomsa,macse,prank,threestep \
+    --tools genomsa,macse,prank,threestep --prank-F \
     --genomsa "$BIN/genomsa" --macse "$MACSE" --prank "$PRANK" \
     --timeout 5400 \
     > "$WD/results.tsv" 2>"$WD/stderr.log"
