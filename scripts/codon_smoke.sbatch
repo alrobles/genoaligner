@@ -22,6 +22,7 @@ OUT=$PAI/data/codon_smoke
 BIN=$OUT/bin
 ENV=/home/a474r867/miniconda3/envs/genoml-phylo
 mkdir -p "$OUT" "$BIN"
+ROCM=/kuhpc/sw/rocm/6.4.3
 
 # --- build genomsa once per node (cached; rebuild if binary missing) ------
 if [ ! -x "$BIN/genomsa" ]; then
@@ -32,7 +33,6 @@ if [ ! -x "$BIN/genomsa" ]; then
 fi
 
 export PATH="$ENV/bin:$PATH"
-ROCM=/kuhpc/sw/rocm/6.4.3
 MACSE="$ENV/bin/macse"
 PRANK="$ENV/bin/prank"
 
