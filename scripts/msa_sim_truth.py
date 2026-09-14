@@ -20,12 +20,22 @@ alignment to score.
 """
 import sys, random
 
-def simulate(n_leaves=64, L=1500, seed=1, sub_rate=0.06, indel_rate=0.02):
+def simulate(n_leaves=64, L=1500, seed=1, sub_rate=0.06, indel_rate=0.02,
+             codon=False):
     rng = random.Random(seed)
     BASES = "ACGT"
-    order = list(range(L))             # global true column order (col ids)
-    next_id = [L]
-    anc = [(rng.choice(BASES), i) for i in range(L)]
+    if codon:
+        # ancestor = sense codons only (standard code, no stops); indels
+        # come in whole-codon units so the true MSA is in-frame
+        sense = [a + b + c for a in BASES for b in BASES for c in BASES
+                 if a + b + c not in ("TAA", "TAG", "TGA")]
+        anc = [(b, i) for i, cod in
+               enumerate(rng.choice(sense) for _ in range(L // 3))
+               for b in cod]
+    else:
+        anc = [(rng.choice(BASES), i) for i in range(L)]
+    order = list(range(len(anc)))      # global true column order (col ids)
+    next_id = [len(anc)]
 
     def evolve(seq, n_indels, n_subs):
         s = list(seq)
@@ -35,6 +45,8 @@ def simulate(n_leaves=64, L=1500, seed=1, sub_rate=0.06, indel_rate=0.02):
             s[i] = (b, s[i][1])
         for _ in range(n_indels):
             ln = 1 + int(rng.expovariate(1 / 2.5))
+            if codon:
+                ln *= 3
             pos = rng.randrange(len(s) + 1)
             if rng.random() < 0.5:
                 new = list(range(next_id[0], next_id[0] + ln))
@@ -111,8 +123,10 @@ if __name__ == "__main__":
     sub = float(sys.argv[4]) if len(sys.argv) > 4 else 0.02
     ind = float(sys.argv[5]) if len(sys.argv) > 5 else 0.004
     L = int(sys.argv[6]) if len(sys.argv) > 6 else 1500
+    codon = len(sys.argv) > 7 and sys.argv[7] == "codon"
     seqs, true_rows, tree_nwk = simulate(n_leaves=n, L=L, seed=seed,
-                                       sub_rate=sub, indel_rate=ind)
+                                       sub_rate=sub, indel_rate=ind,
+                                       codon=codon)
     with open("sim_in.fasta", "w") as f:
         for i, s in enumerate(seqs):
             f.write(f">s{i}\n{s}\n")
