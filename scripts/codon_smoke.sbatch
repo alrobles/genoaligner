@@ -25,13 +25,14 @@ mkdir -p "$OUT" "$BIN"
 
 # --- build genomsa once per node (cached; rebuild if binary missing) ------
 if [ ! -x "$BIN/genomsa" ]; then
-    hipcc -O2 -std=c++17 -ffp-contract=off -I"$REPO/include" \
+    "$ROCM/bin/hipcc" -O2 -std=c++17 -ffp-contract=off -I"$REPO/include" \
         -o "$BIN/genomsa" "$REPO/tools/genomsa.cpp" \
         "$REPO/src/msa/msa_gpu.cpp" "$REPO/src/msa/msa_ref.cpp" \
         "$REPO/src/msa/nj_gpu.cpp" 2>>"$OUT/build.log"
 fi
 
 export PATH="$ENV/bin:$PATH"
+ROCM=/kuhpc/sw/rocm/6.4.3
 MACSE="$ENV/bin/macse"
 PRANK="$ENV/bin/prank"
 
