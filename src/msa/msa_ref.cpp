@@ -3,6 +3,7 @@
 // kernel is validated against this file's outputs, not the other way.
 #include <genoaligner/msa/msa.hpp>
 #include <unordered_map>
+#include <climits>
 #include <cassert>
 #include <cstring>
 #include <functional>
@@ -75,6 +76,15 @@ static int aa_index(char c) {
 static bool sym_counts(char c, float* cnt, int alpha) {
     if (alpha == 4) return iupac_counts(c, cnt);
     for (int i = 0; i < alpha; ++i) cnt[i] = 0;
+    if (alpha == 65) {
+        // codon-encoded byte = 128 + index (0..63; 64 = other). The +128
+        // offset is load-bearing: raw index 45 collides with '-' (gap)
+        // in aligned rows.
+        int s = (unsigned char)c;
+        if (s < 128 || s > 192) return false;
+        cnt[s - 128] = 1.f;
+        return true;
+    }
     switch (c) {
         case 'B': cnt[2] = cnt[3] = 0.5f;      return true;
         case 'Z': cnt[5] = cnt[6] = 0.5f;      return true;
@@ -134,6 +144,127 @@ Params protein_params() {
         for (int b = 0; b < 20; ++b)
             P.sub[a * 20 + b] = BLOSUM62[a][b];
     return P;
+}
+
+// ------------------------------------------------------------- codons
+// Codon index: base-4 with T=0,C=1,A=2,G=3 -> idx = b0*16 + b1*4 + b2.
+// Index 64 = "other": partial (<3 nt) or ambiguous codon, scores 0 vs all.
+static int nt4(char c) {
+    switch (c) {
+        case 'T': case 't': case 'U': case 'u': return 0;
+        case 'C': case 'c': return 1;
+        case 'A': case 'a': return 2;
+        case 'G': case 'g': return 3;
+        default: return -1;
+    }
+}
+static const char NT4B[4] = {'T', 'C', 'A', 'G'};
+
+// Codon -> amino-acid index in BLOSUM order (ARNDCQEGHILKMFPSTWYV),
+// -1 = stop. Standard genetic code (NCBI gc=1).
+static const signed char CODON_AA_STD[64] = {
+ // TTT  TTC  TTA  TTG  TCT  TCC  TCA  TCG  TAT  TAC  TAA  TAG  TGT  TGC  TGA  TGG
+    13,  13,  10,  10,  15,  15,  15,  15,  18,  18,  -1,  -1,   4,   4,  -1,  17,
+ // CTT  CTC  CTA  CTG  CCT  CCC  CCA  CCG  CAT  CAC  CAA  CAG  CGT  CGC  CGA  CGG
+    10,  10,  10,  10,  14,  14,  14,  14,   8,   8,   5,   5,   1,   1,   1,   1,
+ // ATT  ATC  ATA  ATG  ACT  ACC  ACA  ACG  AAT  AAC  AAA  AAG  AGT  AGC  AGA  AGG
+     9,   9,   9,  12,  16,  16,  16,  16,   2,   2,  11,  11,  15,  15,   1,   1,
+ // GTT  GTC  GTA  GTG  GCT  GCC  GCA  GCG  GAT  GAC  GAA  GAG  GGT  GGC  GGA  GGG
+    19,  19,  19,  19,   0,   0,   0,   0,   3,   3,   6,   6,   7,   7,   7,   7,
+};
+
+// Vertebrate mitochondrial (NCBI gc=2): TGA->W, ATA->M, AGA/AGG->stop.
+static const signed char CODON_AA_MT[64] = {
+    13,  13,  10,  10,  15,  15,  15,  15,  18,  18,  -1,  -1,   4,   4,  17,  17,
+    10,  10,  10,  10,  14,  14,  14,  14,   8,   8,   5,   5,   1,   1,   1,   1,
+     9,   9,  12,  12,  16,  16,  16,  16,   2,   2,  11,  11,  15,  15,  -1,  -1,
+    19,  19,  19,  19,   0,   0,   0,   0,   3,   3,   6,   6,   7,   7,   7,   7,
+};
+
+static const signed char* codon_aa_table(int gc_def) {
+    return gc_def == 2 ? CODON_AA_MT : CODON_AA_STD;
+}
+
+Params codon_params(int gc_def) {
+    Params P;
+    P.alpha = 65;
+    P.gc_def = gc_def;
+    P.kmer_k = 3;                  // 3 codons = 9 nt
+    P.gap_open = 11.0f;            // codon units; protein-scale defaults,
+    P.gap_extend = 1.0f;           // swept after first real-gene runs
+    P.free_end_gaps = true;        // CDS fragments (CYTB 207 vs 1137 bp)
+    const signed char* aa = codon_aa_table(gc_def);
+    for (int c1 = 0; c1 < 64; ++c1) {
+        int a1 = aa[c1];
+        int b0 = c1 >> 4, b1 = (c1 >> 2) & 3, b2 = c1 & 3;
+        for (int c2 = 0; c2 < 64; ++c2) {
+            int a2 = aa[c2];
+            float s;
+            if (a1 < 0 || a2 < 0)
+                s = (a1 < 0 && a2 < 0) ? 0.f : -P.codon_stop_pen;
+            else {
+                int same = (b0 == (c2 >> 4)) + (b1 == ((c2 >> 2) & 3))
+                         + (b2 == (c2 & 3));
+                s = BLOSUM62[a1][a2] + P.codon_nt_bonus * same;
+            }
+            P.sub[c1 * 65 + c2] = s;
+        }
+        P.sub[c1 * 65 + 64] = 0.f;   // "other" codon: neutral
+    }
+    for (int c2 = 0; c2 < 65; ++c2) P.sub[64 * 65 + c2] = 0.f;
+    return P;
+}
+
+std::vector<std::string> codon_encode(const std::vector<std::string>& seqs,
+                                      int gc_def,
+                                      std::vector<CodonQc>* qc) {
+    const signed char* aa = codon_aa_table(gc_def);
+    std::vector<std::string> out(seqs.size());
+    if (qc) qc->assign(seqs.size(), {});
+    for (size_t s = 0; s < seqs.size(); ++s) {
+        const std::string& q = seqs[s];
+        // frame = fewest stop codons among the three forward frames
+        int best = 0, bestst = INT_MAX;
+        for (int f = 0; f < 3; ++f) {
+            int st = 0;
+            for (size_t i = f; i + 2 < q.size(); i += 3) {
+                int a = nt4(q[i]), b = nt4(q[i + 1]), c = nt4(q[i + 2]);
+                if (a < 0 || b < 0 || c < 0) continue;
+                if (aa[a * 16 + b * 4 + c] < 0) ++st;
+            }
+            if (st < bestst) { bestst = st; best = f; }
+        }
+        std::string& e = out[s];
+        e.reserve(q.size() / 3 + 1);
+        int partial = 0;
+        for (size_t i = best; i + 2 < q.size(); i += 3) {
+            int a = nt4(q[i]), b = nt4(q[i + 1]), c = nt4(q[i + 2]);
+            e.push_back((char)(128 + ((a < 0 || b < 0 || c < 0)
+                                   ? 64 : a * 16 + b * 4 + c)));
+        }
+        if ((q.size() - best) % 3) {
+            ++partial;
+            e.push_back((char)(128 + 64)); // trailing partial keeps length honest
+        }
+        if (qc) (*qc)[s] = {best, bestst, partial};
+    }
+    return out;
+}
+
+std::vector<std::string> codon_decode(const std::vector<std::string>& rows) {
+    std::vector<std::string> out(rows.size());
+    for (size_t s = 0; s < rows.size(); ++s) {
+        std::string& o = out[s];
+        o.reserve(rows[s].size() * 3);
+        for (char ch : rows[s]) {
+            int c = (unsigned char)ch;
+            if (c == 45 /*'-'*/) { o += "---"; continue; }
+            c -= 128;                     // un-offset the codon token
+            if (c < 0 || c > 63) { o += "NNN"; continue; }
+            o += NT4B[c >> 4]; o += NT4B[(c >> 2) & 3]; o += NT4B[c & 3];
+        }
+    }
+    return out;
 }
 
 Profile profile_from_seq(const std::string& seq, int alpha) {

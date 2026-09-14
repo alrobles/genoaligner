@@ -29,14 +29,15 @@
 namespace genomsa {
 
 // ---------------------------------------------------------------- config
-// Maximum alphabet width supported: 20 amino acids (+1 gap slot).
-// DNA mode uses symbols 0..3 (A,C,G,T); the gap fraction always lives at
-// index `alpha` so indexing is alphabet-agnostic.
-constexpr int MSA_MAX_SYMS = 20;
+// Maximum alphabet width supported: 65 = 64 codons + 1 "other/partial"
+// token (codon mode). DNA mode uses symbols 0..3 (A,C,G,T); protein uses
+// 0..19; the gap fraction always lives at index `alpha` so indexing is
+// alphabet-agnostic.
+constexpr int MSA_MAX_SYMS = 65;
 
 struct Params {
     int    kmer_k       = 5;
-    int    alpha        = 4;      // 4 = DNA (IUPAC), 20 = protein
+    int    alpha        = 4;      // 4 = DNA (IUPAC), 20 = protein, 65 = codon
     float  match        = 2.0f;   // S(a,a)              (alpha==4 only)
     float  ts           = -1.0f;  // transition mismatch (alpha==4 only)
     float  tv           = -2.0f;  // transversion        (alpha==4 only)
@@ -60,6 +61,12 @@ struct Params {
     // insertion blocks; runs removed from BOTH profiles at the same
     // position are mini-aligned to each other. 0 disables. Default 0.95.
     float  gappy        = 0.95f;
+    // Codon mode (alpha==65): penalty when exactly one side of a column
+    // pair is a stop codon (MACSE-style), and per-identical-nt bonus on
+    // top of the BLOSUM62 amino-acid score.
+    float  codon_stop_pen = 60.0f;
+    float  codon_nt_bonus = 1.0f;
+    int    gc_def         = 1;    // NCBI genetic code (2 = vertebrate mito)
 };
 
 // Position-specific gap penalties -- THE SPEC. The kernel implements the
@@ -80,6 +87,28 @@ inline float psgp_ext(float occ, const Params& P) {
 // Protein preset: alpha=20, BLOSUM62 substitution matrix, protein
 // distance/DP defaults (2-mer guide tree, ClustalW-scale gap costs).
 Params protein_params();
+
+// -------------------------------------------------------- codon mode
+// Codon-aware progressive MSA (MACSE-style): sequences are tokenized to
+// codons (one byte per codon, stored as 128 + index where index is 0..63
+// in NCBI codon order TTT,TTC,...,GGG and 64 = partial/ambiguous codon,
+// scores 0 vs all; the +128 offset keeps tokens disjoint from '-'), the
+// engine runs with alpha=65 over a 65x65 substitution matrix built from
+// BLOSUM62 of the translated amino acids plus:
+//   - codon_stop_pen : charged when exactly one side is a stop codon
+//   - codon_nt_bonus : added per identical nt position (0..3)
+// Indels are then always whole codons -- the output keeps reading frame.
+// gc_def: NCBI genetic code id (1 = standard, 2 = vertebrate mito).
+Params codon_params(int gc_def = 1);
+
+// Per-sequence frame selection + tokenization. Returns encoded strings
+// (one byte per codon) plus QC: chosen frame and stop count per seq.
+struct CodonQc { int frame = 0; int stops = 0; int partial = 0; };
+std::vector<std::string> codon_encode(const std::vector<std::string>& seqs,
+                                      int gc_def,
+                                      std::vector<CodonQc>* qc = nullptr);
+// Expand codon-token aligned rows back to nucleotides (token 64 -> NNN).
+std::vector<std::string> codon_decode(const std::vector<std::string>& rows);
 
 // ---------------------------------------------------------------- profile
 struct Profile {

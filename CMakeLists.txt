@@ -258,6 +258,9 @@ find_package(Threads REQUIRED)
 add_executable(nj_trace tools/nj_trace.cpp)
 target_link_libraries(nj_trace PRIVATE genomsa_ref Threads::Threads)
 
+add_executable(genomsa_codon_test tests/msa/test_codon.cpp)
+target_link_libraries(genomsa_codon_test PRIVATE genomsa_ref Threads::Threads)
+
 # NJ0: exact dense Neighbor Joining on the device (nj_tree_gpu), bit-exact with
 # nj_tree. Kernels are header-only; nj_gpu.cpp is the driver.
 add_library(genomsa_nj_gpu STATIC src/msa/nj_gpu.cpp)

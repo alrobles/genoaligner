@@ -20,24 +20,33 @@
 int main(int argc, char** argv) {
     if (argc < 3) {
         fprintf(stderr, "usage: %s input.fasta output.fasta [--cpu] [--kmer K] [--global] "
-                        "[--protein] [--gap-open G] [--gap-extend G] "
-                        "[--psgp|--no-psgp] [--gappy T|--no-gappy] [--tree-out F]\n",
+                        "[--protein|--codon] [--gc-def N] [--gap-open G] [--gap-extend G] "
+                        "[--psgp|--no-psgp] [--gappy T|--no-gappy] [--tree-out F] "
+                        "[--codon-qc F]\n",
                 argv[0]);
         return 2;
     }
     const char* in_path = argv[1];
     const char* out_path = argv[2];
-    // --protein must be parsed before the numeric overrides so users can
-    // still tune the preset; do a first pass for it.
+    // --protein/--codon must be parsed before the numeric overrides so
+    // users can still tune the preset; do a first pass for them.
     genomsa::Params P;
-    for (int i = 3; i < argc; ++i)
-        if (std::string(argv[i]) == "--protein") P = genomsa::protein_params();
+    bool codon_mode = false;
+    int gc_def = 1;
+    for (int i = 3; i < argc; ++i) {
+        std::string a = argv[i];
+        if (a == "--protein") P = genomsa::protein_params();
+        else if (a == "--codon") codon_mode = true;
+        else if (a == "--gc-def" && i + 1 < argc) gc_def = atoi(argv[i + 1]);
+    }
+    if (codon_mode) P = genomsa::codon_params(gc_def);
     bool use_cpu = false;
-    std::string tree_out;
+    std::string tree_out, qc_out;
     for (int i = 3; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--cpu") use_cpu = true;
-        else if (a == "--protein") { /* already applied */ }
+        else if (a == "--protein" || a == "--codon") { /* already applied */ }
+        else if (a == "--gc-def" && i + 1 < argc) ++i;
         else if (a == "--kmer" && i + 1 < argc) P.kmer_k = atoi(argv[++i]);
         else if (a == "--global") P.free_end_gaps = false;
         else if (a == "--gap-open" && i + 1 < argc) P.gap_open = atof(argv[++i]);
@@ -47,6 +56,7 @@ int main(int argc, char** argv) {
         else if (a == "--gappy" && i + 1 < argc) P.gappy = atof(argv[++i]);
         else if (a == "--no-gappy") P.gappy = 0.0f;
         else if (a == "--tree-out" && i + 1 < argc) tree_out = argv[++i];
+        else if (a == "--codon-qc" && i + 1 < argc) qc_out = argv[++i];
         else { fprintf(stderr, "unknown arg: %s\n", a.c_str()); return 2; }
     }
 
@@ -62,6 +72,18 @@ int main(int argc, char** argv) {
     fprintf(stderr, "read %zu records from %s (%.2fs)\n", recs.size(), in_path,
             std::chrono::duration<double>(
                 std::chrono::steady_clock::now() - tr0).count());
+
+    // codon mode: tokenize to codons up front, decode on output
+    std::vector<genomsa::CodonQc> cqc;
+    if (codon_mode) {
+        seqs = genomsa::codon_encode(seqs, P.gc_def, &cqc);
+        int f1 = 0, f2 = 0, st = 0, pt = 0;
+        for (auto& q : cqc) { f1 += q.frame == 1; f2 += q.frame == 2;
+                              st += q.stops; pt += q.partial; }
+        fprintf(stderr, "codon: %zu seqs encoded (gc=%d) | frame1=%d "
+                        "frame2=%d  stops=%d  partials=%d\n",
+                seqs.size(), P.gc_def, f1, f2, st, pt);
+    }
 
     auto t0 = std::chrono::steady_clock::now();
     std::vector<std::string> msa;
@@ -85,12 +107,25 @@ int main(int argc, char** argv) {
             std::chrono::duration<double>(t1 - t0).count(),
             use_cpu ? "cpu-ref" : "gpu");
 
+    if (codon_mode) msa = genomsa::codon_decode(msa);
+
     FILE* f = fopen(out_path, "w");
     if (!f) { fprintf(stderr, "cannot write %s\n", out_path); return 1; }
     for (size_t i = 0; i < recs.size(); ++i)
         fprintf(f, ">%s\n%s\n", recs[i].id.c_str(), msa[i].c_str());
     fclose(f);
     fprintf(stderr, "wrote %s\n", out_path);
+
+    if (!qc_out.empty() && codon_mode) {
+        FILE* qf = fopen(qc_out.c_str(), "w");
+        if (qf) {
+            for (size_t i = 0; i < recs.size(); ++i)
+                fprintf(qf, "%s\t%d\t%d\t%d\n", recs[i].id.c_str(),
+                        cqc[i].frame, cqc[i].stops, cqc[i].partial);
+            fclose(qf);
+            fprintf(stderr, "wrote %s\n", qc_out.c_str());
+        }
+    }
 
     if (!tree_out.empty()) {
         std::vector<std::string> names;

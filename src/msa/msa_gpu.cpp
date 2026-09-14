@@ -96,9 +96,24 @@ bool msa_align_gpu(const std::vector<std::string>& seqs, const Params& P,
     MsaPPParams kp{P.match, P.ts, P.tv, P.gap_open, P.gap_extend,
                    P.free_end_gaps ? 1 : 0,
                    P.psgp ? 1 : 0, P.psgp_scale, P.psgp_min_open,
-                   P.psgp_min_ext, P.alpha, {}};
-    if (P.alpha > 4)
+                   P.psgp_min_ext, P.alpha, {}, nullptr};
+    if (P.alpha > 4 && P.alpha <= MSA_SUB_INLINE_SYMS)
         std::memcpy(kp.sub, P.sub.data(), sizeof(kp.sub));
+    // alpha > 20 (codon mode): the 65x65 matrix exceeds the kernel-param
+    // space, so it lives in a device buffer allocated once per call.
+    float* d_sub = nullptr;
+    if (P.alpha > MSA_SUB_INLINE_SYMS) {
+        const size_t bytes = (size_t)P.alpha * P.alpha * sizeof(float);
+        if (hipMalloc((void**)&d_sub, bytes) != hipSuccess ||
+            hipMemcpy(d_sub, P.sub.data(), bytes, hipMemcpyHostToDevice)
+                != hipSuccess) {
+            return fail("codon substitution matrix upload");
+        }
+        kp.sub_ext = d_sub;
+    }
+    // freed on every exit path, success or failure
+    struct SubGuard { float* p; ~SubGuard() { if (p) hipFree(p); } }
+        sub_guard{d_sub};
 
     static const bool lvldbg = std::getenv("GENOMSA_LVL_DEBUG") != nullptr;
     auto fnv = [](const void* p, size_t n, uint64_t h) {

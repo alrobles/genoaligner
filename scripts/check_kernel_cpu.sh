@@ -324,6 +324,27 @@ else
 fi
 
 echo
+echo "--- [host] codon-mode unit tests ---"
+# Codon tokenization/translation/scoring invariants: the alpha=65 spec the
+# GPU codon path must reproduce (sub_ext path, whole-codon indels).
+if g++ -O2 -std=c++17 -pthread -I"$REPO_ROOT/include" -o "$BUILD_DIR/test_codon" \
+       "$REPO_ROOT/src/msa/msa_ref.cpp" "$REPO_ROOT/tests/msa/test_codon.cpp" \
+       2>"$BUILD_DIR/codon_build.log"; then
+    if ! "$BUILD_DIR/test_codon" | tee "$BUILD_DIR/codon_test.out" | tail -5; then
+        echo "=== CPU GATE FAILED (codon tests) ==="
+        exit 1
+    fi
+    if ! grep -q "ALL OK" "$BUILD_DIR/codon_test.out"; then
+        echo "  !!! codon test produced no ALL OK verdict — treating as FAILURE."
+        exit 1
+    fi
+else
+    echo "  !!! codon test failed to BUILD:"
+    sed -n '1,20p' "$BUILD_DIR/codon_build.log"
+    exit 1
+fi
+
+echo
 echo "--- [shim] MSA profile-profile kernel parity ---"
 # The shipped msa_pp_trace_kernel body under the CPU shim vs the M1 reference:
 # different code paths (direction bytes vs value re-derivation) asserting the
