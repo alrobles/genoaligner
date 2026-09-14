@@ -30,7 +30,7 @@ per call; `alpha<=20` keeps the by-value matrix unchanged.
 | 1 | Output is in-frame by construction | 100% of alignment columns are whole codons (no split-codon gaps); decoded length %3==0 | `scripts/codon_validate.sbatch` invariants, all genes |
 | 2 | GPU == CPU reference | byte-identical alignment files | job 29240188 (MI210): A2AB/CNR1/COI/CYTB all PASS |
 | 3 | QC flags pathological loci | per-seq stop count after best-frame encoding | the 5 loci Upham reclassified as noncoding (APP, BMI1, CREM, FBN1, PLCB4) have 1.8-10 stops/seq vs <0.7/seq on coding loci |
-| 4 | Quality vs known truth | SIM-SPS on simulated codon evolution | `scripts/codon_sim_bench.sbatch` (genomsa vs MACSE, same input) — *running* |
+| 4 | Quality vs known truth | SIM-SPS on simulated codon evolution | `scripts/codon_sim_bench.sbatch`; no-refine MACSE grid complete (below), refined MACSE running |
 | 5 | Agreement with MACSE | aligned codon-pair recall/precision | `scripts/codon_vs_macse.py`, 24 loci — below |
 | 6 | Speed | end-to-end walltime per locus | `data/genomsa_codon/summary_*.tsv` — below |
 | 7 | End-to-end equivalence | RF(genomsa-codon backbone, MACSE backbone), RF vs Upham MCC | codon supermatrix 4353x247185 built (job 29241809); IQ-TREE queued (29241810) |
@@ -47,6 +47,37 @@ per call; `alpha<=20` keeps the by-value matrix unchanged.
 | BRCA1| 913 | 1 | 30138 | 304 | >6 h (timeout) |
 | VWF  | 755 | 1 | 53967 | 246 | >6 h (timeout) |
 | **31 loci total** | | | | **~40 min** | **days (7 genes still on 72 h retry)** |
+
+## SIM-SPS vs known truth (job 29247865; simulated codon evolution,
+## n=256, L=1200 nt ancestor, whole-codon indels, per-nt column truth)
+
+MACSE column = `-max_refine_iter 0` (initial guide-tree pass — the
+closest MACSE analog to our single-pass progressive alignment; refined
+MACSE is the unbounded-iteration default and takes >2 h/cell on this
+data — running separately).
+
+| cell | sub | indel | genomsa | MACSE-init | genomsa s | MACSE s |
+|------|-----|-------|--------:|-----------:|----------:|--------:|
+| c1 | 0.02 | 0.005 | **0.762** | 0.422 | 35 | 777 |
+| c2 | 0.02 | 0.02  | **0.143** | 0.065 | 124 | 1232 |
+| c3 | 0.06 | 0.005 | **0.102** | 0.072 | 117 | 1100 |
+| c4 | 0.06 | 0.02  | 0.027 | 0.029 | 300 | 1637 |
+| c5 | 0.10 | 0.005 | 0.015 | 0.034 | 309 | 1117 |
+| c6 | 0.10 | 0.02  | 0.009 | 0.017 | 311 | 1535 |
+
+Read: genomsa wins decisively in the easy/moderate regime (c1-c3) and
+ties/loses marginally at saturation (c4-c6, sub=0.06-0.10 x ~9 branch
+depths = heavily diverged, where every method collapses toward the
+noise floor). Walltime is 20-30x lower in every cell.
+
+Honest caveats: (a) the sim substitutes at nt level, so in-frame stops
+accumulate — realistic but punishing for codon scoring at high rates;
+(b) refined MACSE may close part of the gap (its iteration is exactly
+what the no-refine arm removes); (c) during development this benchmark
+caught a truth-tracking bug — the 3 nt of each ancestral codon shared
+one column id, collapsing them and showing SPS~0.02 for every aligner
+(commit bbe5eba). Kept here as a reminder that benchmark
+infrastructure can be wronger than the tools it evaluates.
 
 ## MACSE agreement (aligned codon-pair recall / precision)
 
