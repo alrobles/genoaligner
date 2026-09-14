@@ -172,7 +172,7 @@ def main():
     args = ap.parse_args()
 
     os.makedirs(args.workdir, exist_ok=True)
-    log = open(os.path.join(args.workdir, "run.log"), "w")
+    log = open(os.path.join(args.workdir, "run.log"), "w", buffering=1)
     seed = args.seed_base + args.rep
     sim_args = [args.n, seed, args.sub, args.indel, args.L,
                 "--omega", args.omega, "--fs-frac", args.fs_frac,
