@@ -54,6 +54,34 @@ El rowsum domina porque el contrato exige sumar cada fila **en orden host**
 (cadena de dependencias de longitud m por hilo, sin reducción en árbol ni
 `atomicAdd`). El argmin y el merge son ya despreciables.
 
+## 2.2 NVIDIA A100 (job 29238597, backend CUDA)
+
+Mismos fuentes `.hip` compilados con `nvcc` 12.4 (`-x cu`, capa
+`nvidia_detail` de ROCm, `sm_80`), nodo `r13r06n01`, A100-PCIE-40GB, 16 hilos
+host. `sbatch --gres=gpu:a100:1 --export=ALL,BACKEND=cuda scripts/nj_gpu_validate.sbatch`.
+
+| Gate | Resultado |
+|------|-----------|
+| Paridad sintética en device | PASS |
+| 31 genes: `Tree.nodes`/`root` == `nj_tree_mt` | PASS 31/31 |
+| E2E `genomsa` COI, árbol GPU vs `GENOMSA_NJ=cpu` | PASS (byte-idéntico) |
+
+| Gen   | n    | `nj_tree_mt` 16T (s) | `nj_tree_gpu` total (s) | rounds (s) | upload (s) | MI210 rounds (s) |
+|-------|------|------|------|-------|-------|-------|
+| CYTB  | 3523 | 6.63 | 1.61 | 1.26  | 0.26  | 1.47 |
+| COI   | 1608 | 1.12 | 0.48 | 0.20  | 0.18  | 0.23 |
+| IRBP  | 1252 | 0.76 | 0.34 | 0.13  | 0.15  | 0.12 |
+| ND1   | 941  | 0.50 | 0.24 | 0.06  | 0.13  | 0.07 |
+| BRCA1 | 913  | 0.48 | 0.29 | 0.08  | 0.15  | 0.07 |
+| BMI1  | 140  | 0.06 | 0.20 | 0.003 | 0.13  | 0.003 |
+
+La paridad con la referencia host en ambos vendedores implica que el árbol
+MI210 y el A100 son también idénticos entre sí (contrato I1, `SPEC_NJ_GPU.md`):
+la suma en orden host y `__dmul_rn` evitan cualquier diferencia de contracción
+FMA. Rendimiento equivalente (A100 ~15 % más rápido en CYTB, dominado por la
+cadena de sumas dependientes del rowsum en ambos casos). TSV completo:
+`nj_gpu0/nj_gpu0_29238597_cuda.tsv`.
+
 ## 3. Historia de la optimización (misma semántica, misma paridad)
 
 | Versión | CYTB rounds (s) | COI rounds (s) | Cambio |
@@ -73,8 +101,8 @@ es idéntico, sólo se agrupan las cargas.
   bien, y en los jobs 29238566 y 29238575 (mismo nodo, mismo binario salvo el
   rowsum) el paso E2E pasó. No se ha reproducido. Hipótesis: el rowsum v1
   (168 s de kernels encolados sin sincronización en CYTB; ~33 s en COI)
-  disparó el watchdog de la cola; v2/v3 mantienen cada kernel en <1 ms. Queda
-  como punto a vigilar en la validación multi-GPU (A100/L40 vía CUDA).
+  disparó el watchdog de la cola; v2/v3 mantienen cada kernel en <1 ms. No
+  apareció tampoco en A100 (§2.2).
 - hipcc emitió `-Wunused-result` en `hipFree` del destructor RAII; corregido.
 
 ## 5. Siguientes pasos
@@ -85,7 +113,7 @@ es idéntico, sólo se agrupan las cargas.
    posible sin cambiar el orden de acumulación; la única vía exacta es más
    cargas en vuelo (unroll 16) o `double2` vectorizado sobre pares `(b, b+1)`
    manteniendo `s += v0; s += v1`.
-3. Validar en A100/L40 (backend CUDA del `CMakeLists.txt`) y cerrar la fila
-   MI210/A100 de `SPEC_NJ_GPU.md`.
+3. L40 / V100 (`--gres=gpu:l40:1`, `CUDA_ARCH=sm_89`; V100 `sm_70`) con el
+   mismo script; A100 ya cerrado (§2.2).
 4. NJ1' (candidatos por embedding hiperbólico + certificación exacta): sólo
    si `tools/nj_trace.cpp` muestra Recall@32 > 0.95 (`LITERATURA_NJ_GPU.md` §6).
