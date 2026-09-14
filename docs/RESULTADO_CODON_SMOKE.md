@@ -80,6 +80,30 @@ opción que rechace sustituciones creadoras de stop bajo ω<1.
 Decisión pendiente: ¿el grid modela input degradado (documentar así)
 o hace falta una celda "CDS purificado"?
 
+## Causa raíz de los stops ubicuos (sim v2.2, commit `cff458b`)
+
+Las sustituciones **nunca** crean stops (`sub_codon` salta candidatos
+stop). La fuente era `ins_codons`: insertaba **bases aleatorias
+puras** → cada codón insertado tenía 3/64 ≈ 4.7% de ser stop; ~60
+codones insertados acumulados por hoja ⇒ ~2-3 stops por secuencia en
+TODAS las celdas. Confirmado: easy/r0 v2.1 → 118/128 frame-0 stops;
+tras el fix → **0/128**.
+
+**v2.2:** `ins_codons` muestrea del set `sense`. Las celdas quedan:
+- limpias de verdad: easy, moderate, divergent, indel-hi, mito-gc2,
+  scale-*, small-n32 (3-step ahora compite ahí)
+- degradadas por diseño: fs-* (frameshifts), frag (truncamiento rompe
+  el frame → len%3≠0), stop-* (stops inyectados), noisy (err puede
+  crear stops — realista), pseudo-mix (todo)
+
+**v2.2 run:** array `29435703` (tasks 0-169, grid completo) →
+`/beegfs/a474r867/phylogenyAI/data/codon_smoke_v22/` (dir nuevo; el
+dataset v2.1 queda intacto en `codon_smoke/`). Scorer corregido desde
+el inicio; build de genomsa_cpu atómico (temp+mv) y pre-compilado.
+
+Nota: la tabla de abajo es **v2.1** — válida como dataset "régimen
+degradado"; la tabla v2.2 reemplaza los números de las celdas limpias.
+
 ## Resultados corregidos (SPS vs verdad; IC95 bootstrap; wall s)
 
 13/17 celdas bajo scorer corregido (`rescore_a`, job 29435026:
@@ -152,12 +176,14 @@ SPS), ni superioridad sobre MACSE en saturación alta.
 
 ## Al volver — checklist
 
-1. `squeue -j 29430948,29435027` / leer `rescoreB-*.log` → debe decir
-   `still-failing=0`.
-2. `python3 scripts/codon_smoke_report.py
-   /beegfs/a474r867/phylogenyAI/data/codon_smoke > reporte final`.
-3. Verificar fs-0.5/scale-*/small-n32 completas en la tabla.
-4. Decidir: ¿celda "CDS purificado" en el sim (rechazo de stops bajo
-   ω<1) para responder al reviewer, o documentar el grid como régimen
-   degradado?
+1. `sacct -j 29430948,29435027` / leer `rescoreB-*.log` → cierra la
+   tabla v2.1 (dataset degradado, ya documentado arriba).
+2. `sacct -j 29435703` → cuando el array v2.2 termine (~5h):
+   `python3 scripts/codon_smoke_report.py
+   /beegfs/a474r867/phylogenyAI/data/codon_smoke_v22 > reporte v2.2`.
+3. Comparativa clave v2.2: en celdas limpias, threestep ya compite —
+   la tabla final separa "régimen limpio" (precisión) de "degradado
+   por diseño" (robustez). PRANK seguirá siendo no-output en las
+   no-%3 — eso es el claim.
+4. Actualizar esta doc con la tabla v2.2.
 5. Archivar TWILIGHT_ISSUE_DRAFT.md → issue upstream si se confirma.
