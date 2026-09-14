@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=codon_smoke
 #SBATCH --partition=sixhour
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:mi210:1
 #SBATCH --mem=64G
 #SBATCH --time=6:00:00
 #SBATCH --output=/beegfs/a474r867/phylogenyAI/data/codon_smoke/slurm-%A_%a.log
