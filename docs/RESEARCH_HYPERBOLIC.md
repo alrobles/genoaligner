@@ -115,6 +115,31 @@ información topológica a n·d flotantes pero NO quita el costo de
 decode. La escalabilidad real requiere reemplazar el decode (MST/
 single-linkage/soft-NJ en H^d) — ese es el siguiente experimento.
 
+## 5a. Experimento H2 ejecutado — embedding como generador de candidatos: NEGATIVO
+
+`scripts/hyp_nj_cand.py` mide, replicando el esquema "static" de
+`nj_trace`, si los vecindarios top-k en espacio Poincaré (geodésicas G
+tras un embedding de la D k-mer inicial) recuperan la cereza NJ por
+ronda mejor que los vecindarios top-k de la propia D.
+
+| datos | cand | r@8 | r@16 | r@32 | r@64 | r@128 |
+|---|---|---|---|---|---|---|
+| sim n=96 s=0.06 | rawD / hypG d=16 | 1.00 / 0.90 | 1.00 / 0.95 | 1.00 / 0.97 | 1.00 / 0.98 | 1.00 / 1.00 |
+| sim n=128 s=0.15 | rawD / hypG d=16 | 0.69 / 0.35 | 0.84 / 0.53 | 1.00 / 0.75 | 1.00 / 0.83 | 1.00 / 1.00 |
+| BDNF real n=457 | rawD / hypG d=16 | 0.97 / 0.67 | 0.99 / 0.74 | 1.00 / 0.79 | 1.00 / 0.84 | 1.00 / 0.90 |
+| BDNF real n=457 | rawD / hypG d=32 | 0.97 / 0.80 | 0.99 / 0.84 | 1.00 / 0.88 | 1.00 / 0.90 | 1.00 / 0.91 |
+| BDNF real n=457 | rawD / hypG d=64 | 0.97 / 0.75 | 0.99 / 0.83 | 1.00 / 0.87 | 1.00 / 0.89 | 1.00 / 0.92 |
+
+**Veredicto: negativo y consistente.** La proyección a H^d preserva la
+jerarquía global (stress ≤0.09 a d=32) pero degrada el orden local que
+las cerezas necesitan — a d=64 sigue 8 puntos bajo rawD en r@128.
+Además rawD ya da r@32≈1.0 en estos datos: el cuello de candidatos que
+`nj_trace` midió en genes reales (~90% fresh@32) no lo resuelve el
+embedding, lo empeora. Cierra la puerta a "embedding → sparse NJ" y
+refuerza el veredicto de §5b: el nicho hiperbólico viable es
+**refinamiento** (soft-NJ / verosimilitud sobre embedding), no
+generación de candidatos ni sustituto del NJ0-GPU exacto.
+
 ## 5. Experimentos pendientes
 
 1. **Decode barato**: single-linkage/MST sobre geodésicas H^d (O(n²) con
