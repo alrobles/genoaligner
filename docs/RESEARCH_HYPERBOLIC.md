@@ -126,6 +126,28 @@ single-linkage/soft-NJ en H^d) — ese es el siguiente experimento.
 3. **Scaling**: n=10⁴..10⁵ con pares muestreados (sin materializar n²
    distancias) — objetivo: quitar la barrera n=10⁴ del simgrid.
 
+## 5b. Contexto del trabajo paralelo: NJ0-GPU (RESUMEN_NJ_GPU_HALLAZGOS)
+
+La sesión hermana entregó `nj_tree_gpu` — NJ exacto denso en device,
+bit-exact con `nj_tree` host, validado MI210/A100/V100 sobre los 31
+genes reales (CYTB n=3523: 60s host → ~1.5s device). Esto **reubica el
+rol del camino hiperbólico**:
+
+- El cuello O(n³) de NJ ya está cubierto por un kernel exacto —
+  un embedding + decode aproximado no compite en esa fila.
+- Su medición clave (`nj_trace`, 19k rondas reales): la cereza NJ está
+  en el top-32 por distancia de sus extremos sólo 90% de las rondas —
+  "vecino cercano ≠ cereza". Un embedding como generador de candidatos
+  debe demostrar Recall@32>0.95 antes de merecer kernels.
+- Veredicto coincidente con nuestro H1: lo hiperbólico es capa de
+  **refinamiento** (NJ0 → embedding → gradiente sobre verosimilitud,
+  soft-NJ) y de escalado *sin distancias* (pares muestreados), no
+  sustituto del NJ exacto.
+- Su plan de follow-up que comparte infraestructura con H1: extender
+  `nj_trace` con candidatos por embedding (Sarkar sobre NJ parcial,
+  o Poincaré sobre d) medido en Recall@32 — `hyp_embed_test.py` ya
+  provee la pieza de embedding.
+
 ## 6. Riesgos y honestidad
 
 - El guide tree NO es el árbol filogenético final — sobre-invertir en

@@ -122,6 +122,20 @@ Tree nj_tree(const std::vector<float>& dist_packed, int n);
 // order; the Q argmin merges per-range minima in scan order).
 Tree nj_tree_mt(const std::vector<float>& dist_packed, int n, int threads);
 
+// NJ0: exact dense NJ on the device (docs/SPEC_NJ_GPU.md). Bit-exact same
+// Tree as nj_tree (same sum order, same first-minimum tie break). On any
+// device error returns an empty Tree with `err` set -- callers fall back to
+// nj_tree_mt; an approximate tree is never produced. Compiled only under a
+// HIP compiler or the CPU shim (src/msa/nj_gpu.cpp).
+struct NjStats {
+    double upload_s = 0, rounds_s = 0, download_s = 0;
+    int    rounds = 0;
+    int    exact_fallbacks = 0;   // always 0 in NJ0; reserved for NJ1
+    size_t dev_bytes = 0;
+};
+Tree nj_tree_gpu(const std::vector<float>& dist_packed, int n,
+                 std::string& err, NjStats* stats = nullptr);
+
 // Internal nodes grouped by merge level: level(u) = max(level(children))+1,
 // leaves = 0. All nodes in one level are INDEPENDENT -- the batch unit the
 // GPU launches one kernel per level over. Levels come back ascending, so
@@ -188,6 +202,7 @@ std::vector<std::string> msa_align_with_tree(const std::vector<std::string>& seq
 struct GpuStats {
     double dist_s = 0, tree_s = 0, align_s = 0;
     int    levels = 0, pairs = 0;
+    int    tree_gpu = 0;          // 1 if the guide tree came from nj_tree_gpu
     size_t dir_bytes = 0;
 };
 bool msa_align_gpu(const std::vector<std::string>& seqs, const Params& P,
