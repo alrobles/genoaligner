@@ -474,7 +474,12 @@ def main():
             offs.append((0, len(s)))          # dropped by the tool
             continue
         masked, best = mask_codon(s)
-        assert ug in (masked, s), f"row {i} corrupted: ungapped != input"
+        if ug not in (masked, s):
+            # allow N wildcard mismatches (e.g. PRANK rewrites codons it
+            # cannot handle as NNN): ordinals still map 1:1
+            assert len(ug) == len(s) and all(
+                a == "N" or a == b for a, b in zip(ug, s)), \
+                f"row {i} corrupted: ungapped != input"
         offs.append((best, len(s)) if ug == masked else (0, len(s)))
 
     tm = [_resmap(r) for r in true_rows]
