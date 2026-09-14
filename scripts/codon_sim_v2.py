@@ -356,41 +356,31 @@ def sps_pairs(tm, gm, offs, n):
 
 def tc_score(true_rows, got_rows, offs, n):
     """Total-column score: fraction of TRUE columns reproduced intact
-    in got (same residue set, all residues of the column in one got col)."""
+    in got (all residues of the true column share one got column)."""
     tm = [_resmap(r) for r in true_rows]
     gm = [_resmap(r) for r in got_rows]
-    invs = [{v: k for k, v in t.items()} for t in tm]
-    # per got row: column -> set of got ordinals
-    got_cols = []
-    for i in range(n):
-        off, lim = offs[i]
-        d = {}
-        for o, j in gm[i].items():
-            d.setdefault(j, []).append(o + off)
-        got_cols.append(d)
+    invs = [{v: k for k, v in t.items()} for t in tm]   # col -> ordinal
     hit = tot = 0
     ncols = len(true_rows[0])
     for c in range(ncols):
-        # which leaves have a residue in true column c
-        have = []
-        for i in range(n):
-            for r, j in tm[i].items():
-                if j == c:
-                    have.append((i, r))
-                    break
-        if len(have) < 2:
-            continue
-        tot += 1
-        # all have-residues must land in ONE got column
         colset = set()
+        have = 0
         ok = True
-        for i, r in have:
+        for i in range(n):
+            r = invs[i].get(c)
+            if r is None:
+                continue                      # gap in the true column
+            have += 1
             off, lim = offs[i]
             o = r - off
-            if o < 0 or o not in gm[i]:
-                ok = False
+            j = gm[i].get(o) if 0 <= o < lim else None
+            if j is None:
+                ok = False                    # residue absent in got
                 break
-            colset.add(gm[i][o])
+            colset.add(j)
+        if have < 2:
+            continue
+        tot += 1
         if ok and len(colset) == 1:
             hit += 1
     return hit, tot
