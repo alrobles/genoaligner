@@ -29,9 +29,11 @@ def simulate(n_leaves=64, L=1500, seed=1, sub_rate=0.06, indel_rate=0.02,
         # come in whole-codon units so the true MSA is in-frame
         sense = [a + b + c for a in BASES for b in BASES for c in BASES
                  if a + b + c not in ("TAA", "TAG", "TGA")]
-        anc = [(b, i) for i, cod in
+        # one column id PER NUCLEOTIDE (sharing an id across a codon's 3
+        # bases collapses them into one true-MSA column)
+        anc = [(b, 3 * i + k) for i, cod in
                enumerate(rng.choice(sense) for _ in range(L // 3))
-               for b in cod]
+               for k, b in enumerate(cod)]
     else:
         anc = [(rng.choice(BASES), i) for i in range(L)]
     order = list(range(len(anc)))      # global true column order (col ids)
@@ -44,9 +46,29 @@ def simulate(n_leaves=64, L=1500, seed=1, sub_rate=0.06, indel_rate=0.02,
             b = rng.choice([x for x in BASES if x != s[i][0]])
             s[i] = (b, s[i][1])
         for _ in range(n_indels):
-            ln = 1 + int(rng.expovariate(1 / 2.5))
             if codon:
-                ln *= 3
+                # whole-codon indels at codon boundaries
+                ncod = len(s) // 3
+                if ncod == 0:
+                    continue
+                ln = (1 + int(rng.expovariate(1 / 2.5))) * 3
+                ci = rng.randrange(ncod + 1)
+                if rng.random() < 0.5:
+                    new = list(range(next_id[0], next_id[0] + ln))
+                    next_id[0] += ln
+                    blk = [(rng.choice(BASES), c) for c in new]
+                    if ci > 0:
+                        oi = order.index(s[3 * ci - 1][1]) + 1
+                    else:
+                        oi = 0
+                    order[oi:oi] = new
+                    s[3 * ci:3 * ci] = blk
+                else:
+                    ci = rng.randrange(ncod)
+                    k = min(ln // 3, ncod - ci)
+                    del s[3 * ci:3 * (ci + k)]
+                continue
+            ln = 1 + int(rng.expovariate(1 / 2.5))
             pos = rng.randrange(len(s) + 1)
             if rng.random() < 0.5:
                 new = list(range(next_id[0], next_id[0] + ln))
@@ -100,7 +122,11 @@ def simulate(n_leaves=64, L=1500, seed=1, sub_rate=0.06, indel_rate=0.02,
     leaf_seqs = ["".join(b for b, _ in s) for s in leaves]
     return leaf_seqs, true_rows, tree_nwk
 
-def sps(true_rows, got_rows):
+def sps(true_rows, got_rows, offs):
+    """offs[i] = (off, lim): got residue ordinal o maps to TRUE residue
+    ordinal off + o, valid while off + o < lim.  For tools emitting the raw
+    sequence off=0, lim=len(seq); for genomsa --codon (frame-masked output)
+    off = selected frame, lim = len(seq)."""
     n = len(true_rows)
     same = tot = 0
     def resmap(row):                    # residue ordinal -> column
@@ -112,14 +138,20 @@ def sps(true_rows, got_rows):
     tm = [resmap(r) for r in true_rows]
     gm = [resmap(r) for r in got_rows]
     for a in range(n):
+        off_a, lim_a = offs[a]
         for b in range(a + 1, n):
+            off_b, lim_b = offs[b]
             inv_b = {v: k for k, v in tm[b].items()}
             for ra, ca in tm[a].items():
                 rb = inv_b.get(ca)
                 if rb is None:
                     continue
+                oa = ra - off_a
+                ob = rb - off_b
+                if oa < 0 or ob < 0 or ra >= lim_a or rb >= lim_b:
+                    continue
                 tot += 1
-                if gm[a].get(ra) == gm[b].get(rb):
+                if gm[a].get(oa) == gm[b].get(ob):
                     same += 1
     return same / tot if tot else float("nan")
 
@@ -169,16 +201,21 @@ if __name__ == "__main__":
                 out.append(c if all(b in "ACGT" for b in c) else "NNN")
             if (len(s) - best) % 3:
                 out.append("NNN")
-            return "".join(out)
+            return "".join(out), best
+        offs = []
         for i, s in enumerate(seqs):
             got_ug = got_rows[i].replace("-", "").replace("!", "")
             if codon:
                 # genomsa emits the frame-masked sequence; tools that keep
                 # every input base (macse, mafft) emit the raw sequence
-                assert got_ug in (mask_codon(s), s), f"row {i} corrupted"
+                masked, best = mask_codon(s)
+                assert got_ug in (masked, s), f"row {i} corrupted"
+                offs.append((best, len(s)) if got_ug == masked else
+                            (0, len(s)))
             else:
                 assert got_ug == s, f"row {i} corrupted"
-        print(f"SIM-SPS {sps(true_rows, got_rows):.4f}  "
+                offs.append((0, len(s)))
+        print(f"SIM-SPS {sps(true_rows, got_rows, offs):.4f}  "
               f"width_true={len(true_rows[0])} width_got={len(got_rows[0])}")
     else:
         print(f"wrote sim_in.fasta / sim_true.fasta (n={n})")
