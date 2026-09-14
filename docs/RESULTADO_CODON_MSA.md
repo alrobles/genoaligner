@@ -33,8 +33,8 @@ per call; `alpha<=20` keeps the by-value matrix unchanged.
 | 4 | Quality vs known truth | SIM-SPS on simulated codon evolution | `scripts/codon_sim_bench.sbatch` (genomsa vs MACSE, same input) — *running* |
 | 5 | Agreement with MACSE | aligned codon-pair recall/precision | `scripts/codon_vs_macse.py`, 24 loci — below |
 | 6 | Speed | end-to-end walltime per locus | `data/genomsa_codon/summary_*.tsv` — below |
-| 7 | End-to-end equivalence | RF(genomsa-codon backbone, MACSE backbone), RF vs Upham MCC | codon supermatrix -> IQ-TREE (same pipeline) — *running* |
-| 8 | Cross-vendor determinism | MI210 == A100 byte-identical | codon_validate BACKEND=cuda — *queued* |
+| 7 | End-to-end equivalence | RF(genomsa-codon backbone, MACSE backbone), RF vs Upham MCC | codon supermatrix 4353x247185 built (job 29241809); IQ-TREE queued (29241810) |
+| 8 | Cross-vendor determinism | byte-identical CPU<->GPU on both MI210 and A100; identical aln_len/gap%/stops on both | job 29241736 (A100): A2AB/COI/CYTB all PASS; CYTB gpu 28s vs cpu 191s |
 
 ## Runtime (MI210, single GPU, includes NJ0-GPU guide tree)
 
