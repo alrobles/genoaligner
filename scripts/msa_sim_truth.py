@@ -59,6 +59,12 @@ def simulate(n_leaves=64, L=1500, seed=1, sub_rate=0.06, indel_rate=0.02,
                 order[oi:oi] = new
                 s[pos:pos] = blk
             else:
+                # deletion: clamp so it never overshoots the end (keeps
+                # whole-codon indels whole in codon mode)
+                if pos + ln > len(s):
+                    pos = len(s) - ln
+                if pos < 0:
+                    continue
                 del s[pos:pos + ln]
         return s
 
@@ -100,7 +106,7 @@ def sps(true_rows, got_rows):
     def resmap(row):                    # residue ordinal -> column
         m = {}; r = 0
         for j, c in enumerate(row):
-            if c != "-":
+            if c != "-" and c != "!":   # '!' = MACSE frameshift pad, not a residue
                 m[r] = j; r += 1
         return m
     tm = [resmap(r) for r in true_rows]
@@ -146,9 +152,32 @@ if __name__ == "__main__":
             elif cur:
                 got[cur] += line.upper()   # some tools emit lowercase
         got_rows = [got[f"s{i}"] for i in range(n)]
-        # sanity: ungapped got rows must equal the leaf sequences
+        # sanity: ungapped got rows must equal the leaf sequences.
+        # codon mode: genomsa --codon drops the leading frame-offset bases
+        # and maps ambiguous/partial codons to NNN, so compare against the
+        # encoding-masked input instead of the raw sequence.
+        STOPS = {"TAA", "TAG", "TGA"}
+        def mask_codon(s):
+            best, bestst = 0, None
+            for f in range(3):
+                st = sum(s[i:i+3] in STOPS for i in range(f, len(s) - 2, 3))
+                if bestst is None or st < bestst:
+                    bestst, best = st, f
+            out = []
+            for i in range(best, len(s) - 2, 3):
+                c = s[i:i+3]
+                out.append(c if all(b in "ACGT" for b in c) else "NNN")
+            if (len(s) - best) % 3:
+                out.append("NNN")
+            return "".join(out)
         for i, s in enumerate(seqs):
-            assert got_rows[i].replace("-", "") == s, f"row {i} corrupted"
+            got_ug = got_rows[i].replace("-", "").replace("!", "")
+            if codon:
+                # genomsa emits the frame-masked sequence; tools that keep
+                # every input base (macse, mafft) emit the raw sequence
+                assert got_ug in (mask_codon(s), s), f"row {i} corrupted"
+            else:
+                assert got_ug == s, f"row {i} corrupted"
         print(f"SIM-SPS {sps(true_rows, got_rows):.4f}  "
               f"width_true={len(true_rows[0])} width_got={len(got_rows[0])}")
     else:
