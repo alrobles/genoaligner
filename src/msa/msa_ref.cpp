@@ -41,22 +41,117 @@ static bool iupac_counts(char c, float cnt[4]) {
     return true;
 }
 
-Profile profile_from_seq(const std::string& seq) {
+// Amino-acid index in BLOSUM order ARNDCQEGHILKMFPSTWYV.
+static int aa_index(char c) {
+    switch (c) {
+        case 'A': case 'a': return 0;
+        case 'R': case 'r': return 1;
+        case 'N': case 'n': return 2;
+        case 'D': case 'd': return 3;
+        case 'C': case 'c': return 4;
+        case 'Q': case 'q': return 5;
+        case 'E': case 'e': return 6;
+        case 'G': case 'g': return 7;
+        case 'H': case 'h': return 8;
+        case 'I': case 'i': return 9;
+        case 'L': case 'l': return 10;
+        case 'K': case 'k': return 11;
+        case 'M': case 'm': return 12;
+        case 'F': case 'f': return 13;
+        case 'P': case 'p': return 14;
+        case 'S': case 's': return 15;
+        case 'T': case 't': return 16;
+        case 'W': case 'w': return 17;
+        case 'Y': case 'y': return 18;
+        case 'V': case 'v': return 19;
+        default: return -1;
+    }
+}
+
+// Each letter contributes fractional counts to the symbol subset it
+// represents (1/|set| each). alpha==4 -> IUPAC DNA; alpha==20 ->
+// amino acids (B: N/D, Z: Q/E, J: I/L, X/O: uniform, U -> C).
+// Returns false for '-' or unmapped letters (counted as gap).
+static bool sym_counts(char c, float* cnt, int alpha) {
+    if (alpha == 4) return iupac_counts(c, cnt);
+    for (int i = 0; i < alpha; ++i) cnt[i] = 0;
+    switch (c) {
+        case 'B': cnt[2] = cnt[3] = 0.5f;      return true;
+        case 'Z': cnt[5] = cnt[6] = 0.5f;      return true;
+        case 'J': cnt[9] = cnt[10] = 0.5f;     return true;
+        case 'U': case 'u': cnt[4] = 1.f;      return true;
+        case 'X': case 'x': case 'O': case 'o':
+            for (int i = 0; i < alpha; ++i) cnt[i] = 1.f / alpha;
+            return true;
+        default: break;
+    }
+    int s = aa_index(c);
+    if (s < 0) return false;
+    cnt[s] = 1.f;
+    return true;
+}
+
+// Index of a letter's symbol when it is unambiguous, else -1.
+static int sym_index(char c, int alpha) {
+    float cnt[MSA_MAX_SYMS];
+    if (!sym_counts(c, cnt, alpha)) return -1;
+    for (int i = 0; i < alpha; ++i) if (cnt[i] == 1.f) return i;
+    return -1;
+}
+
+// BLOSUM62, rows/cols in ARNDCQEGHILKMFPSTWYV order.
+static const float BLOSUM62[20][20] = {
+ { 4,-1,-2,-2, 0,-1,-1, 0,-2,-1,-1,-1,-1,-2,-1, 1, 0,-3,-2, 0},
+ {-1, 5, 0,-2,-3, 1, 0,-2, 0,-3,-2, 2,-1,-3,-2,-1,-1,-3,-2,-3},
+ {-2, 0, 6, 1,-3, 0, 0, 0, 1,-3,-3, 0,-2,-3,-2, 1, 0,-4,-2,-3},
+ {-2,-2, 1, 6,-3, 0, 2,-1,-1,-3,-4,-1,-3,-3,-1, 0,-1,-4,-3,-3},
+ { 0,-3,-3,-3, 9,-3,-4,-3,-3,-1,-1,-3,-1,-2,-3,-1,-1,-2,-2,-1},
+ {-1, 1, 0, 0,-3, 5, 2,-2, 0,-3,-2, 1, 0,-3,-1, 0,-1,-2,-1,-2},
+ {-1, 0, 0, 2,-4, 2, 5,-2, 0,-3,-3, 1,-2,-3,-1, 0,-1,-3,-2,-2},
+ { 0,-2, 0,-1,-3,-2,-2, 6,-2,-4,-4,-2,-3,-3,-2, 0,-2,-2,-3,-3},
+ {-2, 0, 1,-1,-3, 0, 0,-2, 8,-3,-3,-1,-2,-1,-2,-1,-2,-2, 2,-3},
+ {-1,-3,-3,-3,-1,-3,-3,-4,-3, 4, 2,-3, 1, 0,-3,-2,-1,-3,-1, 3},
+ {-1,-2,-3,-4,-1,-2,-3,-4,-3, 2, 4,-2, 2, 0,-3,-2,-1,-2,-1, 1},
+ {-1, 2, 0,-1,-3, 1, 1,-2,-1,-3,-2, 5,-1,-3,-1, 0,-1,-3,-2,-2},
+ {-1,-1,-2,-3,-1, 0,-2,-3,-1, 1, 2,-1, 5, 0,-2,-1,-1,-1,-1, 1},
+ {-2,-3,-3,-3,-2,-3,-3,-3,-1, 0, 0,-3, 0, 6,-4,-2,-2, 1, 3,-1},
+ {-1,-2,-2,-1,-3,-1,-1,-2,-2,-3,-3,-1,-2,-4, 7,-1,-1,-4,-3,-2},
+ { 1,-1, 1, 0,-1, 0, 0, 0,-1,-2,-2, 0,-1,-2,-1, 4, 1,-3,-2,-2},
+ { 0,-1, 0,-1,-1,-1,-1,-2,-2,-1,-1,-1,-1,-2,-1, 1, 5,-2,-2, 0},
+ {-3,-3,-4,-4,-2,-2,-3,-2,-2,-3,-2,-3,-1, 1,-4,-3,-2,11, 2,-3},
+ {-2,-2,-2,-3,-2,-1,-2,-3, 2,-1,-1,-2,-1, 3,-3,-2,-2, 2, 7,-1},
+ { 0,-3,-3,-3,-1,-2,-2,-3,-3, 3, 1,-2, 1,-1,-2,-2, 0,-3,-1, 4},
+};
+
+Params protein_params() {
+    Params P;
+    P.alpha = 20;
+    P.kmer_k = 2;                  // ClustalW protein ktuple convention
+    P.gap_open = 11.0f;            // ClustalW protein defaults; a 40-family
+    P.gap_extend = 1.0f;           // BAliBASE subset sweep found a flat
+    P.free_end_gaps = false;       // optimum here (protein MSA is global)
+    for (int a = 0; a < 20; ++a)
+        for (int b = 0; b < 20; ++b)
+            P.sub[a * 20 + b] = BLOSUM62[a][b];
+    return P;
+}
+
+Profile profile_from_seq(const std::string& seq, int alpha) {
     Profile p;
     p.nseq = 1;
+    p.alpha = alpha;
     p.rows.push_back(seq);
     p.ids.push_back(0);          // caller may overwrite with the true index
     p.cols.resize(seq.size());
     p.occ.resize(seq.size());
     for (size_t i = 0; i < seq.size(); ++i) {
-        float cnt[4];
-        if (iupac_counts(seq[i], cnt)) {
-            for (int b = 0; b < 4; ++b) p.cols[i][b] = cnt[b];
-            p.cols[i][4] = 0.f;
+        p.cols[i].fill(0.f);
+        float cnt[MSA_MAX_SYMS];
+        if (sym_counts(seq[i], cnt, alpha)) {
+            for (int b = 0; b < alpha; ++b) p.cols[i][b] = cnt[b];
             p.occ[i] = 1.f;
         } else {
-            for (int b = 0; b < 4; ++b) p.cols[i][b] = 0.f;
-            p.cols[i][4] = 1.f;
+            p.cols[i][alpha] = 1.f;
             p.occ[i] = 0.f;
         }
     }
@@ -64,23 +159,24 @@ Profile profile_from_seq(const std::string& seq) {
 }
 
 void profile_update_counts(Profile& p) {
+    const int al = p.alpha;
     const int L = p.rows.empty() ? 0 : (int)p.rows[0].size();
-    p.cols.assign(L, {0.f, 0.f, 0.f, 0.f, 0.f});
+    p.cols.assign(L, decltype(p.cols)::value_type{});
     p.occ.assign(L, 0.f);
     for (const auto& row : p.rows) {
         assert((int)row.size() == L);
         for (int i = 0; i < L; ++i) {
-            float cnt[4];
-            if (iupac_counts(row[i], cnt)) {
-                for (int b = 0; b < 4; ++b) p.cols[i][b] += cnt[b];
+            float cnt[MSA_MAX_SYMS];
+            if (sym_counts(row[i], cnt, al)) {
+                for (int b = 0; b < al; ++b) p.cols[i][b] += cnt[b];
                 p.occ[i] += 1.f;
             } else {
-                p.cols[i][4] += 1.f;
+                p.cols[i][al] += 1.f;
             }
         }
     }
     for (int i = 0; i < L; ++i) {
-        for (int b = 0; b < 5; ++b) p.cols[i][b] /= (float)p.nseq;
+        for (int b = 0; b <= al; ++b) p.cols[i][b] /= (float)p.nseq;
         p.occ[i] /= (float)p.nseq;
     }
 }
@@ -89,24 +185,29 @@ void profile_update_counts(Profile& p) {
 // S_ij = |kmers_i ∩ kmers_j|,  D = 1 - S / min(|k_i|, |k_j|)
 // (MAFFT-style fragment correction: a fragment contained in a longer
 // sequence is close to it, not distant).
-std::vector<float> kmer_distances(const std::vector<std::string>& seqs, int k) {
+// Rolling base-alpha k-mer hash kept mod alpha^k (for alpha=4 this is
+// exactly the old 2-bit shift + mask). k must satisfy alpha^k <= 2^63.
+static uint64_t kmer_base(int alpha, int k) {
+    uint64_t base = 1;
+    for (int i = 0; i < k; ++i) base *= (uint64_t)alpha;
+    return base;
+}
+
+std::vector<float> kmer_distances(const std::vector<std::string>& seqs,
+                                  int k, int alpha) {
     const int n = (int)seqs.size();
     std::vector<std::unordered_map<uint64_t, bool>> sets(n);
-    const uint64_t kmask = (k >= 31) ? ~0ull : ((1ull << (2 * k)) - 1);
+    const uint64_t kbase = kmer_base(alpha, k);
     for (int s = 0; s < n; ++s) {
         const std::string& q = seqs[s];
         uint64_t h = 0;
         int run = 0;
         for (size_t i = 0; i < q.size(); ++i) {
-            float cnt[4];
-            // only unambiguous ACGT may extend a k-mer
-            bool clean = iupac_counts(q[i], cnt) &&
-                         (cnt[0] == 1.f || cnt[1] == 1.f ||
-                          cnt[2] == 1.f || cnt[3] == 1.f);
-            if (!clean) { run = 0; h = 0; continue; }
-            int b = cnt[0] == 1.f ? 0 : cnt[1] == 1.f ? 1 : cnt[2] == 1.f ? 2 : 3;
-            h = (h << 2) | (uint64_t)b;
-            if (++run >= k) sets[s][h & kmask] = true;
+            // only unambiguous letters may extend a k-mer
+            int b = sym_index(q[i], alpha);
+            if (b < 0) { run = 0; h = 0; continue; }
+            h = (h * (uint64_t)alpha + (uint64_t)b) % kbase;
+            if (++run >= k) sets[s][h] = true;
         }
     }
     std::vector<float> D((size_t)n * (n - 1) / 2);
@@ -147,24 +248,20 @@ static void parallel_for(int total, int nthreads,
 // Multithreaded kmer_distances: same outputs, bit-exact (every write is to a
 // disjoint slot; no float accumulation is reordered).
 std::vector<float> kmer_distances_mt(const std::vector<std::string>& seqs,
-                                     int k, int threads) {
+                                     int k, int threads, int alpha) {
     const int n = (int)seqs.size();
     std::vector<std::unordered_map<uint64_t, bool>> sets(n);
-    const uint64_t kmask = (k >= 31) ? ~0ull : ((1ull << (2 * k)) - 1);
+    const uint64_t kbase = kmer_base(alpha, k);
     parallel_for(n, threads, [&](int lo, int hi) {
         for (int s = lo; s < hi; ++s) {
             const std::string& q = seqs[s];
             uint64_t h = 0;
             int run = 0;
             for (size_t i = 0; i < q.size(); ++i) {
-                float cnt[4];
-                bool clean = iupac_counts(q[i], cnt) &&
-                             (cnt[0] == 1.f || cnt[1] == 1.f ||
-                              cnt[2] == 1.f || cnt[3] == 1.f);
-                if (!clean) { run = 0; h = 0; continue; }
-                int b = cnt[0] == 1.f ? 0 : cnt[1] == 1.f ? 1 : cnt[2] == 1.f ? 2 : 3;
-                h = (h << 2) | (uint64_t)b;
-                if (++run >= k) sets[s][h & kmask] = true;
+                int b = sym_index(q[i], alpha);
+                if (b < 0) { run = 0; h = 0; continue; }
+                h = (h * (uint64_t)alpha + (uint64_t)b) % kbase;
+                if (++run >= k) sets[s][h] = true;
             }
         }
     });
@@ -322,14 +419,16 @@ static float sub_score(int a, int b, const Params& P) {
 // never participates.
 static float col_score(const Profile& A, int i, const Profile& B, int j,
                        const Params& P) {
+    const int al = P.alpha;
     float s = 0;
-    for (int a = 0; a < 4; ++a) {
+    for (int a = 0; a < al; ++a) {
         float fa = A.cols[i][a];
         if (fa == 0) continue;
-        for (int b = 0; b < 4; ++b) {
+        for (int b = 0; b < al; ++b) {
             float fb = B.cols[j][b];
             if (fb == 0) continue;
-            s += fa * fb * sub_score(a, b, P);
+            s += fa * fb * (al == 4 ? sub_score(a, b, P)
+                                    : P.sub[a * al + b]);
         }
     }
     return s;
@@ -357,11 +456,13 @@ AlignResult align_profiles(const Profile& A, const Profile& B,
 
     mM[0] = 0;
     for (int i = 1; i <= M; ++i) {
-        mIx[at(i, 0)] = P.free_end_gaps ? 0 : -(P.gap_open * A.occ[i - 1] + (i - 1) * P.gap_extend);
+        // end-gap run: open at the last consumed column's position-specific
+        // price; extensions flat (TWILIGHT gapEnds defaults to gapExtend)
+        mIx[at(i, 0)] = P.free_end_gaps ? 0 : -(psgp_open(A.occ[i - 1], P) + (i - 1) * P.gap_extend);
         mM[at(i, 0)]  = P.free_end_gaps ? 0 : NEG;
     }
     for (int j = 1; j <= N; ++j) {
-        mIy[at(0, j)] = P.free_end_gaps ? 0 : -(P.gap_open * B.occ[j - 1] + (j - 1) * P.gap_extend);
+        mIy[at(0, j)] = P.free_end_gaps ? 0 : -(psgp_open(B.occ[j - 1], P) + (j - 1) * P.gap_extend);
         mM[at(0, j)]  = P.free_end_gaps ? 0 : NEG;
     }
 
@@ -377,14 +478,16 @@ AlignResult align_profiles(const Profile& A, const Profile& B,
     for (int i = 1; i <= M; ++i) {
         for (int j = 1; j <= N; ++j) {
             float s = col_score(A, i - 1, B, j - 1, P);
-            // gap in B opposite A_{i-1}: scaled by A's occupancy
-            float openB = P.gap_open * A.occ[i - 1];
-            // gap in A opposite B_{j-1}: scaled by B's occupancy
-            float openA = P.gap_open * B.occ[j - 1];
+            // gap in B opposite A_{i-1}: position-specific penalty
+            float openB = psgp_open(A.occ[i - 1], P);
+            float extB  = psgp_ext (A.occ[i - 1], P);
+            // gap in A opposite B_{j-1}
+            float openA = psgp_open(B.occ[j - 1], P);
+            float extA  = psgp_ext (B.occ[j - 1], P);
             float oIx = mM[at(i - 1, j)] - openB;
-            float eIx = mIx[at(i - 1, j)] - P.gap_extend;
+            float eIx = mIx[at(i - 1, j)] - extB;
             float oIy = mM[at(i, j - 1)] - openA;
-            float eIy = mIy[at(i, j - 1)] - P.gap_extend;
+            float eIy = mIy[at(i, j - 1)] - extA;
             mIx[at(i, j)] = std::max(oIx, eIx);
             mIy[at(i, j)] = std::max(oIy, eIy);
             float mx = mM[at(i - 1, j - 1)]; uint8_t h = H_M;
@@ -448,6 +551,7 @@ Profile merge_profiles(const Profile& A, const Profile& B,
                        const AlignResult& aln) {
     Profile out;
     out.nseq = A.nseq + B.nseq;
+    out.alpha = A.alpha;
     const int w = aln.ai + aln.aj + (int)aln.cigar.size()
                   + (A.ncols() - aln.bi) + (B.ncols() - aln.bj);
 
@@ -488,6 +592,108 @@ Profile merge_profiles(const Profile& A, const Profile& B,
     return out;
 }
 
+// -------------------------------------------------- gappy-column heuristic
+// TWILIGHT --remove-gappy equivalent: contiguous runs of columns whose gap
+// fraction exceeds the threshold are removed before the DP and re-inserted
+// into the CIGAR afterwards (see cigar_expand_gappy).
+GappyStrip profile_strip(const Profile& p, float thr) {
+    GappyStrip s;
+    const int n = p.ncols();
+    for (int c = 0; c < n;) {
+        if (p.cols[c][p.alpha] > thr) {         // gappy column -> run
+            int len = 0;
+            while (c + len < n && p.cols[c + len][p.alpha] > thr) ++len;
+            s.run_pos.push_back((int)s.prof.cols.size()); // anchor in reduced
+            s.run_start.push_back(c);
+            s.run_len.push_back(len);
+            c += len;
+        } else {
+            s.prof.cols.push_back(p.cols[c]);
+            s.prof.occ.push_back(p.occ[c]);
+            ++c;
+        }
+    }
+    // rows keep the ORIGINAL columns (needed for reinsertion / merge)
+    s.prof.rows  = p.rows;
+    s.prof.ids   = p.ids;
+    s.prof.nseq  = p.nseq;
+    s.prof.alpha = p.alpha;
+    s.orig_cols = n;
+    return s;
+}
+
+namespace {
+// Build a profile holding only ORIGINAL columns [start, start+len) of `p`.
+// `p` may be a reduced (stripped) profile whose cols/occ no longer span the
+// original coordinates -- but its rows always do. Slicing reduced cols by
+// original indices would read out of bounds; recounting from the row
+// substrings reproduces the original column data exactly.
+Profile sub_profile(const Profile& p, int start, int len) {
+    Profile q;
+    q.rows.reserve(p.rows.size());
+    for (const auto& r : p.rows) q.rows.push_back(r.substr(start, len));
+    q.ids = p.ids; q.nseq = p.nseq; q.alpha = p.alpha;
+    profile_update_counts(q);
+    return q;
+}
+} // namespace
+
+// Reinsert stripped runs into a reduced-coordinate CIGAR. The walk counts
+// REDUCED columns consumed (i for A, j for B); a run anchored at pos sits
+// before the pos-th kept column. Semiglobal skipped ends are emitted as
+// plain I/D ops so the result fully consumes both originals (ai=aj=0).
+AlignResult cigar_expand_gappy(const AlignResult& aln,
+                               const GappyStrip& sa,
+                               const GappyStrip& sb,
+                               const Params& P) {
+    AlignResult r;
+    r.score = aln.score;
+    int i = 0, j = 0;                    // reduced columns consumed
+    size_t ra = 0, rb = 0;               // run cursors
+    const int Ka = sa.prof.ncols(), Kb = sb.prof.ncols();
+
+    Params g = P; g.free_end_gaps = false;   // coincident runs: global mini
+    // flush runs anchored at (i,j); when both sides coincide, mini-align
+    // their column blocks against each other
+    auto flush = [&] {
+        for (;;) {
+            bool ha = ra < sa.run_pos.size() && sa.run_pos[ra] == i;
+            bool hb = rb < sb.run_pos.size() && sb.run_pos[rb] == j;
+            if (!ha && !hb) return;
+            if (ha && hb) {
+                Profile qa = sub_profile(sa.prof, sa.run_start[ra], sa.run_len[ra]);
+                Profile qb = sub_profile(sb.prof, sb.run_start[rb], sb.run_len[rb]);
+                AlignResult mini = align_profiles(qa, qb, g);
+                r.cigar += mini.cigar;
+                ++ra; ++rb;
+            } else if (ha) {
+                r.cigar.append((size_t)sa.run_len[ra], 'I'); ++ra;
+            } else {
+                r.cigar.append((size_t)sb.run_len[rb], 'D'); ++rb;
+            }
+        }
+    };
+
+    // skipped prefixes (semiglobal): kept cols + anchored runs, as raw ops
+    for (; i < aln.ai; ++i) { flush(); r.cigar += 'I'; } flush();
+    for (; j < aln.aj; ++j) { flush(); r.cigar += 'D'; } flush();
+    for (char op : aln.cigar) {
+        flush();
+        r.cigar += op;
+        if (op == 'M') { ++i; ++j; }
+        else if (op == 'I') ++i; else ++j;
+    }
+    // suffixes
+    for (; i < Ka; ++i) { flush(); r.cigar += 'I'; } flush();
+    for (; j < Kb; ++j) { flush(); r.cigar += 'D'; } flush();
+    // The cigar now consumes every ORIGINAL column of both profiles, so the
+    // merge span covers the whole profiles: ai=aj=0, bi/bj = orig widths.
+    r.ai = 0; r.aj = 0;
+    r.bi = sa.orig_cols;
+    r.bj = sb.orig_cols;
+    return r;
+}
+
 // --------------------------------------------------------------- levels
 std::vector<std::vector<int>> tree_levels(const Tree& t) {
     std::vector<int> lvl(t.nodes.size(), 0);
@@ -519,7 +725,7 @@ std::vector<std::string> msa_align_with_tree(
     const int n = (int)seqs.size();
     std::vector<Profile> profs(tree.nodes.size());
     for (int i = 0; i < n; ++i) {
-        profs[i] = profile_from_seq(seqs[i]);
+        profs[i] = profile_from_seq(seqs[i], P.alpha);
         profs[i].ids[0] = i;
     }
     std::vector<int> order;
@@ -527,7 +733,15 @@ std::vector<std::string> msa_align_with_tree(
     for (int u : order) {
         const Node& nd = tree.nodes[u];
         if (nd.left < 0) continue;
-        AlignResult aln = align_profiles(profs[nd.left], profs[nd.right], P);
+        AlignResult aln;
+        if (P.gappy > 0.0f) {
+            GappyStrip sa = profile_strip(profs[nd.left],  P.gappy);
+            GappyStrip sb = profile_strip(profs[nd.right], P.gappy);
+            aln = cigar_expand_gappy(
+                align_profiles(sa.prof, sb.prof, P), sa, sb, P);
+        } else {
+            aln = align_profiles(profs[nd.left], profs[nd.right], P);
+        }
         profs[u] = merge_profiles(profs[nd.left], profs[nd.right], aln);
     }
     // return rows in INPUT order (merge order follows the guide tree)
@@ -539,10 +753,32 @@ std::vector<std::string> msa_align_with_tree(
 
 std::vector<std::string> msa_align(const std::vector<std::string>& seqs,
                                    const Params& P, Tree* guide_out) {
-    std::vector<float> D = kmer_distances(seqs, P.kmer_k);
+    std::vector<float> D = kmer_distances(seqs, P.kmer_k, P.alpha);
     Tree t = nj_tree(D, (int)seqs.size());
     if (guide_out) *guide_out = t;
     return msa_align_with_tree(seqs, t, P);
+}
+
+std::string tree_to_newick(const Tree& t,
+                           const std::vector<std::string>& names) {
+    std::string s;
+    std::function<void(int)> emit = [&](int u) {
+        const Node& nd = t.nodes[u];
+        if (nd.left < 0) {                      // leaf: id is the seq index
+            const std::string& nm = names[u];
+            bool quote = nm.find_first_of(" \t()[]':;,") != std::string::npos;
+            s += quote ? "'" + nm + "'" : nm;
+            return;
+        }
+        s += '(';
+        emit(nd.left);
+        s += ',';
+        emit(nd.right);
+        s += ')';
+    };
+    emit(t.root);
+    s += ";\n";
+    return s;
 }
 
 } // namespace genomsa

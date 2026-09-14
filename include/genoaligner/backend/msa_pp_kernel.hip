@@ -39,20 +39,34 @@
 
 namespace genoaligner {
 
+// Alphabet ceiling shared with genomsa::MSA_MAX_SYMS (msa.hpp): symbols
+// 0..alpha-1, gap fraction lives at index `alpha` on the host side (the
+// kernel never reads it -- gap scaling comes from occ).
+#define MSA_MAX_SYMS 20
+
 // Scoring parameters, float to match the reference exactly.
 struct MsaPPParams {
-    float match;          // S(a,a)
-    float ts;             // transition mismatch  (A<->G, C<->T)
-    float tv;             // transversion mismatch
+    float match;          // S(a,a)              (alpha==4 only)
+    float ts;             // transition mismatch (alpha==4 only)
+    float tv;             // transversion        (alpha==4 only)
     float gap_open;       // scaled by opposing occupancy
     float gap_extend;
     int   free_end_gaps;  // 1 = semiglobal (fragments), 0 = global
+    int   psgp;           // 1 = position-specific gap penalties (see msa.hpp)
+    float psgp_scale;
+    float psgp_min_open;
+    float psgp_min_ext;
+    int   alpha;          // alphabet size: 4 = DNA, 20 = protein
+    // Row-major alpha*alpha substitution matrix (alpha>4; e.g. BLOSUM62).
+    // Carried by value in the launch params (~1.6 KB, inside the 4 KB
+    // sm_70 limit) so no extra device buffer is needed.
+    float sub[MSA_MAX_SYMS * MSA_MAX_SYMS];
 };
 
-// One profile, SoA on device. cols[b] has `len` floats, b in 0..4
-// (0=A,1=C,2=G,3=T,4=gap). occ has `len` floats.
+// One profile, SoA on device. cols[b] has `len` floats, b in 0..alpha-1
+// (DNA: 0=A,1=C,2=G,3=T). occ has `len` floats.
 struct MsaProfileView {
-    const float* cols[5];
+    const float* cols[MSA_MAX_SYMS];
     const float* occ;
     int          len;
 };
@@ -80,24 +94,55 @@ static constexpr uint8_t MSA_H_IY = 2;
 static constexpr uint8_t MSA_X_EXT = 4;
 static constexpr uint8_t MSA_Y_EXT = 8;
 
+// Non-contractible float ops. nvcc's default -fmad=true will fuse an
+// inlined `x*y` feeding an add/sub into a single-rounding FMA, producing
+// results 1 ulp off the gcc-compiled reference -- enough to flip a `>`
+// tie in the DP and emit a different CIGAR (observed on V100). The
+// _rn intrinsics are opaque to contraction UNDER NVCC; under ROCm they are
+// NOT (see warning below). Under the CPU shim they map to plain ops so the
+// emulation stays the gcc reference itself.
+#if defined(GENOALIGNER_HIP_SHIM) || \
+    (!defined(__CUDA_ARCH__) && !defined(__HIP_DEVICE_COMPILE__))
+#define GA_FMUL_RN(a, b) ((a) * (b))
+#define GA_FADD_RN(a, b) ((a) + (b))
+#else
+#define GA_FMUL_RN(a, b) __fmul_rn((a), (b))
+#define GA_FADD_RN(a, b) __fadd_rn((a), (b))
+#endif
+
+// WARNING: on ROCm/hipcc the _rn intrinsics do NOT stop the backend from
+// contracting a nearby mul+add into an FMA (observed on gfx90a: 57/2765
+// protein benchmark families diverged from V100/CPU until the build used
+// -ffp-contract=off). All HIP build recipes in scripts/ carry that flag;
+// the pragma below is belt-and-suspenders for clang-based toolchains.
+#if defined(__clang__) && defined(__HIP_DEVICE_COMPILE__)
+#pragma clang fp contract(off)
+#endif
+
 // Column-vs-column weighted sum-of-pairs. Device and host share it through
 // the CPU shim: the same body must compile under g++ (tests/parity/hip_cpu_shim).
 __device__ __host__ inline float msa_col_score(
         const MsaProfileView& A, int i,
         const MsaProfileView& B, int j,
         const MsaPPParams& p) {
+    const int al = p.alpha;
     float s = 0.f;
-    for (int a = 0; a < 4; ++a) {
+    for (int a = 0; a < al; ++a) {
         float fa = A.cols[a][i];
         if (fa == 0.f) continue;
-        for (int b = 0; b < 4; ++b) {
+        for (int b = 0; b < al; ++b) {
             float fb = B.cols[b][j];
             if (fb == 0.f) continue;
-            float sub = (a == b) ? p.match
-                        : ((a == 0 && b == 2) || (a == 2 && b == 0) ||
-                           (a == 1 && b == 3) || (a == 3 && b == 1))
-                            ? p.ts : p.tv;
-            s += fa * fb * sub;
+            float sub;
+            if (al == 4) {
+                sub = (a == b) ? p.match
+                      : ((a == 0 && b == 2) || (a == 2 && b == 0) ||
+                         (a == 1 && b == 3) || (a == 3 && b == 1))
+                          ? p.ts : p.tv;
+            } else {
+                sub = p.sub[a * al + b];
+            }
+            s = GA_FADD_RN(s, GA_FMUL_RN(GA_FMUL_RN(fa, fb), sub));
         }
     }
     return s;

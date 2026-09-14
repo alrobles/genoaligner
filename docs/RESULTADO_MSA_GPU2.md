@@ -62,6 +62,109 @@ objetivo neutro (mismatch=1, gap=1, gap-gap=0).
 - SP-cost: repartido (~mitad para cada método); ND2 favorece claramente a
   MACSE (codon-aware en CDS limpio): 7.53M vs 10.6M.
 
+## Benchmark contra verdad conocida (scripts/msa_sim_truth.py)
+
+La paridad bit-exacta certifica que GPU == referencia CPU, pero no que el
+alineamiento sea biológicamente correcto. El benchmark de verdad simula
+un ancestro de 1500 bp evolucionando por un árbol balanceado con
+sustituciones e indels; cada base lleva su columna verdadera en una lista
+global ordenada de columnas (las inserciones crean columnas nuevas
+inmediatamente tras su ancla — el orden global es consistente con el
+orden interno de cada hoja). SPS = fracción de pares homólogos
+verdaderos reproducidos en el candidato.
+
+Nota: dos versiones previas del simulador renderizaban inserciones fuera
+de orden y reportaban SPS ~0.05 en alineamientos ~97% correctos — bug de
+la verdad, no del alineador. La versión actual se auto-valida
+(self-SPS = 1.0; ungapped(fila) == secuencia hoja, asertado).
+
+Resultados (semilla 4, 2% subs + 0.4% indels por rama → ~12% divergencia
+terminal):
+
+| n   | SIM-SPS | width_true | width_got |
+|-----|---------|------------|-----------|
+| 2   | 0.9953  | 1521       | 1521      |
+| 4   | 0.9928  | 1556       | 1552      |
+| 8   | 0.9790  | 1620       | 1607      |
+| 16  | 0.9753  | 1809       | 1765      |
+| 32  | 0.9360  | 2060       | 1932      |
+| 64  | 0.8964  | 2563       | 2208      |
+
+Robustez: n=16 con semillas 7/9 → 0.980 / 0.968. Régimen duro
+(5% subs + 1% indels por rama, ~30% divergencia): n=16 → 0.841.
+
+Lectura: el pairwise DP es casi exacto; la pérdida es progresiva con n —
+los merges del árbol guía acumulan errores de registro en regiones
+repetitivas/ambigüedad de gaps, el comportamiento esperado de un MSA
+progresivo. No es un defecto de implementación: es el techo del método
+Clustal-like. La brecha a n grande sugiere iterar sobre refinement
+(consistency / iterative realignment) si se quiere subir el techo.
+
+## Mejora de calidad: PSGP + gappy-strip (post-TWILIGHT audit)
+
+Tras la comparación con TWILIGHT (`RESULTADO_MSA_TWILIGHT.md`), se
+implementaron sus dos heurísticos de scoring en genomsa (commit
+`969c274`), ambos ON por defecto:
+
+- **PSGP** (`Params::psgp`, convención ClustalW/TWILIGHT): una columna que
+  ya contiene gaps acepta gaps nuevos más barato —
+  `open[c] = occ==1 ? go : max(0.1·go, 0.5·go·occ)`,
+  `ext[c] = occ==1 ? ge : max(0.2·ge, ge·occ)`. Implementado en la
+  referencia (`msa.hpp` = spec) e idénticamente en ambos kernels
+  (`pp_open`/`pp_ext` desde el array `occ`, sin cambio de layout).
+- **Gappy-strip** (`Params::gappy = 0.95`): runs contiguos de columnas con
+  fracción de gap > umbral se quitan antes del DP y se reinsertan en el
+  CIGAR como bloques de inserción; runs coincidentes en ambos perfiles se
+  mini-alinean globalmente. El driver GPU strippea antes de empaquetar y
+  expande tras el download → el kernel ve perfiles reducidos, paridad
+  estructural.
+
+Sim-truth n=64, mismo benchmark que arriba:
+
+| cfg | SIM-SPS | width (true) |
+|-----|---------|--------------|
+| base (ambos off)      | 0.8831 | 2300/2800 |
+| psgp solo             | 0.9299 | 2513/2800 |
+| gappy 0.95 solo       | 0.9045 | 2392/2800 |
+| **psgp + gappy**      | **0.9436** | 2603/2800 |
+
+Semillas 7/9: 0.9018→0.9443, 0.8810→0.9470. Determinista (runs repetidos
+byte-idénticos). El alineamiento ya no sobre-compacta (2300→2603 vs
+verdad 2800). vs TWILIGHT 0.963: cierra ~65% de la brecha restante;
+lo que queda es probablemente su modelo de inserciones + refinement.
+
+Paridad: `msa_pp_parity`, `msa_pipeline_parity`, `msa_driver_parity` con
+variantes default/legacy/psgp/gappy/psgp+gappy — todas bit-exactas.
+Flags: `--psgp/--no-psgp`, `--gappy T/--no-gappy`.
+
+### Bug hunt V100: OOB en el mini-alineamiento gappy (commit `5e7c01b`)
+
+La combinación psgp+gappy falló en V100 (salida no determinista, 1 fila
+distinta vs CPU) mientras el shim pasaba. Diagnóstico por checksums por
+nivel (`GENOMSA_LVL_DEBUG`): todas las entradas empaquetadas y todas las
+salidas de kernel eran idénticas entre corridas — solo divergía el merge
+de la **raíz**. Causa raíz: `sub_profile()` cortaba `cols`/`occ` del
+perfil **reducido** con índices en coordenadas **originales**
+(`run_start`/`run_len`) → rango de iteradores fuera de los vectores →
+`align_profiles()` del mini-bloque coincidente consumía basura de heap.
+
+- Solo se manifestaba con psgp+gappy: psgp ensancha los perfiles lo
+  suficiente para que ambos lados tengan runs gappy en la misma ancla —
+  y eso solo pasa en niveles altos del árbol (la raíz).
+- Por eso pairdbg estaba limpio: el kernel era correcto; el bug vivía en
+  la expansión host posterior.
+- Fix: reconstruir los conteos del mini-perfil desde las filas
+  originales con `profile_update_counts` — exacto, sin OOB.
+- Post-fix V100: `g1==g2==g3==cpu` (determinista), subset PARITY PASS,
+  COI completo X-VENDOR PASS (V100 == MI210 byte-idéntico, width 3182).
+- Lección ya incorporada al gate: el sweep ASan+UBSan lo habría cazado
+  localmente; corre en `check_kernel_cpu.sh`.
+
+Hardening adicional que queda: `GA_FMUL_RN`/`GA_FADD_RN` en el kernel
+(intrínsecos no-contraíbles bajo nvcc, ops planas en el shim) — defensa
+contra contracción FMA en decisiones `>` de la DP; no era la causa aquí
+pero elimina una clase entera de divergencias nvcc-vs-gcc.
+
 ## Lectura honesta
 
 - El kernel DP ya no es el cuello: en CYTB el alineamiento cuesta 3.4s de
@@ -70,6 +173,9 @@ objetivo neutro (mismatch=1, gap=1, gap-gap=0).
   Gotoh perfil-perfil. MACSE es codon-aware; en CDS limpio conserva fase
   mejor (ND2). La comparación definitiva es el árbol: IQ-TREE genomsa vs
   MACSE corriendo en paralelo.
+- Contra verdad simulada recupera ~97-99% de pares homólogos en régimen
+  de ortólogos de mamífero (n≤16) y ~90% a n=64 — evidencia de calidad
+  real, no solo de paridad interna.
 - Memoria: dir_peak CYTB = 1.3 GB; VWF width 16.6k columnas — la matriz de
   direcciones crece con el ancho al cuadrado; para perfiles muy anchos
   hará falta traceback con checkpoints (Hirschberg) o dirs en diagonal.

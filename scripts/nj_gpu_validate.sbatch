@@ -51,7 +51,7 @@ if [ "$BACKEND" = cuda ]; then
 else
     rocm-smi --showproductname 2>/dev/null | grep -i "card series" | head -1
     build() { out=$1; shift
-        "$HIPCC" -O2 -std=c++17 -I. -Iinclude -o "$out" "$@"; }
+        "$HIPCC" -O2 -ffp-contract=off -std=c++17 -I. -Iinclude -o "$out" "$@"; }
 fi
 
 BIN=/tmp/njgpu_${SLURM_JOB_ID:-local}

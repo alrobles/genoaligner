@@ -165,6 +165,14 @@ function(genoaligner_configure_hip target)
         "${CMAKE_CURRENT_SOURCE_DIR}"
         "${GENOALIGNER_ROCM_ROOT}/include")
 
+    # ROCm/hipcc contracts mul+add into FMA even through __fmul_rn/__dmul_rn
+    # (measured: 57/2765 protein families diverged MI210 vs CPU/V100).
+    # -ffp-contract=off restores cross-vendor bit-exactness; harmless on nvcc
+    # via the .hip->cu path and a no-op for compilers that already default off.
+    if(GENOALIGNER_BACKEND STREQUAL "rocm")
+        target_compile_options(${target} PRIVATE -ffp-contract=off)
+    endif()
+
     # Pin the target architecture when the caller asked for one. See the
     # GENOALIGNER_GPU_ARCH comment: without it, a build on a GPU-less host produces a
     # library that links fine and then dies with "invalid device function".

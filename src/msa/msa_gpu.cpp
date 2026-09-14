@@ -48,7 +48,7 @@ static void hip_free_all(std::vector<void*>& ps) {
 
 bool msa_align_gpu(const std::vector<std::string>& seqs, const Params& P,
                    std::vector<std::string>& out, std::string& err,
-                   GpuStats* stats) {
+                   GpuStats* stats, Tree* guide_out) {
     auto fail = [&](const char* m) { err = m; return false; };
     const int n = (int)seqs.size();
     if (n == 0) return fail("empty input");
@@ -66,7 +66,7 @@ bool msa_align_gpu(const std::vector<std::string>& seqs, const Params& P,
         int t = e ? std::atoi(e) : (int)std::thread::hardware_concurrency();
         return t > 0 ? t : 1;
     }();
-    std::vector<float> D = kmer_distances_mt(seqs, P.kmer_k, nthreads);
+    std::vector<float> D = kmer_distances_mt(seqs, P.kmer_k, nthreads, P.alpha);
     auto t1 = std::chrono::steady_clock::now();
     // Guide tree: NJ0 on the device unless GENOMSA_NJ=cpu. nj_tree_gpu is
     // bit-exact with nj_tree, so the fallback below changes timing only.
@@ -84,16 +84,36 @@ bool msa_align_gpu(const std::vector<std::string>& seqs, const Params& P,
             stats->tree_gpu = 1;
         }
     }
+    if (guide_out) *guide_out = tree;
     auto levels = tree_levels(tree);
     auto t2 = std::chrono::steady_clock::now();
 
     std::vector<Profile> profs(tree.nodes.size());
     for (int i = 0; i < n; ++i) {
-        profs[i] = profile_from_seq(seqs[i]);
+        profs[i] = profile_from_seq(seqs[i], P.alpha);
         profs[i].ids[0] = i;
     }
-    const MsaPPParams kp{P.match, P.ts, P.tv, P.gap_open, P.gap_extend,
-                         P.free_end_gaps ? 1 : 0};
+    MsaPPParams kp{P.match, P.ts, P.tv, P.gap_open, P.gap_extend,
+                   P.free_end_gaps ? 1 : 0,
+                   P.psgp ? 1 : 0, P.psgp_scale, P.psgp_min_open,
+                   P.psgp_min_ext, P.alpha, {}};
+    if (P.alpha > 4)
+        std::memcpy(kp.sub, P.sub.data(), sizeof(kp.sub));
+
+    static const bool lvldbg = std::getenv("GENOMSA_LVL_DEBUG") != nullptr;
+    auto fnv = [](const void* p, size_t n, uint64_t h) {
+        const uint8_t* b = (const uint8_t*)p;
+        for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 1099511628211ull; }
+        return h;
+    };
+    auto prof_hash = [&](const Profile& p) {
+        uint64_t h = 1469598103934665603ull;
+        for (const auto& r : p.rows) h = fnv(r.data(), r.size(), h);
+        h = fnv(p.cols.data(), p.cols.size() * sizeof(p.cols[0]), h);
+        h = fnv(p.occ.data(), p.occ.size() * sizeof(float), h);
+        return h;
+    };
+    int lvli = 0;
 
     std::vector<void*> dev;
     for (const auto& level : levels) {
@@ -105,9 +125,21 @@ bool msa_align_gpu(const std::vector<std::string>& seqs, const Params& P,
         std::vector<float> fdata;                   // all column data, packed
         size_t dtot = 0, stot = 0, ctot = 0;
         int cap = 0;
+        // gappy-column heuristic: strip before packing, expand after the
+        // kernel (same strip as the reference -> parity preserved)
+        std::vector<GappyStrip> strips_a(np), strips_b(np);
+        std::vector<Profile>    pa(np), pb(np);
         for (int k = 0; k < np; ++k) {
-            const Profile& A = profs[tree.nodes[level[k]].left];
-            const Profile& B = profs[tree.nodes[level[k]].right];
+            if (P.gappy > 0.0f) {
+                strips_a[k] = profile_strip(profs[tree.nodes[level[k]].left],  P.gappy);
+                strips_b[k] = profile_strip(profs[tree.nodes[level[k]].right], P.gappy);
+                pa[k] = strips_a[k].prof;
+                pb[k] = strips_b[k].prof;
+            }
+        }
+        for (int k = 0; k < np; ++k) {
+            const Profile& A = P.gappy > 0.0f ? pa[k] : profs[tree.nodes[level[k]].left];
+            const Profile& B = P.gappy > 0.0f ? pb[k] : profs[tree.nodes[level[k]].right];
             hp[k].A.len = A.ncols(); hp[k].B.len = B.ncols();
             dir_base[k] = dtot;
             dir_av[k]   = (size_t)(A.ncols() + 1) * (B.ncols() + 1);
@@ -126,7 +158,7 @@ bool msa_align_gpu(const std::vector<std::string>& seqs, const Params& P,
                 const Profile& S = side ? B : A;
                 MsaProfileView& v = side ? hp[k].B : hp[k].A;
                 // record byte offsets now; patch to device pointers below
-                for (int b = 0; b < 5; ++b) {
+                for (int b = 0; b < P.alpha; ++b) {
                     v.cols[b] = (const float*)(size_t)fdata.size();
                     for (const auto& c : S.cols) fdata.push_back(c[b]);
                 }
@@ -171,12 +203,25 @@ bool msa_align_gpu(const std::vector<std::string>& seqs, const Params& P,
             return false;
         }
         if (stats && dtot > stats->dir_bytes) stats->dir_bytes = dtot;
+        if (lvldbg) {
+            uint64_t h = fnv(fdata.data(), fdata.size() * sizeof(float),
+                             1469598103934665603ull);
+            fprintf(stderr, "LVL %d np=%d fdata=%016zx\n", lvli, np,
+                    (size_t)h);
+            for (int k = 0; k < np; ++k)
+                fprintf(stderr, "  in k=%d u=%d A=%016zx B=%016zx\n", k,
+                        level[k],
+                        (size_t)prof_hash(P.gappy > 0.0f ? pa[k]
+                                : profs[tree.nodes[level[k]].left]),
+                        (size_t)prof_hash(P.gappy > 0.0f ? pb[k]
+                                : profs[tree.nodes[level[k]].right]));
+        }
 
         // patch the packed offsets into device pointers
         for (int k = 0; k < np; ++k) {
             for (int side = 0; side < 2; ++side) {
                 MsaProfileView& v = side ? hp[k].B : hp[k].A;
-                for (int b = 0; b < 5; ++b)
+                for (int b = 0; b < P.alpha; ++b)
                     v.cols[b] = d_fdata + (size_t)v.cols[b];
                 v.occ = d_fdata + (size_t)v.occ;
             }
@@ -273,8 +318,16 @@ bool msa_align_gpu(const std::vector<std::string>& seqs, const Params& P,
             return false;
         }
         hip_free_all(dev);
+        if (lvldbg) {
+            uint64_t h = fnv(hres.data(), np * sizeof(MsaPPResult),
+                             1469598103934665603ull);
+            h = fnv(hmeta.data(), np * 2 * sizeof(int), h);
+            h = fnv(hcig.data(), ctot, h);
+            fprintf(stderr, "LVL %d out=%016zx\n", lvli, (size_t)h);
+        }
 
         static const char ops[] = "MID";
+        static const bool dbg = std::getenv("GENOMSA_PAIR_DEBUG") != nullptr;
         for (int k = 0; k < np; ++k) {
             const int u = level[k];
             if (hres[k].score == MSA_PP_TOO_BIG) {
@@ -288,10 +341,32 @@ bool msa_align_gpu(const std::vector<std::string>& seqs, const Params& P,
             const uint8_t* cb = hcig.data() + cig_base[k];
             for (int q = hmeta[k * 2 + 1] - 1; q >= 0; --q)
                 r.cigar.push_back(ops[cb[q]]);
+            if (dbg) {
+                const Profile& A = P.gappy > 0.0f ? pa[k]
+                                   : profs[tree.nodes[level[k]].left];
+                const Profile& B = P.gappy > 0.0f ? pb[k]
+                                   : profs[tree.nodes[level[k]].right];
+                AlignResult ref = align_profiles(A, B, P);
+                if (ref.cigar != r.cigar || ref.score != r.score ||
+                    ref.ai != r.ai || ref.aj != r.aj ||
+                    ref.bi != r.bi || ref.bj != r.bj)
+                    fprintf(stderr,
+                            "PAIRDBG node=%d k=%d M=%d N=%d | kscore=%.6g refscore=%.6g "
+                            "kcig=%.60s refcig=%.60s | k.ai=%d r.ai=%d k.bi=%d r.bi=%d\n",
+                            u, k, A.ncols(), B.ncols(), r.score, ref.score,
+                            r.cigar.c_str(), ref.cigar.c_str(),
+                            r.ai, ref.ai, r.bi, ref.bi);
+            }
+            if (P.gappy > 0.0f)
+                r = cigar_expand_gappy(r, strips_a[k], strips_b[k], P);
             const auto& nd = tree.nodes[u];
             profs[u] = merge_profiles(profs[nd.left], profs[nd.right], r);
+            if (lvldbg)
+                fprintf(stderr, "  prof u=%d h=%016zx\n", u,
+                        (size_t)prof_hash(profs[u]));
         }
         if (stats) stats->pairs += np;
+        ++lvli;
     }
     auto t3 = std::chrono::steady_clock::now();
 

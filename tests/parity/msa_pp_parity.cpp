@@ -32,26 +32,31 @@ static int fails = 0;
 
 // genomsa::Profile -> SoA device view (host memory under the shim).
 struct SoAHolder {
-    std::vector<float> c[5];
+    std::vector<float> c[MSA_MAX_SYMS];
     std::vector<float> occ;
     MsaProfileView view;
 };
 static SoAHolder to_soa(const Profile& p) {
     SoAHolder h;
     h.occ = p.occ;
-    for (int b = 0; b < 5; ++b) {
+    for (int b = 0; b < p.alpha; ++b) {
         h.c[b].resize(p.cols.size());
         for (size_t i = 0; i < p.cols.size(); ++i) h.c[b][i] = p.cols[i][b];
+        h.view.cols[b] = h.c[b].data();
     }
-    for (int b = 0; b < 5; ++b) h.view.cols[b] = h.c[b].data();
     h.view.occ = h.occ.data();
     h.view.len = p.ncols();
     return h;
 }
 
 static MsaPPParams to_params(const Params& P) {
-    return {P.match, P.ts, P.tv, P.gap_open, P.gap_extend,
-            P.free_end_gaps ? 1 : 0};
+    MsaPPParams k{P.match, P.ts, P.tv, P.gap_open, P.gap_extend,
+                  P.free_end_gaps ? 1 : 0,
+                  P.psgp ? 1 : 0, P.psgp_scale, P.psgp_min_open,
+                  P.psgp_min_ext, P.alpha, {}};
+    if (P.alpha > 4)
+        memcpy(k.sub, P.sub.data(), sizeof(k.sub));
+    return k;
 }
 
 // Run the shipped kernel body on one pair, exactly as a one-thread-per-pair
@@ -145,18 +150,20 @@ static std::string mutate(const std::string& s, int ps, int pi, int pd) {
     return o;
 }
 
-int main() {
-    Params P;
-
+static void run_suite(Params P, const char* tag0) {
     // ---- single-sequence profiles (pairwise semiglobal) ----
     check_pair(genomsa::profile_from_seq("ACGTACGT"),
-               genomsa::profile_from_seq("ACGTACGT"), P, "identical");
+               genomsa::profile_from_seq("ACGTACGT"), P,
+               (std::string(tag0) + "identical").c_str());
     check_pair(genomsa::profile_from_seq("ACGTACGT"),
-               genomsa::profile_from_seq("ACGTTTTACGT"), P, "insertion");
+               genomsa::profile_from_seq("ACGTTTTACGT"), P,
+               (std::string(tag0) + "insertion").c_str());
     check_pair(genomsa::profile_from_seq("ACGTACGTACGTACGTACGT"),
-               genomsa::profile_from_seq("GTACGTAC"), P, "fragment");
+               genomsa::profile_from_seq("GTACGTAC"), P,
+               (std::string(tag0) + "fragment").c_str());
     check_pair(genomsa::profile_from_seq("ANRYSWKB"),
-               genomsa::profile_from_seq("ACGTACGT"), P, "iupac");
+               genomsa::profile_from_seq("ACGTACGT"), P,
+               (std::string(tag0) + "iupac").c_str());
 
     // ---- merged profiles (fractional counts + gap columns) ----
     {
@@ -165,18 +172,20 @@ int main() {
         auto r = genomsa::align_profiles(a1, a2, P);
         Profile ab = genomsa::merge_profiles(a1, a2, r);
         Profile c  = genomsa::profile_from_seq("ACGTACGTAA");
-        check_pair(ab, c, P, "profile-vs-seq");
+        check_pair(ab, c, P, (std::string(tag0) + "profile-vs-seq").c_str());
         Profile d  = genomsa::profile_from_seq("TTGCGCGC");
-        check_pair(ab, d, P, "profile-vs-seq2");
+        check_pair(ab, d, P, (std::string(tag0) + "profile-vs-seq2").c_str());
     }
 
     // ---- global mode ----
     {
         Params G = P; G.free_end_gaps = false;
         check_pair(genomsa::profile_from_seq("ACGTACGT"),
-                   genomsa::profile_from_seq("ACGTTTACGT"), G, "global-indel");
+                   genomsa::profile_from_seq("ACGTTTACGT"), G,
+                   (std::string(tag0) + "global-indel").c_str());
         check_pair(genomsa::profile_from_seq("ACGTACGT"),
-                   genomsa::profile_from_seq("TTTT"), G, "global-divergent");
+                   genomsa::profile_from_seq("TTTT"), G,
+                   (std::string(tag0) + "global-divergent").c_str());
     }
 
     // ---- random sweep: profiles from small merges ----
@@ -191,15 +200,54 @@ int main() {
         Profile b2 = genomsa::profile_from_seq(mutate(anc2, 10, 5, 5));
         auto rb = genomsa::align_profiles(b1, b2, P);
         Profile Bp = genomsa::merge_profiles(b1, b2, rb);
-        char tag[32]; snprintf(tag, sizeof tag, "rand-%d", t);
+        char tag[64]; snprintf(tag, sizeof tag, "%srand-%d", tag0, t);
         check_pair(A, Bp, P, tag);
     }
     // random single-seq sweep too
     for (int t = 0; t < 150; ++t) {
-        char tag[32]; snprintf(tag, sizeof tag, "randseq-%d", t);
+        char tag[64]; snprintf(tag, sizeof tag, "%srandseq-%d", tag0, t);
         check_pair(genomsa::profile_from_seq(rand_dna(5 + rng() % 60)),
                    genomsa::profile_from_seq(rand_dna(5 + rng() % 60)), P, tag);
     }
+}
+
+static std::string rand_aa(int len) {
+    static const char b[] = "ARNDCQEGHILKMFPSTWYV";
+    std::string s; for (int i = 0; i < len; ++i) s += b[rng() % 20]; return s;
+}
+
+// Protein alphabet: BLOSUM62 path through col_score (alpha=20).
+static void run_protein() {
+    Params P = genomsa::protein_params();
+    check_pair(genomsa::profile_from_seq("MVLSPADKTNVKAAWGKVGAHAGEYG", 20),
+               genomsa::profile_from_seq("VHWTAEEKQLITGLWGKVNVAECGA", 20), P,
+               "aa:globin");
+    check_pair(genomsa::profile_from_seq("AXBZJUO", 20),
+               genomsa::profile_from_seq("ACDEFGH", 20), P,
+               "aa:ambiguous");
+    for (int t = 0; t < 150; ++t) {
+        char tag[64]; snprintf(tag, sizeof tag, "aa:rand-%d", t);
+        check_pair(genomsa::profile_from_seq(rand_aa(5 + rng() % 60), 20),
+                   genomsa::profile_from_seq(rand_aa(5 + rng() % 60), 20),
+                   P, tag);
+    }
+    // protein merged-profile pair (fractional cols + gap column)
+    Params G = P; G.free_end_gaps = false;
+    Profile a1 = genomsa::profile_from_seq(rand_aa(30), 20);
+    Profile a2 = genomsa::profile_from_seq(rand_aa(30), 20);
+    Profile ab = genomsa::merge_profiles(a1, a2,
+                                         genomsa::align_profiles(a1, a2, G));
+    Profile c  = genomsa::profile_from_seq(rand_aa(35), 20);
+    check_pair(ab, c, P, "aa:profile-vs-seq");
+}
+
+int main() {
+    run_suite(Params{}, "default:");
+    Params l; l.psgp = false; l.gappy = 0;
+    run_suite(l, "legacy:");
+    Params p; p.gappy = 0;               // psgp on alone
+    run_suite(p, "psgp:");
+    run_protein();
 
     if (!fails) printf("RESULT: PASS -- kernel == CPU reference on all cases\n");
     else        printf("%d FAILURES\n", fails);

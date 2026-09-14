@@ -1,0 +1,12 @@
+#!/bin/bash -l
+#SBATCH --job-name=msa_cuda_dbg5
+#SBATCH --partition=sixhour
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=64G
+#SBATCH --time=00:30:00
+#SBATCH --gres=gpu:v100:1
+#SBATCH --output=/beegfs/a474r867/genoaligner/logs/msadbg5_%j.out
+#SBATCH --error=/beegfs/a474r867/genoaligner/logs/msadbg5_%j.err
+bash /beegfs/a474r867/genoaligner/repo/scripts/msa_cuda_dbg5.sh

@@ -29,40 +29,87 @@
 namespace genomsa {
 
 // ---------------------------------------------------------------- config
+// Maximum alphabet width supported: 20 amino acids (+1 gap slot).
+// DNA mode uses symbols 0..3 (A,C,G,T); the gap fraction always lives at
+// index `alpha` so indexing is alphabet-agnostic.
+constexpr int MSA_MAX_SYMS = 20;
+
 struct Params {
     int    kmer_k       = 5;
-    float  match        = 2.0f;   // S(a,a)
-    float  ts           = -1.0f;  // transition mismatch (A<->G, C<->T)
-    float  tv           = -2.0f;  // transversion mismatch
+    int    alpha        = 4;      // 4 = DNA (IUPAC), 20 = protein
+    float  match        = 2.0f;   // S(a,a)              (alpha==4 only)
+    float  ts           = -1.0f;  // transition mismatch (alpha==4 only)
+    float  tv           = -2.0f;  // transversion        (alpha==4 only)
+    // Substitution matrix, row-major alpha*alpha, used when alpha>4.
+    // protein_params() fills it with BLOSUM62.
+    std::array<float, MSA_MAX_SYMS * MSA_MAX_SYMS> sub{};
     float  gap_open     = 3.0f;   // scaled by opposing occupancy
     float  gap_extend   = 1.0f;
     bool   free_end_gaps = true;  // semiglobal ends (fragments)
+    // Position-specific gap penalties (ClustalW/TWILIGHT convention):
+    // a column that already contains gaps accepts a new gap more cheaply.
+    // gapOpen[c] = occ==1 ? go : max(psgp_min_open*go, psgp_scale*go*occ)
+    // gapEx[c]   = occ==1 ? ge : max(psgp_min_ext *ge,           ge*occ)
+    // ON by default: +4..7 SIM-SPS on the simulated-truth benchmark.
+    bool   psgp         = true;
+    float  psgp_scale   = 0.5f;   // nucleotide scale (TWILIGHT uses 0.5)
+    float  psgp_min_open = 0.1f;  // floor: fraction of gap_open
+    float  psgp_min_ext  = 0.2f;  // floor: fraction of gap_extend
+    // Gappy-column heuristic (TWILIGHT --remove-gappy): columns with gap
+    // fraction > gappy are stripped before the DP and re-inserted as
+    // insertion blocks; runs removed from BOTH profiles at the same
+    // position are mini-aligned to each other. 0 disables. Default 0.95.
+    float  gappy        = 0.95f;
 };
+
+// Position-specific gap penalties -- THE SPEC. The kernel implements the
+// identical formula from the occupancy array; keep the two in sync.
+inline float psgp_open(float occ, const Params& P) {
+    if (!P.psgp || occ >= 1.0f) return P.gap_open * occ;
+    const float p = P.psgp_scale * P.gap_open * occ;
+    const float fl = P.psgp_min_open * P.gap_open;
+    return p > fl ? p : fl;
+}
+inline float psgp_ext(float occ, const Params& P) {
+    if (!P.psgp || occ >= 1.0f) return P.gap_extend;
+    const float p = P.gap_extend * occ;
+    const float fl = P.psgp_min_ext * P.gap_extend;
+    return p > fl ? p : fl;
+}
+
+// Protein preset: alpha=20, BLOSUM62 substitution matrix, protein
+// distance/DP defaults (2-mer guide tree, ClustalW-scale gap costs).
+Params protein_params();
 
 // ---------------------------------------------------------------- profile
 struct Profile {
-    // Per-column fractional counts. cols[c][0..3] = A,C,G,T fractions,
-    // cols[c][4] = gap fraction. occ[c] = 1 - gap fraction.
-    std::vector<std::array<float,5>> cols;
+    // Per-column fractional counts. cols[c][s] = fraction of letter s
+    // (s in [0,alpha)); cols[c][alpha] = gap fraction.
+    // occ[c] = 1 - gap fraction.
+    std::vector<std::array<float, MSA_MAX_SYMS + 1>> cols;
     std::vector<float>               occ;
     std::vector<std::string>         rows;  // actual aligned sequences
     std::vector<int>                 ids;   // rows[k] came from input seq ids[k]
-    int nseq = 0;
+    int nseq  = 0;
+    int alpha = 4;                  // alphabet width of this profile
     int ncols() const { return (int)cols.size(); }
 };
 
-// A single sequence as a one-column-per-base profile.
-Profile profile_from_seq(const std::string& seq);
+// A single sequence as a one-column-per-symbol profile.
+// alpha=4: IUPAC DNA. alpha=20: amino acids (BLOSUM order
+// ARNDCQEGHILKMFPSTWYV; B/Z/J map to their two-letter sets, X/O uniform,
+// U -> C, '*' and unknown letters count as gap).
+Profile profile_from_seq(const std::string& seq, int alpha = 4);
 // Recompute fractional column counts + occupancy from `rows`.
 void    profile_update_counts(Profile& p);
 
 // ------------------------------------------------------------- distances
 // Fragment-corrected k-mer Jaccard distance matrix (lower triangle packed).
 std::vector<float> kmer_distances(const std::vector<std::string>& seqs,
-                                  int k);
+                                  int k, int alpha = 4);
 // Multithreaded variant: bit-exact same output (disjoint writes only).
 std::vector<float> kmer_distances_mt(const std::vector<std::string>& seqs,
-                                     int k, int threads);
+                                     int k, int threads, int alpha = 4);
 
 // --------------------------------------------------------------- NJ tree
 struct Node { int left = -1, right = -1; };  // children node ids; leaf if <0
@@ -96,6 +143,10 @@ Tree nj_tree_gpu(const std::vector<float>& dist_packed, int n,
 // level, nodes keep ascending node-id order.
 std::vector<std::vector<int>> tree_levels(const Tree& t);
 
+// Serialize the guide tree as Newick (topology only, no branch lengths).
+// names[i] is the label of leaf i (typically the FASTA id).
+std::string tree_to_newick(const Tree& t, const std::vector<std::string>& names);
+
 // ------------------------------------------------------- profile-profile
 struct AlignResult {
     float score = 0;
@@ -105,6 +156,27 @@ struct AlignResult {
 };
 AlignResult align_profiles(const Profile& A, const Profile& B,
                            const Params& P);
+
+// Gappy-column heuristic (Params::gappy > 0, TWILIGHT --remove-gappy).
+// profile_strip removes contiguous runs of columns whose gap fraction
+// exceeds the threshold; runs records each removed run anchored at the
+// reduced-column index it was stripped from (pos in [0, ncols()]).
+struct GappyStrip {
+    Profile          prof;       // reduced profile (kept columns only)
+    std::vector<int> run_pos;    // reduced index each run was removed at
+    std::vector<int> run_start;  // original start column of each run
+    std::vector<int> run_len;
+    int              orig_cols = 0;  // ncols of the profile before stripping
+};
+GappyStrip profile_strip(const Profile& p, float thr);
+// Translate a CIGAR over the reduced profiles back to original-column
+// ops: emits a fully-consuming CIGAR (ai=aj=0, bi/bj = full widths) with
+// one-sided runs as insertion blocks; coincident runs on both sides are
+// mini-aligned globally. Deterministic.
+AlignResult cigar_expand_gappy(const AlignResult& aln,
+                               const GappyStrip& sa,
+                               const GappyStrip& sb,
+                               const Params& P);
 
 // Merge two profiles given their column alignment: interleave columns,
 // padding each side with gap columns where the other consumes a column.
@@ -135,6 +207,6 @@ struct GpuStats {
 };
 bool msa_align_gpu(const std::vector<std::string>& seqs, const Params& P,
                    std::vector<std::string>& out, std::string& err,
-                   GpuStats* stats = nullptr);
+                   GpuStats* stats = nullptr, Tree* guide_out = nullptr);
 
 } // namespace genomsa
