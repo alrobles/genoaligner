@@ -229,7 +229,7 @@ def main():
             if rc == 0 and os.path.exists(cand):
                 got = cand
             else:
-                status = f"rc={rc}"
+                status = "no-output" if rc == 0 else f"rc={rc}"
         elif tool == "threestep":
             got, dt = threestep(seqs, args.workdir, args.gc,
                                 args.timeout, log)
