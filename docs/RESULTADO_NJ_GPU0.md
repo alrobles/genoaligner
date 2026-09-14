@@ -82,6 +82,30 @@ FMA. Rendimiento equivalente (A100 ~15 % más rápido en CYTB, dominado por la
 cadena de sumas dependientes del rowsum en ambos casos). TSV completo:
 `nj_gpu0/nj_gpu0_29238597_cuda.tsv`.
 
+## 2.3 NVIDIA V100 (job 29239539) y L40 (job 29239538)
+
+Mismo script, `BACKEND=cuda`. V100-SXM2-16GB, `sm_70`, nodo con 16 hilos host:
+sintético PASS, **31/31 genes idénticos**, E2E COI byte-idéntico.
+
+| Gen   | n    | `nj_tree_mt` 16T (s) | `nj_tree_gpu` total (s) | rounds (s) | upload (s) | A100 rounds | MI210 rounds |
+|-------|------|------|------|-------|-------|-------|-------|
+| CYTB  | 3523 | 7.12 | 1.73 | 1.54  | 0.17  | 1.26 | 1.47 |
+| COI   | 1608 | 1.27 | 0.42 | 0.30  | 0.10  | 0.20 | 0.23 |
+| IRBP  | 1252 | 0.88 | 0.28 | 0.16  | 0.10  | 0.13 | 0.12 |
+| ND1   | 941  | 0.59 | 0.20 | 0.07  | 0.10  | 0.06 | 0.07 |
+| BRCA1 | 913  | 0.56 | 0.20 | 0.08  | 0.09  | 0.08 | 0.07 |
+| BMI1  | 140  | 0.07 | 0.11 | 0.003 | 0.09  | 0.003| 0.003|
+
+Tres GPUs de dos vendedores y tres generaciones (gfx90a, sm_70, sm_80) dan el
+mismo árbol que el host en los 31 genes; el tiempo de kernels varía < 25 %
+porque está dominado por la latencia de la cadena de sumas, no por el ancho
+de banda ni el número de CUs/SMs.
+
+L40 (`sm_89`): job 29239538 encolado (`--gres=gpu:l40:1`, un solo nodo L40 en
+`sixhour`, ocupado; sin estimación de inicio al cierre de la sesión). Log en
+`/beegfs/a474r867/genoaligner/logs/njgpu_29239538.{out,err}`; TSV en
+`nj_gpu0/nj_gpu0_29239538_cuda.tsv` cuando termine.
+
 ## 3. Historia de la optimización (misma semántica, misma paridad)
 
 | Versión | CYTB rounds (s) | COI rounds (s) | Cambio |
@@ -113,7 +137,6 @@ es idéntico, sólo se agrupan las cargas.
    posible sin cambiar el orden de acumulación; la única vía exacta es más
    cargas en vuelo (unroll 16) o `double2` vectorizado sobre pares `(b, b+1)`
    manteniendo `s += v0; s += v1`.
-3. L40 / V100 (`--gres=gpu:l40:1`, `CUDA_ARCH=sm_89`; V100 `sm_70`) con el
-   mismo script; A100 ya cerrado (§2.2).
+3. Recoger el resultado L40 del job 29239538 (§2.3); A100 y V100 cerrados.
 4. NJ1' (candidatos por embedding hiperbólico + certificación exacta): sólo
    si `tools/nj_trace.cpp` muestra Recall@32 > 0.95 (`LITERATURA_NJ_GPU.md` §6).
