@@ -1,19 +1,21 @@
 #!/usr/bin/env python3
-"""codon_smoke_rescore — re-score smoke-grid instances whose results.tsv
-row carries a scoring failure, without re-running the aligner.
+"""codon_smoke_rescore — re-score smoke-grid instances from saved tool
+artefacts, without re-running the aligner.
 
-For every $OUT/<cell>/r<k>/results.tsv row with status in {score-fail},
-look for that tool's output artefact in the workdir and re-run
-codon_sim_v2.py in score mode using the instance parameters recorded in
-manifest.json (seed included, so the regenerated truth is identical).
-On success the row's sps/tc/widths/purity are replaced and status set to
-ok; the original walltime is kept (the alignment is not re-run).
+For every $OUT/<cell>/r<k>/results.tsv row, look for that tool's output
+artefact in the workdir and re-run codon_sim_v2.py in score mode using
+the instance parameters recorded in manifest.json (seed included, so the
+regenerated truth is identical). On success the row's sps/tc/widths/
+purity are replaced and status set to ok; the original walltime is kept
+(the alignment is not re-run).
 
-Also relabels `rc=0` statuses to `no-output` (the post-257ee6a name for
-"tool exited 0 but wrote no alignment" — e.g. PRANK rejecting input that
-is not a multiple of 3).
+Default mode rescans only rows whose status is not ok. With --all,
+every row whose artefact exists is rescored (use after a scorer change
+so all numbers share one scorer version). Rows with no artefact keep
+their status, except `rc=0` which is relabeled `no-output` (the
+post-257ee6a name for "tool exited 0 but wrote no alignment").
 
-Usage: codon_smoke_rescore.py $OUTDIR [--write]
+Usage: codon_smoke_rescore.py $OUTDIR [--write] [--all] [--cells a,b,c]
 Without --write, prints a dry-run diff and changes nothing.
 """
 import glob
@@ -29,8 +31,8 @@ SIM = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 ARTEFACT = {"genomsa": "genomsa.fasta", "macse": "macse_nt.fasta",
             "prank": "prank.best.fas", "threestep": "ts_got.fasta"}
 
-PAT = re.compile(r"SIM-SPS ([\d.]+) SIM-TC ([\d.]+) width_true=(\d+) "
-                 r"width_got=(\d+) trip_purity=([\d.]+)")
+PAT = re.compile(r"SIM-SPS (\S+) SIM-TC (\S+) width_true=(\d+) "
+                 r"width_got=(\d+) trip_purity=(\S+)")
 
 
 def sim_args(man):
@@ -49,12 +51,18 @@ def sim_args(man):
 
 def main():
     out = sys.argv[1]
-    write = "--write" in sys.argv[2:]
-    n_rescored = n_still_failing = n_relabel = 0
+    write = "--write" in sys.argv
+    all_rows = "--all" in sys.argv
+    cells = None
+    if "--cells" in sys.argv:
+        cells = set(sys.argv[sys.argv.index("--cells") + 1].split(","))
+    n_rescored = n_still_failing = n_relabel = n_noart = 0
 
     for tsv in sorted(glob.glob(os.path.join(out, "*", "r*",
                                              "results.tsv"))):
         wd = os.path.dirname(tsv)
+        if cells and os.path.basename(os.path.dirname(wd)) not in cells:
+            continue
         mp = os.path.join(wd, "manifest.json")
         if not os.path.exists(mp):
             continue
@@ -73,34 +81,39 @@ def main():
                 n_relabel += 1
                 print(f"relabel  {wd} {tool}: rc=0 -> no-output")
                 continue
-            if status != "score-fail":
+            if not all_rows and status == "ok":
                 continue
             art = os.path.join(wd, ARTEFACT.get(tool, ""))
             if not os.path.exists(art):
-                print(f"no-art   {wd} {tool}: artefact missing")
+                if status != "ok":
+                    print(f"no-art   {wd} {tool}: artefact missing")
+                n_noart += 1
                 continue
             p = subprocess.run([sys.executable, SIM, art] + sim_args(man),
                                capture_output=True, text=True, cwd=wd)
             m = PAT.search(p.stdout)
             if not m:
-                n_still_failing += 1
+                if status != "ok":
+                    n_still_failing += 1
                 print(f"still-fail {wd} {tool}: "
                       f"{p.stderr.strip().splitlines()[-1] if p.stderr else 'no score output'}")
                 continue
-            f[6], f[7], f[8], f[9], f[10], f[12] = (
-                m.group(1), m.group(2), m.group(4), m.group(3),
-                m.group(5), "ok")
+            new = (m.group(1), m.group(2), m.group(4), m.group(3),
+                   m.group(5), "ok")
+            if tuple(f[6:11]) + (f[12],) != new:
+                print(f"rescored {wd} {tool}: "
+                      f"sps {f[6]}->{m.group(1)} tc {f[7]}->{m.group(2)}")
+            f[6], f[7], f[8], f[9], f[10], f[12] = new
             lines[i] = "\t".join(f)
             changed = True
             n_rescored += 1
-            print(f"rescored {wd} {tool}: sps={m.group(1)} "
-                  f"tc={m.group(2)}")
         if changed and write:
             with open(tsv, "w") as fh:
                 fh.write("\n".join(lines) + "\n")
 
     print(f"\n{'' if write else '[dry-run] '}rescored={n_rescored} "
-          f"still-failing={n_still_failing} relabeled={n_relabel}")
+          f"still-failing={n_still_failing} relabeled={n_relabel} "
+          f"no-artefact={n_noart}")
 
 
 if __name__ == "__main__":

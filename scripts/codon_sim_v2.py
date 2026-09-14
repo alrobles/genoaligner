@@ -349,7 +349,8 @@ def sps_pairs(tm, gm, offs, n):
                 if oa < 0 or ob < 0 or ra >= lim_a or rb >= lim_b:
                     continue
                 tot += 1
-                if ga.get(oa) == gb.get(ob):
+                ja, jb = ga.get(oa), gb.get(ob)
+                if ja is not None and ja == jb:
                     same += 1
     return same, tot
 
@@ -376,7 +377,7 @@ def tc_score(true_rows, got_rows, offs, n):
             j = gm[i].get(o) if 0 <= o < lim else None
             if j is None:
                 ok = False                    # residue absent in got
-                break
+                continue
             colset.add(j)
         if have < 2:
             continue

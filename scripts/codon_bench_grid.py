@@ -75,8 +75,8 @@ def run(cmd, timeout, log, **kw):
 def score(got_path, sim_args, n):
     cmd = [sys.executable, SIM, got_path] + [str(a) for a in sim_args]
     p = subprocess.run(cmd, capture_output=True, text=True)
-    m = re.search(r"SIM-SPS ([\d.]+) SIM-TC ([\d.]+) width_true=(\d+) "
-                  r"width_got=(\d+) trip_purity=([\d.]+)", p.stdout)
+    m = re.search(r"SIM-SPS (\S+) SIM-TC (\S+) width_true=(\d+) "
+                  r"width_got=(\d+) trip_purity=(\S+)", p.stdout)
     if not m:
         return None
     return {"sps": m.group(1), "tc": m.group(2),
