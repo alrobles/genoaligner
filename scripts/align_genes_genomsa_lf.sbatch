@@ -37,9 +37,14 @@ GENES=(A2AB ADORA3 ADRB2 APOB APP ATP7 BCHE BDNF BMI1 BRCA1 BRCA2 CNR1 COI
        CREM CYTB DMP1 EDG1 ENAM FBN1 GHR IRBP ND1 ND2 PLCB4 PNOC RAG1A
        RAG1B RAG2 TTN TYR1 VWF)
 GENE=${GENES[${SLURM_ARRAY_TASK_ID:-0}]}
+# Mitochondrial loci use the vertebrate mito code (same split as
+# align_mt_qc_array.sbatch: macse -gc_def 2). Under gc=1, TGA (=Trp in
+# mito) reads as stop and --local-frame fires spurious fs events.
+GC=1
+case "$GENE" in COI|CYTB|ND1|ND2) GC=2;; esac
 IN=$PAI/data/genes_qc_pass/$GENE.fasta
 OUT=$OUTDIR/$GENE.codon.fasta
 
-{ "$BIN/genomsa_cpu" "$IN" "$OUT" --codon --gc-def 1 --cpu --local-frame \
+{ "$BIN/genomsa_cpu" "$IN" "$OUT" --codon --gc-def $GC --cpu --local-frame \
       --codon-qc "$OUTDIR/$GENE.qc.tsv" \
   && echo "LF_OK $GENE"; } > "$OUTDIR/$GENE.log" 2>&1

@@ -157,6 +157,50 @@ std::vector<std::string> codon_refine(const std::vector<std::string>& seqs_nt,
                                       const std::vector<std::string>& aln_nt,
                                       const Params& P, int rounds);
 
+// GPU variant: the per-row phase DPs run as codon_refine_kernel (one
+// thread per row); profile build, traceback and merge stay on host.
+// Semantics identical to codon_refine (the DP body is shared source).
+// Returns false with err set on device/packing failure -- callers should
+// fall back to codon_refine.
+bool codon_refine_gpu(const std::vector<std::string>& seqs_nt,
+                      const std::vector<std::string>& aln_nt,
+                      const Params& P, int rounds,
+                      std::vector<std::string>& out, std::string& err,
+                      float* kernel_s = nullptr);
+
+// ---- internals shared by codon_refine (host) and codon_refine_gpu ------
+namespace detail {
+// Codon-column profile of a NT MSA (see codon_prof_build): token counts,
+// occupancy, per-position nt counts and each row's token per column.
+struct CodonProf {
+    int C = 0;
+    int nseq = 0;
+    std::vector<std::array<float, 65>>            ccnt;
+    std::vector<float>                            ocnt;
+    std::vector<std::array<std::array<float, 4>, 3>> ncnt;
+    std::vector<std::vector<int>>                 tok;
+};
+CodonProf codon_prof_build(const std::vector<std::string>& rows,
+                           const std::vector<int>& cofs);
+// One row's placement after realignment: fill[j] = its 3 chars at codon
+// column j ("---" = absent); ins[b] = nt blocks inserted before column b
+// (b == C = trailing).
+struct Place {
+    std::vector<std::string>              fill;
+    std::vector<std::vector<std::string>> ins;
+};
+// Reconstruct a row's placement from the phase-DP outputs: pi = footprint
+// columns, tr = K*ND direction bytes, bes = endpoint s (-2 = dump raw).
+Place codon_trace_place(const std::string& seq, const CodonProf& cp,
+                        int self, const Params& P,
+                        const std::vector<int>& pi,
+                        const uint8_t* tr, int tr_stride, int bes);
+// Merge per-row placements into a NT MSA; cofs gets the char offset of
+// each kept codon column.
+std::vector<std::string> codon_refine_merge(const std::vector<Place>& pls,
+                                            int C, std::vector<int>* cofs);
+}  // namespace detail
+
 // ---------------------------------------------------------------- profile
 struct Profile {
     // Per-column fractional counts. cols[c][s] = fraction of letter s

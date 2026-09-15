@@ -128,11 +128,29 @@ int main(int argc, char** argv) {
         }
         if (P.codon_refine > 0) {
             auto r0 = std::chrono::steady_clock::now();
-            msa = genomsa::codon_refine(orig, msa, P, P.codon_refine);
-            fprintf(stderr, "codon refine: %d round(s), %.2fs\n",
-                    P.codon_refine,
-                    std::chrono::duration<double>(
-                        std::chrono::steady_clock::now() - r0).count());
+            bool gpu_ref = false;
+            if (!use_cpu) {
+                float ks = 0.f;
+                gpu_ref = genomsa::codon_refine_gpu(orig, msa, P,
+                                                    P.codon_refine, msa,
+                                                    err, &ks);
+                if (gpu_ref)
+                    fprintf(stderr, "codon refine: %d round(s), %.2fs "
+                            "(gpu kernel %.2fs)\n", P.codon_refine,
+                            std::chrono::duration<double>(
+                                std::chrono::steady_clock::now() - r0).count(),
+                            (double)ks);
+                else
+                    fprintf(stderr, "gpu refine failed (%s); host fallback\n",
+                            err.c_str());
+            }
+            if (!gpu_ref) {
+                msa = genomsa::codon_refine(orig, msa, P, P.codon_refine);
+                fprintf(stderr, "codon refine: %d round(s), %.2fs\n",
+                        P.codon_refine,
+                        std::chrono::duration<double>(
+                            std::chrono::steady_clock::now() - r0).count());
+            }
         }
     }
 
