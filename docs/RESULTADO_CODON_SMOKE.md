@@ -96,94 +96,98 @@ tras el fix → **0/128**.
   el frame → len%3≠0), stop-* (stops inyectados), noisy (err puede
   crear stops — realista), pseudo-mix (todo)
 
-**v2.2 run:** array `29435703` (tasks 0-169, grid completo) →
-`/beegfs/a474r867/phylogenyAI/data/codon_smoke_v22/` (dir nuevo; el
-dataset v2.1 queda intacto en `codon_smoke/`). Scorer corregido desde
-el inicio; build de genomsa_cpu atómico (temp+mv) y pre-compilado.
+**v2.2 run (FINAL):** array `29435703` (tasks 0-169) **COMPLETED
+170/170** → `/beegfs/a474r867/phylogenyAI/data/codon_smoke_v22/`
+(680 filas = 170 instancias × 4 herramientas). Reporte agregado en
+`codon_smoke_v22/REPORT_v22.md` (job 29435925). Scorer corregido
+desde el inicio; build atómico pre-compilado. El dataset v2.1 queda
+intacto en `codon_smoke/` como referencia del régimen artificial.
 
-Nota: la tabla de abajo es **v2.1** — válida como dataset "régimen
-degradado"; la tabla v2.2 reemplaza los números de las celdas limpias.
-
-## Resultados corregidos (SPS vs verdad; IC95 bootstrap; wall s)
-
-13/17 celdas bajo scorer corregido (`rescore_a`, job 29435026:
-rescored=470, still-failing=0). fs-0.5, scale-n512, scale-L5k y el
-detalle fino de small-n32 quedan para `rescore_b` (ver "en vuelo").
+## Resultados v2.2 (SPS vs verdad; IC95 bootstrap; wall s; n=10/celda)
 
 | celda | genomsa | MACSE-init | PRANK -F | 3-step |
 |---|---|---|---|---|
-| easy | 0.895 (8s) | 0.811 (812s) | **0.975** (3499s) | 0.006 |
-| moderate | **0.739** | 0.726 | 0.923 | 0.004 |
-| divergent | 0.554 | 0.573 | **0.790** | 0.003 |
-| indel-hi | **0.360** | 0.160 | 0.697¹ | 0.000 |
-| fs-0.1 | **0.298** | 0.158 | no-output | 0.000 |
-| fs-0.5 | **0.153** | 0.126 | no-output | ~0 |
-| fs-1 | 0.107 | **0.124** | no-output | 0.000 |
-| fs-3 | 0.039 | **0.103** | no-output | 0.000 |
-| frag | **0.891** | 0.792 | no-output | 0.001 |
-| noisy | **0.887** | 0.797 | 0.975 | 0.004 |
-| pseudo-mix | 0.261 | **0.320** | no-output | 0.000 |
-| stop-5 | **0.895** | 0.809 | 0.976 | 0.006 |
-| stop-20 | **0.893** | 0.806 | 0.976 | 0.003 |
-| mito-gc2 | **0.901** | 0.816 | 0.973 | 0.001 |
-| small-n32 | 0.946 (2s) | 0.908 (165s) | **0.984** (1282s) | 0.128² |
-| scale-n512 | **0.830** (32s) | timeout | — | — |
-| scale-L5k | **0.897** (75s) | 1/8 ok (5233s) | — | — |
+| easy | 0.889 (8s) | 0.904 (659s) | **0.974** (2929s, 7/10) | 0.937 (108s) |
+| moderate | 0.741 (8s) | 0.811 (744s) | **0.931** (2755s, 9/10) | 0.849 (64s) |
+| divergent | 0.538 (10s) | 0.620 (825s) | **0.779** (2925s, 8/10) | 0.661 (56s) |
+| indel-hi | **0.337** (11s) | 0.329 (1035s) | 0/10 (rc=-9) | **0.497** (106s) |
+| fs-0.1 | 0.287 (11s) | 0.311 (1034s) | 0/10 | **0.337** (112s) |
+| fs-0.5 | 0.190 (13s) | **0.249** (997s) | 0/10 | 0.079 (110s) |
+| fs-1 | 0.117 (15s) | **0.191** (1041s) | 0/10 | 0.016 (119s) |
+| fs-3 | 0.051 (19s) | **0.136** (976s) | 0/10 | 0.000 (116s) |
+| frag | 0.884 (6s) | **0.898** (455s) | 0/10 | 0.096 (69s) |
+| noisy | 0.881 (7s) | 0.900 (587s) | **0.976** (2975s, 9/10) | 0.482 (85s) |
+| pseudo-mix | 0.265 (11s) | **0.418** (786s) | 0/10 | 0.002 (92s) |
+| stop-5 | 0.889 (7s) | 0.904 (530s) | **0.976** (3124s, 9/10) | 0.847 (85s) |
+| stop-20 | 0.888 (7s) | 0.904 (533s) | **0.976** (3099s, 10/10) | 0.590 (86s) |
+| mito-gc2 | 0.898 (7s) | 0.918 (558s) | **0.973** (3219s, 10/10) | 0.940 (88s) |
+| small-n32 | 0.948 (2s) | 0.956 (79s) | **0.986** (605s) | 0.956 (6s) |
+| scale-n512 | **0.818** (33s) | 0/10 (rc=-9) | 0/10 (rc=-9) | 0.806 (10s) |
+| scale-L5k | 0.892 (76s) | **0.910** (5160s, 4/10) | 0/10 (rc=-9) | 0.884 (177s) |
 
-¹ indel-hi PRANK recuperado parcialmente de artefactos válidos de
-corridas previas sobre el mismo input determinista.
-² small-n32 threestep: 7/10 con score (3 mafft-fail); el único régimen
-donde algunas instancias escapan al colapso.
+Completitud: **genomsa 170/170 · 3-step 170/170 · MACSE 154/170 ·
+PRANK 72/170.** PRANK: no-output en todo input no-%3 (fs-*/frag/
+pseudo-mix), rc=-9 timeout en indel-hi y scale-*, rc=-11/-9 esporádico
+en limpio. MACSE: falla solo en scale (n512 0/10, L5k 6/10 timeout).
+genomsa y 3-step: 0 fallos en todo el grid.
 
-## Lectura
+## Lectura v2.2 — lo que cambia
 
-- **genomsa es la única herramienta con 100% de completitud en todo el
-  grid** — todas las instancias, todos los regímenes, 2-75s.
-- **PRANK es el líder de precisión donde puede correr** (0.92-0.98 en
-  limpio, 0.70-0.79 en difícil) — pero no ingiere input no-%3
-  (`no-output` en fs/frag/pseudo-mix) y en el run original tuvo
-  timeouts/segfaults en ~30-40% de réplicas limpias. 300-400× más
-  lento. Le dimos el árbol verdadero con `-F`.
-- **MACSE corre casi todo** pero queda por debajo de genomsa en SPS en
-  la mayoría de celdas (solo gana en saturación fs-1/fs-3/pseudo-mix/
-  divergent, marginalmente), a 60-100× más walltime. En scale-n512 no
-  termina ninguna réplica dentro de 5400s.
-- **3-step ≈ 0 en todo el grid** bajo el scorer corregido — el modo de
-  fallo "stop interno → fila all-gap" se dispara en >90% de filas en
-  todas las celdas. Es el pitch de MACSE cuantificado; y quedaba
-  enmascarado por el bug del scorer.
+- **En celdas limpias genomsa queda 4º de 4 en SPS.** El orden real es
+  PRANK > 3-step > MACSE > genomsa (easy/moderate/divergent/mito/
+  small-n32). El déficit vs MACSE es chico en easy/mito (~0.015) pero
+  grande en divergent (0.082) y moderate (0.070).
+- **En celdas degradadas MACSE gana en SPS en todas** (fs-*, frag,
+  noisy, pseudo-mix, stop-*): el modelo codónico explícito de MACSE
+  maneja frameshifts mejor que genomsa (fs-3: 0.136 vs 0.051; pseudo-
+  mix: 0.418 vs 0.265). En v2.1 genomsa "ganaba" esas celdas — era
+  artefacto de los stops fantasma que rompían el modelo de MACSE.
+- **3-step es un baseline fuerte en input limpio** (supera a genomsa
+  en 6/8 celdas limpias, a veces más rápido: scale-n512 10s vs 33s),
+  pero **colapsa a SPS≈0 en input con frame roto** (frag 0.096,
+  fs≥0.5 →0.00-0.08, pseudo-mix 0.002): traduce en frame-0 y degrada
+  a all-gap lo que no traduce. Completa todo, pero su "completitud" es
+  hueca en régimen degradado.
+- **genomsa es la única herramienta cuyo output es a la vez completo
+  (170/170) e informativo en todo el grid** — MACSE falla en escala,
+  PRANK no ingiere 80/170 instancias, 3-step emite ruido en degradado.
+- **Velocidad: genomsa 2-76s** vs MACSE 455-5160s (~60-80×) vs PRANK
+  605-3219s (~300-400×). 3-step es comparable (6-177s).
+- **Único nicho donde genomsa gana en SPS:** scale-n512 (0.818 vs
+  0.806 de 3-step — los únicos dos que terminan) y empate técnico con
+  MACSE en indel-hi.
 
-## Claim soportado
+## Claim soportado (v2.2 — revisado a la baja)
 
-*"genomsa es el único alineador de codones robusto a input ORF-roto en
-todos los regímenes medidos; supera a MACSE en SPS en la mayoría de
-celdas a ~100× menor walltime. Solo PRANK-codon con árbol guía
-verdadero lo supera en precisión — en los regímenes donde puede
-correr."* NO claim: paridad con PRANK en limpio (pierde ~0.05-0.24
-SPS), ni superioridad sobre MACSE en saturación alta.
+*"genomsa es el único alineador que produce output informativo en el
+100% del espectro de calidad de input (limpio → ORF-roto → escala
+n≥512), a 60-400× menor walltime que los métodos codon-aware
+(MACSE/PRANK). El costo es un déficit de SPS de ~0.01-0.15 vs MACSE
+donde MACSE puede correr."*
 
-## En vuelo al cierre de sesión
+NO soportado por estos datos: paridad o superioridad de precisión vs
+MACSE/PRANK/3-step en régimen limpio — genomsa es el menos preciso del
+cuarteto ahí. El claim "MACSE-class accuracy" del preprint hay que
+reformularlo como throughput/robustez, o mejorar el alineador
+(opciones: iteración de refinamiento tipo MACSE, modelo de penalización
+frame-aware más explícito en fs-*).
 
-- `29430948_{134,143,145}` — réplicas scale-n512/r4, scale-L5k/r3,
-  scale-L5k/r5 corriendo (MACSE agotó/terminó ~5000-5400s; PRANK en
-  curso). Los 12 demás tasks del array completaron (fs-0.5 r3/r8 y
-  las 10 de small-n32).
-- `29435027` (rescore_b) — `--dependency=afterany:29430948`; corre
-  `--all --cells fs-0.5,scale-n512,scale-L5k,small-n32` solo.
-- Cadena RF end-to-end: `gsm_iqtr` corriendo (supermatrix genomsa);
-  `codon_sm` 29241810 (IQ-TREE codon) PENDING en kbs;
-  `rf_cmp`/`macse_pi`/`build_sm`/`sm_iqtre` bloqueados por dependencia.
+Nota de interpretación: la diferencia genomsa–MACSE es mayor donde el
+modelo evolutivo importa (divergent, fs-*, pseudo-mix) — consistente
+con que genomsa usa heurística seeded sin HMM filogenético ni modelo
+de codón explícito en la etapa de alineamiento.
 
-## Al volver — checklist
+## Estado v2.1 (cerrado)
 
-1. `sacct -j 29430948,29435027` / leer `rescoreB-*.log` → cierra la
-   tabla v2.1 (dataset degradado, ya documentado arriba).
-2. `sacct -j 29435703` → cuando el array v2.2 termine (~5h):
-   `python3 scripts/codon_smoke_report.py
-   /beegfs/a474r867/phylogenyAI/data/codon_smoke_v22 > reporte v2.2`.
-3. Comparativa clave v2.2: en celdas limpias, threestep ya compite —
-   la tabla final separa "régimen limpio" (precisión) de "degradado
-   por diseño" (robustez). PRANK seguirá siendo no-output en las
-   no-%3 — eso es el claim.
-4. Actualizar esta doc con la tabla v2.2.
-5. Archivar TWILIGHT_ISSUE_DRAFT.md → issue upstream si se confirma.
+`29430948` (re-runs + small-n32): 15/15 COMPLETED.
+`29435026`/`29435027` (rescore_a/b): COMPLETED — toda la tabla v2.1
+bajo scorer corregido. v2.1 queda como dataset del régimen
+"todo-degradado" (stops accidentales ubicuos); sus números absolutos
+no son comparables a v2.2 por el cambio de distribución de input.
+
+## Pendientes
+
+- Cadena RF end-to-end: `gsm_iqtr`/`codon_sm`/etc. — revisar cola.
+- Decidir: ¿mejorar genomsa (refinamiento/frame-model) para cerrar el
+  gap vs MACSE, o aceptar el framing throughput/robustez?
+- TWILIGHT_ISSUE_DRAFT.md — sin enviar.
