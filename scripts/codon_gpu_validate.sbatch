@@ -31,6 +31,7 @@ cd "$REPO" || exit 1
 echo "=== host: $(hostname)  $(date) ==="
 /kuhpc/sw/rocm/6.4.3/bin/hipcc -O2 -ffp-contract=off -std=c++17 -I. -Iinclude \
     -o /tmp/genomsa tools/genomsa.cpp src/msa/msa_gpu.cpp src/msa/msa_ref.cpp \
+    src/msa/nj_gpu.cpp \
     || { echo "BUILD FAILED"; exit 1; }
 echo "build ok"
 

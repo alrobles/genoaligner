@@ -258,6 +258,51 @@ frameshifts reales, es exacto en limpio, y noisy quedó neutro con
 0.136 MACSE). Falta validar en datos reales (31-locus pipeline) antes
 de hacerlo default.
 
+## Etapa 2 — GPU port (decisión revertida, implementado)
+
+El usuario pidió re-explorar el algoritmo integral en GPU. Implementado:
+
+- `codon_refine_kernel` (`include/genoaligner/backend/codon_refine_kernel*.hip`):
+  un thread por fila ejecuta la phase-DP; el cuerpo `codon_phase_dp` es
+  **compartido literalmente** entre host (`msa_ref.cpp`) y device — paridad
+  estructural, no por convención.
+- `codon_refine_gpu` (`src/msa/msa_gpu.cpp`): packing de buffers
+  seqs/stok/pi/perfil, launch, trace-back, y traceback+merge en host
+  (variable-length `Place` + merge quedan host-side — el DP era la parte
+  paralelizable por fila).
+- CLI: en modo GPU (sin `--cpu`), `--codon --refine` usa el kernel;
+  fallback automático a host si el device falla.
+
+**Paridad verificada**: `--cpu` vs kernel emulado por shim =
+byte-idéntico en fs-0.5/local-frame/refine2; **`PARITY:PASS` también en
+MI210 real** (hipcc ROCm 6.4.3, gfx90a, nodo r07r28n01) — subset BMI1
+150 seqs, kernel 0.18 s.
+
+**Contexto cuantitativo** (análisis "genie" sobre verdad fs-0.5): ~98.6%
+de pares homólogos viven en columnas densas (occ≥10); las columnas
+sparse/evento que un P-P "integral" preservaría son ~1.4% → headroom
+~+0.01 SPS. El déficit real está en asignación de columnas densas de
+etapa-1, no en eventos — por eso se portó la DP de filas (barata, útil
+a n≫512) y no un kernel P-P nuevo.
+
+## Validación 31-locus (datos reales)
+
+- `align_genes_genomsa_lf.sbatch`: 31/31 loci completados con
+  `--codon --local-frame`, gc por locus (`gc-def 2` para COI/CYTB/ND1/ND2;
+  corregido tras detectar que gc=1 explotaba los "stops" TGA→Trp mito en
+  ~10k eventos fs espurios por gen).
+- Contenido: ungap==input en todo el panel (0 violaciones).
+- Estructura: conteo de columnas densas **casi idéntico a MACSE**
+  (ej. A2AB 1176 vs 1176; ND1 954 vs 957; ND2 1041 vs 1044;
+  BRCA1 1611 vs 1614). Width mayor por columnas-evento/sparse; ND1
+  prácticamente empata (2081 vs 2055).
+- Runtime: segundos–minutos por locus (CYTB n=3523: 3.4 min — MACSE
+  nunca terminó esa instancia, murió en pairwise distances).
+- Downstream: `trim_sm_genomsa_lf.sbatch` → ClipKIT + supermatrix
+  (4353 taxa, 240 125 sitios; vs 247 185 MACSE, 280 189 genomsa-base).
+  IQ-TREE `29437849` corriendo; `rf_distance.py` añadido para
+  comparación vs Upham/MACSE/genomsa-base cuando termine.
+
 ## Estado v2.1 (cerrado)
 
 `29430948` (re-runs + small-n32): 15/15 COMPLETED.
