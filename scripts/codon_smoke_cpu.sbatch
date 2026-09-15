@@ -75,7 +75,7 @@ python3 "$REPO/scripts/codon_bench_grid.py" "$WD" \
     --cell "$CELL" --rep "$REP" $CARGS \
     --tools "${TOOLS:-genomsa,macse,prank,threestep}" --prank-F \
     --genomsa "$BIN/genomsa_cpu" --genomsa-cpu \
-    --genomsa-args "${GENOMSA_EXTRA_ARGS:-}" \
+    --genomsa-args="${GENOMSA_EXTRA_ARGS:-}" \
     --macse "$MACSE" --prank "$PRANK" \
     --timeout 5400 \
     > "$WD/results.tsv" 2>"$WD/stderr.log"

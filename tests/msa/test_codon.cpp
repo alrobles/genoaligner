@@ -171,6 +171,136 @@ int main() {
         CHECK(p.occ[0] == 1.f, "col0 occ 1");
     }
 
+    // ---- 9. local-frame encode (codon_encode_local) ---------------------
+    // The encode DP partitions raw nts into codon blocks plus skipped
+    // 1-2 nt frameshift blocks (left out of the token stream, restored
+    // by codon_refine). Leading 1-2 nt drops are free (frame choice);
+    // an internal skip costs codon_fs_enc=80 > stop_pen=60, so it only
+    // ever wins when the unshifted parse would eat >=2 stops.
+    auto ungap = [](std::string s) {
+        std::string o; for (char c : s) if (c != '-') o += c; return o; };
+    {
+        Params P = codon_params(1);
+        // clean sequence: identical tokens to the global-frame encoder
+        std::vector<std::string> in = {"ATGCCGGGATAC"};
+        std::vector<CodonQc> qc;
+        auto loc = codon_encode_local(in, P, &qc);
+        auto glb = codon_encode(in, 1, nullptr);
+        CHECK(loc[0] == glb[0], "local: clean seq identical to global");
+        CHECK(qc[0].partial == 0 && qc[0].stops == 0, "clean: no fs, no stops");
+    }
+    {
+        Params P = codon_params(1);
+        // +1 nt insertion after 4 codons; every unshifted parse eats
+        // >=2 stops downstream, so the -80 skip wins. Verified against
+        // the DP: tokens = pre + tail codons, skipped nt never emitted.
+        std::vector<std::string> in = {
+            "GTGGGATTGATAGGTTGACTCTCTTTTGAGTCACTTAGCTATAGATGAA"};
+        std::vector<CodonQc> qc;
+        auto enc = codon_encode_local(in, P, &qc);
+        auto dec = codon_decode(enc);
+        CHECK(qc[0].partial == 1, "local +1fs: one skipped block");
+        CHECK(enc[0].size() == 16, "local +1fs: 16 codon tokens");
+        CHECK(dec[0] == std::string(
+            "GTGGGATTGATA" "GTTGACTCTCTTTTGAGTCACTTAGCTATAGATGAA"),
+              "local +1fs: decode = input minus the inserted nt");
+        CHECK(qc[0].stops == 0, "local +1fs: no stop tokens emitted");
+    }
+    {
+        Params P = codon_params(1);
+        // 2-nt skipped block (insertion / remnant of a deleted codon)
+        std::vector<std::string> in = {
+            "CTAATTAATAGTGTTGAAACGTCTTAATAAACAATAACGCGCAT"};
+        std::vector<CodonQc> qc;
+        auto enc = codon_encode_local(in, P, &qc);
+        auto dec = codon_decode(enc);
+        CHECK(qc[0].partial == 1 && enc[0].size() == 14,
+              "local +2fs: one skipped 2-nt block, 14 tokens");
+        CHECK(dec[0] == std::string(
+            "CTAATTAATAGTGTT" "AACGTCTTAATAAACAATAACGCGCAT"),
+              "local +2fs: decode = input minus the 2 inserted nt");
+    }
+    {
+        Params P = codon_params(1);
+        // one internal stop, no winning dodge (80 > 60): the stop is
+        // emitted as a token and every nt stays covered.
+        std::vector<std::string> in = {"GGTGAGGATCTAAACTCCGCGTAGACT"};
+        std::vector<CodonQc> qc;
+        auto enc = codon_encode_local(in, P, &qc);
+        CHECK(qc[0].partial == 0, "single stop: no fs dodge");
+        CHECK(qc[0].stops == 1, "single stop: emitted as stop token");
+        CHECK(codon_decode(enc)[0] == in[0],
+              "single stop: decode covers the full input");
+        CHECK((unsigned char)enc[0][7] == 128 + cidx("TAG"),
+              "single stop: TAG token at position 7");
+    }
+    {
+        Params P = codon_params(1);
+        // ambiguous codon -> token 64; short seqs; len%3 remainder may
+        // reframe (leading drop is free) instead of a trailing partial.
+        std::vector<std::string> in = {"ATGNNNCCG", "AT", "ATGCCGGT"};
+        std::vector<CodonQc> qc;
+        auto enc = codon_encode_local(in, P, &qc);
+        CHECK((unsigned char)enc[0][1] == 128 + 64, "local: NNN -> token 64");
+        CHECK(enc[0].size() == 3, "local: NNN seq -> 3 tokens");
+        CHECK(enc[1].size() == 1 && (unsigned char)enc[1][0] == 128 + 64,
+              "local: L<3 -> single token 64");
+        // "ATGCCGGT": frame-2 (drop AT) scores same as frame-0 + trailing
+        // GT; codon move wins the tie -> {GCC, GGT}, partial==0.
+        CHECK(enc[2].size() == 2 && qc[2].partial == 0,
+              "local: len%3=2 reframes via free leading drop");
+        CHECK(codon_decode({enc[2]})[0] == "GCCGGT",
+              "local: reframed tokens decode to GCC GGT");
+    }
+
+    // ---- 10. stage-2 refine end-to-end ---------------------------------
+    {
+        // s2 carries a +1 nt insertion after codon 5 whose unshifted
+        // tail is all-sense (no encode dodge): the repair must come
+        // from codon_refine's phase DP inside the frozen footprint.
+        std::vector<std::string> in = {
+            "ATGAAACCCGGGTTTGGCAAGCCAGGTCCT",
+            "ATGAAACCCGGGTTTAGGCAAGCCAGGTCCT",   // +A after pos 15
+            "ATGAAACCCGGATTTGGCAAGCCAGGTCCT",
+        };
+        Params P = codon_params(1);
+        auto enc = codon_encode(in, 1, nullptr);
+        auto dec = codon_decode(msa_align(enc, P, nullptr));
+        auto ref = codon_refine(in, dec, P, 1);
+        CHECK(ref.size() == 3, "refine: row count");
+        size_t W = ref[0].size();
+        CHECK(ref[1].size() == W && ref[2].size() == W,
+              "refine: rectangular output");
+        for (int r = 0; r < 3; ++r)
+            CHECK(ungap(ref[r]) == in[r], "refine: ungapped == raw input");
+        // the inserted 'A' occupies its own event column; downstream
+        // codons land back in-frame (s1/s3 columns kept intact).
+        bool shared_event_col = false;
+        for (size_t c = 0; c < W; ++c) {
+            int ngap = 0, wid = 0;
+            for (int r = 0; r < 3; ++r)
+                if (ref[r][c] == '-') ++ngap; else ++wid;
+            if (ngap == 2 && wid == 1) shared_event_col = true;
+        }
+        CHECK(shared_event_col, "refine: fs residue sits in singleton column");
+    }
+    {
+        // encode_local + refine round-trip: row 0 carries the verified
+        // +1 fs sequence; every row must come back content-exact.
+        std::vector<std::string> in = {
+            "GTGGGATTGATAGGTTGACTCTCTTTTGAGTCACTTAGCTATAGATGAA",
+            "GTGGGATTGATAGTTGACTCTCTTTTGAGTCACTTAGCTATAGATGAA",
+            "GTGGGATTGATAGTTGACTCTCTTATGAGTCACTTAGCTATAGATGAA",
+        };
+        Params P = codon_params(1);
+        auto enc = codon_encode_local(in, P, nullptr);
+        auto dec = codon_decode(msa_align(enc, P, nullptr));
+        auto ref = codon_refine(in, dec, P, 1);
+        for (int r = 0; r < 3; ++r)
+            CHECK(ungap(ref[r]) == in[r],
+                  "local+refine e2e: ungapped == raw input");
+    }
+
     printf("%s (%d failures)\n", fails ? "FAILURES" : "ALL OK", fails);
     return fails ? 1 : 0;
 }
