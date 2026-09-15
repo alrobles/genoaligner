@@ -5,6 +5,10 @@
 #SBATCH --time=6:00:00
 #SBATCH --output=/beegfs/a474r867/phylogenyAI/data/codon_smoke/slurm-cpu-%A_%a.log
 #
+# Variant runs: set CODON_SMOKE_OUT (results dir), TOOLS (comma list,
+# default all four) and GENOMSA_EXTRA_ARGS (e.g. "--local-frame") in the
+# sbatch environment to re-run a subset without touching saved outputs.
+#
 # CPU-only variant of codon_smoke: genomsa --cpu is byte-identical to the
 # GPU path (proven on MI210 + A100), so the full tool matrix can run on
 # any sixhour node without GPU contention. GPU walltime for genomsa is
@@ -69,8 +73,9 @@ mkdir -p "$WD"
 
 python3 "$REPO/scripts/codon_bench_grid.py" "$WD" \
     --cell "$CELL" --rep "$REP" $CARGS \
-    --tools genomsa,macse,prank,threestep --prank-F \
+    --tools "${TOOLS:-genomsa,macse,prank,threestep}" --prank-F \
     --genomsa "$BIN/genomsa_cpu" --genomsa-cpu \
+    --genomsa-args "${GENOMSA_EXTRA_ARGS:-}" \
     --macse "$MACSE" --prank "$PRANK" \
     --timeout 5400 \
     > "$WD/results.tsv" 2>"$WD/stderr.log"
