@@ -67,6 +67,26 @@ struct Params {
     float  codon_stop_pen = 60.0f;
     float  codon_nt_bonus = 1.0f;
     int    gc_def         = 1;    // NCBI genetic code (2 = vertebrate mito)
+    // Stage-2 codon refinement (codon_refine): MACSE-style frameshift
+    // events. codon_refine = passes over the MSA (0 disables);
+    // codon_fs = cost of an internal 1-2 nt indel (MACSE -fs 30);
+    // codon_fs_term = terminal frameshift cost (first/last codon of a
+    // sequence, MACSE -fs_term 10).
+    int    codon_refine   = 0;
+    float  codon_fs       = 30.0f;
+    float  codon_fs_term  = 10.0f;
+    // Max raw-nt drift of codon boundaries inside a row's frozen stage-1
+    // footprint during refinement (the DP's |s - 3k| limit).
+    float  codon_refine_band = 40.0f;
+    // codon_local_frame: tokenize each sequence with the local-frame DP
+    // (codon_encode_local) instead of a single global frame -- keeps
+    // tokens in-frame across internal frameshifts.
+    int    codon_local_frame = 0;
+    // Encode-DP event cost: deliberately higher than codon_fs so that a
+    // lone sequencing-error stop can never be dodged (a single-event
+    // escape costs codon_fs_enc but saves only codon_stop_pen=60); a real
+    // frameshift still wins because its off-frame tail accrues >=2 stops.
+    float  codon_fs_enc   = 80.0f;
 };
 
 // Position-specific gap penalties -- THE SPEC. The kernel implements the
@@ -107,8 +127,35 @@ struct CodonQc { int frame = 0; int stops = 0; int partial = 0; };
 std::vector<std::string> codon_encode(const std::vector<std::string>& seqs,
                                       int gc_def,
                                       std::vector<CodonQc>* qc = nullptr);
+// Local-frame variant: a stop-avoiding DP partitions each sequence into
+// codon blocks (3 nt -> token) and frameshift blocks (1-2 nt -> kept out
+// of the token stream; codon_refine restores them as event columns).
+// Rows with internal frameshifts keep downstream tokens in-frame; clean
+// rows tokenize identically to codon_encode. Enabled via
+// Params::codon_local_frame (implies codon_refine >= 1).
+std::vector<std::string> codon_encode_local(
+        const std::vector<std::string>& seqs, const Params& P,
+        std::vector<CodonQc>* qc = nullptr);
 // Expand codon-token aligned rows back to nucleotides (token 64 -> NNN).
 std::vector<std::string> codon_decode(const std::vector<std::string>& rows);
+
+// Stage-2 codon refinement -- MACSE-style frameshift events. Realigns each
+// raw nucleotide sequence against the codon-column profile of the REST of
+// the stage-1 MSA with an extended Gotoh whose move set adds 1-2 nt indels
+// charged as frameshift events (codon_fs, or codon_fs_term inside the
+// first/last codon of the sequence). A fs event becomes a new column 1-2 nt
+// wide holding only that row's residues (the "!" of MACSE); an in-frame
+// codon insertion becomes a 3-nt column. A sequence may also cover a codon
+// column partially (1-2 nt + gaps, scored against the column's nt
+// marginals) -- a deletion frameshift. The output is a NT MSA no longer
+// guaranteed %3. rounds>1 rebuilds the codon profile from the refined MSA
+// each pass (original codon columns only; insertion columns are
+// re-derived). Input order preserved; aln_nt must be the codon_decode()
+// output of the stage-1 token MSA (all columns width 3, same row order as
+// seqs_nt).
+std::vector<std::string> codon_refine(const std::vector<std::string>& seqs_nt,
+                                      const std::vector<std::string>& aln_nt,
+                                      const Params& P, int rounds);
 
 // ---------------------------------------------------------------- profile
 struct Profile {

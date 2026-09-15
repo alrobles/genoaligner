@@ -2,6 +2,8 @@
 // Semantics are fixed here BEFORE the GPU kernel exists -- every later
 // kernel is validated against this file's outputs, not the other way.
 #include <genoaligner/msa/msa.hpp>
+#include <algorithm>
+#include <map>
 #include <unordered_map>
 #include <climits>
 #include <cassert>
@@ -251,6 +253,91 @@ std::vector<std::string> codon_encode(const std::vector<std::string>& seqs,
     return out;
 }
 
+// Local-frame tokenization: a 1-D DP partitions each raw sequence into
+// codon blocks (3 nt -> codon token) and frameshift blocks (1-2 nt ->
+// left out of the token stream; codon_refine restores them as event
+// columns from the raw sequence). dp[i] = best score covering seq[0..i):
+//   codon  [i-3,i): +1 sense / -codon_stop_pen stop / 0 ambiguous (N)
+//   fs blk [i-d,i): -fs cost (codon_fs_term near either sequence end)
+// The first 0-2 nts may be skipped free (that IS the frame choice).
+// A clean row emits the identical tiling as codon_encode; a row with an
+// internal frameshift pays ONE event and resumes in-frame downstream, so
+// its tokens stay correct instead of reading garbage for half the row --
+// the wrong-frame tokens are what poisoned stage-1 anchoring in fs cells.
+// A single isolated stop is NOT dodged: escaping it costs a shift out AND
+// a shift back (~2*codon_fs) which never beats one -codon_stop_pen.
+// NOTE: the token stream no longer covers every nt, so codon_decode
+// alone cannot reproduce the raw sequence -- --local-frame implies
+// --refine >= 1 (enforced in genomsa.cpp).
+std::vector<std::string> codon_encode_local(const std::vector<std::string>& seqs,
+                                            const Params& P,
+                                            std::vector<CodonQc>* qc) {
+    const signed char* aa = codon_aa_table(P.gc_def);
+    const float NEG = -1e30f;
+    std::vector<std::string> out(seqs.size());
+    if (qc) qc->assign(seqs.size(), {});
+    for (size_t s = 0; s < seqs.size(); ++s) {
+        const std::string& q = seqs[s];
+        const int L = (int)q.size();
+        std::string& e = out[s];
+        if (L < 3) { if (L) e.push_back((char)(128 + 64)); continue; }
+        auto fsc = [&](int pos) {
+            return (pos < 3 || pos > L - 3) ? P.codon_fs_term : P.codon_fs_enc;
+        };
+        // tr codes: 0 unset/init, 1 codon (from i-3), 2,3 fs block len 1,2
+        std::vector<float> dp(L + 1, NEG);
+        std::vector<uint8_t> tr(L + 1, 0);
+        dp[0] = dp[1] = dp[2] = 0.f;
+        for (int i = 3; i <= L; ++i) {
+            float bv = NEG; uint8_t bt = 0;
+            int a = nt4(q[i - 3]), b = nt4(q[i - 2]), c = nt4(q[i - 1]);
+            float cs = (a < 0 || b < 0 || c < 0)
+                       ? 0.f
+                       : (aa[a * 16 + b * 4 + c] < 0 ? -P.codon_stop_pen : 1.f);
+            float pv = dp[i - 3];
+            if (pv > NEG / 2 && pv + cs > bv) { bv = pv + cs; bt = 1; }
+            for (int d = 1; d <= 2; ++d) {
+                pv = dp[i - d];
+                if (pv <= NEG / 2) continue;
+                float cand = pv - fsc(i - d);
+                if (cand > bv) { bv = cand; bt = (uint8_t)(1 + d); }
+            }
+            dp[i] = bv; tr[i] = bt;
+        }
+        // trailing 1-2 nt partial -> token-64 marker at terminal cost
+        int ei = L; float eb = dp[L];
+        for (int r = 1; r <= 2; ++r)
+            if (dp[L - r] - P.codon_fs_term > eb) { eb = dp[L - r] - P.codon_fs_term; ei = L - r; }
+        std::vector<int> blocks;             // block lens: 3=codon, -1/-2=fs
+        int i = ei;
+        while (i > 0) {
+            uint8_t t = tr[i];
+            if (t == 0) break;               // leading drop of i nts
+            if (t == 1) { blocks.push_back(3); i -= 3; }
+            else      { int d = t - 1; blocks.push_back(-d); i -= d; }
+        }
+        if (ei < L) blocks.push_back(-(L - ei));
+        std::reverse(blocks.begin(), blocks.end());
+        int stops = 0, partial = 0;
+        int p = i;                           // first block starts after drop
+        for (int bl : blocks) {
+            if (bl == 3) {
+                int a2 = nt4(q[p]), b2 = nt4(q[p + 1]), c2 = nt4(q[p + 2]);
+                int tok = (a2 < 0 || b2 < 0 || c2 < 0) ? 64
+                                                       : a2 * 16 + b2 * 4 + c2;
+                if (tok < 64 && aa[tok] < 0) ++stops;
+                e.push_back((char)(128 + tok));
+                p += 3;
+            } else {                          // fs/trailing block: the nts
+                ++partial;                    // stay out of the token stream;
+                p += -bl;                     // codon_refine restores them
+            }                                 // as event columns from raw seq
+        }
+        if (qc) (*qc)[s] = {0, stops, partial};
+    }
+    return out;
+}
+
 std::vector<std::string> codon_decode(const std::vector<std::string>& rows) {
     std::vector<std::string> out(rows.size());
     for (size_t s = 0; s < rows.size(); ++s) {
@@ -265,6 +352,373 @@ std::vector<std::string> codon_decode(const std::vector<std::string>& rows) {
         }
     }
     return out;
+}
+
+// ------------------------------------------------- stage-2 codon refine
+// MACSE-style frameshift realignment (see codon_refine in msa.hpp for the
+// contract). The stage-1 MSA is a grid of codon columns; each raw nt
+// sequence is re-aligned against the profile of the OTHER rows with a
+// Gotoh whose move set adds frameshift events:
+//   MATCH   3 nt <-> 1 column    codon sub-matrix score (65x65)
+//   INS3    3 nt <-> nothing     in-frame codon insertion (affine X run)
+//   FSINS   1-2 nt <-> nothing   frameshift insertion, cost codon_fs
+//   FSDEL   1-2 nt <-> 1 column  partial codon cover, nt-marginal score
+//                                + codon_fs (a deletion frameshift)
+//   DEL     nothing <-> 1 column codon deletion (affine Y run)
+// A fs event touching the first/last codon of the sequence costs
+// codon_fs_term instead of codon_fs (MACSE -fs/-fs_term). The DP grid is
+// (nt index i, column index j): the reading frame is implicit in i mod 3,
+// so a fs event simply shifts which triples are matched downstream.
+namespace {
+
+// Profile of codon columns extracted from a NT MSA at the char offsets in
+// cofs (one offset per width-3 codon column). Counts include ALL rows; the
+// DP subtracts the realigned row's own contribution on the fly.
+struct CodonProf {
+    int C = 0;
+    int nseq = 0;
+    std::vector<std::array<float, 65>>            ccnt;  // token counts
+    std::vector<float>                            ocnt;  // non-gap rows
+    std::vector<std::array<std::array<float,4>,3>> ncnt; // base counts/pos
+    std::vector<std::vector<int>>                 tok;   // row -> col -> tok
+};
+
+int codon_token3(const char* p) {  // 3 nts -> index 0..63, 64 = ambiguous
+    int a = nt4(p[0]), b = nt4(p[1]), c = nt4(p[2]);
+    if (a < 0 || b < 0 || c < 0) return 64;
+    return a * 16 + b * 4 + c;
+}
+
+CodonProf codon_prof_build(const std::vector<std::string>& rows,
+                           const std::vector<int>& cofs) {
+    CodonProf cp;
+    cp.C = (int)cofs.size();
+    cp.nseq = (int)rows.size();
+    cp.ccnt.assign(cp.C, {});
+    cp.ocnt.assign(cp.C, 0.f);
+    cp.ncnt.assign(cp.C, {});
+    cp.tok.assign(rows.size(), std::vector<int>(cp.C, -1));
+    for (size_t s = 0; s < rows.size(); ++s) {
+        for (int j = 0; j < cp.C; ++j) {
+            const char* p = rows[s].c_str() + cofs[j];
+            if (p[0] == '-' && p[1] == '-' && p[2] == '-') continue;
+            int t = codon_token3(p);
+            cp.tok[s][j] = t;
+            cp.ccnt[j][t] += 1.f;
+            cp.ocnt[j] += 1.f;
+            if (t < 64)
+                for (int q = 0; q < 3; ++q)
+                    cp.ncnt[j][q][(t >> (4 - 2 * q)) & 3] += 1.f;
+        }
+    }
+    return cp;
+}
+
+// nt substitution score vs a base marginal (P.match/ts/tv weighted mean).
+float ntm_score(int nt, const float marg[4], const Params& P) {
+    float s = 0;
+    for (int b = 0; b < 4; ++b) {
+        if (!marg[b]) continue;
+        float m = (nt == b) ? P.match
+                 : ((nt==0&&b==2)||(nt==2&&b==0)||(nt==1&&b==3)||(nt==3&&b==1)
+                    ? P.ts : P.tv);
+        s += marg[b] * m;
+    }
+    return s;
+}
+
+// Where the row lands after realignment: fill[j] is its 3 chars at codon
+// column j ("---" = absent), ins[b] the nt blocks it inserts at boundary b
+// (before column b; b == C = trailing).
+struct Place {
+    std::vector<std::string>              fill;
+    std::vector<std::vector<std::string>> ins;
+};
+
+Place codon_realign_row(const std::string& seq, const CodonProf& cp,
+                        int self, const Params& P,
+                        const std::vector<float>& dot) {
+    const int L = (int)seq.size(), C = cp.C;
+    Place pl;
+    pl.fill.assign(C, "---");
+    pl.ins.assign(C + 1, {});
+    if (L == 0 || C == 0 || cp.nseq <= 1) {
+        if (L) pl.ins[0].push_back(seq);
+        return pl;
+    }
+    const std::vector<int>& stok = cp.tok[self];
+    // pi[k] = backbone column where stage 1 put this row's k-th codon.
+    std::vector<int> pi;
+    for (int j = 0; j < C; ++j)
+        if (stok[j] >= 0) pi.push_back(j);
+    const int K = (int)pi.size();
+    if (K == 0) { pl.ins[0].push_back(seq); return pl; }
+
+    // Phase DP: the column assignment is frozen to stage-1's footprint --
+    // codon slot k always fills backbone column pi[k]. The DP only decides
+    // WHERE each codon's raw-nt boundary falls. State (k, s): codon k
+    // starts at raw position s. Transition step st = s - s_prev:
+    //   st = 3    -> in-frame, codon gets raw[s'..s'+3)
+    //   st = 4,5  -> frameshift insertion: st-3 nts skipped, emitted as an
+    //                insertion block right after column pi[k-1]
+    //   st = 1,2  -> frameshift deletion: codon k-1 is partial (st nts)
+    //   st = 0    -> codon slot left empty (a normal in-frame deletion)
+    // Column membership can never move, so the stage-1 skeleton (its SPS)
+    // is preserved exactly; the pass repairs reading frame and emits
+    // MACSE-style 1-2 nt event columns. Two alternatives were tried and
+    // rejected: a free seq-vs-profile realignment let each row relocate
+    // into any locally-dense window (SPS collapse to 0.016), and a banded
+    // variant letting codons move +/- d slots still lost SPS in every
+    // regime (fs-0.5: 0.206 frozen vs 0.19 at d=4, 0.16 at d=40; easy:
+    // 0.89 vs 0.86) -- per-row greedy relocation against a noisy profile
+    // picks better-scoring non-homologous columns.
+    const float NEG = -1e30f;
+    const float inv_nm1 = 1.f / (cp.nseq - 1);
+    auto cscore = [&](int t, int j) {
+        float s = dot[(size_t)t * C + j];
+        int sj = stok[j];
+        if (sj >= 0) s -= P.sub[t * 65 + sj];
+        return s * inv_nm1;
+    };
+    // nt marginals of column j minus self, on the same per-MSA scale as
+    // cscore (divided by nseq-1, not occupancy) so partial fills and full
+    // codon fills are directly comparable; false when the column has no
+    // other coverage.
+    auto marginals = [&](int j, float m[3][4]) -> bool {
+        float ng = cp.ocnt[j] - (stok[j] >= 0 ? 1.f : 0.f);
+        if (ng <= 0) return false;
+        int st_ = stok[j];
+        for (int p = 0; p < 3; ++p)
+            for (int b = 0; b < 4; ++b) {
+                float v = cp.ncnt[j][p][b];
+                if (st_ >= 0 && st_ < 64 && ((st_ >> (4 - 2 * p)) & 3) == b)
+                    v -= 1.f;
+                m[p][b] = v * inv_nm1;
+            }
+        return true;
+    };
+    // score of placing nts p[0..len) at column j (len 3 = codon score,
+    // len 1-2 = best nt-marginal placement over ordered positions).
+    auto pscore_at = [&](const char* p, int len, int j) -> float {
+        if (len >= 3) return cscore(codon_token3(p), j);
+        float m[3][4];
+        if (!marginals(j, m)) return 0.f;
+        int n0 = nt4(p[0]);
+        if (n0 < 0) return 0.f;
+        if (len == 1) {
+            float bs = -1e30f;
+            for (int q = 0; q < 3; ++q) bs = std::max(bs, ntm_score(n0, m[q], P));
+            return bs;
+        }
+        int n1 = nt4(p[1]);
+        if (n1 < 0) return 0.f;
+        float bs = ntm_score(n0, m[0], P) + ntm_score(n1, m[1], P);
+        bs = std::max(bs, ntm_score(n0, m[0], P) + ntm_score(n1, m[2], P));
+        return std::max(bs, ntm_score(n0, m[1], P) + ntm_score(n1, m[2], P));
+    };
+    // best marginal placement of p[0..len) written into a 3-char fill
+    auto partial_fill = [&](const char* p, int len, int j) -> std::string {
+        if (len >= 3) return std::string(p, 3);
+        std::string f = "---";
+        float m[3][4];
+        if (!marginals(j, m)) { for (int q = 0; q < len; ++q) f[q] = p[q]; return f; }
+        int n0 = nt4(p[0]);
+        if (n0 < 0) { for (int q = 0; q < len; ++q) f[q] = p[q]; return f; }
+        if (len == 1) {
+            int bp = 0; float bs = -1e30f;
+            for (int q = 0; q < 3; ++q) {
+                float s = ntm_score(n0, m[q], P);
+                if (s > bs) { bs = s; bp = q; }
+            }
+            f[bp] = p[0];
+            return f;
+        }
+        int n1 = nt4(p[1]);
+        if (n1 < 0) { f[0] = p[0]; f[1] = p[1]; return f; }
+        const int PP[3][2] = {{0,1},{0,2},{1,2}};
+        int bp = 0, bq = 1; float bs = -1e30f;
+        for (auto& pr : PP) {
+            float s = ntm_score(n0, m[pr[0]], P) + ntm_score(n1, m[pr[1]], P);
+            if (s > bs) { bs = s; bp = pr[0]; bq = pr[1]; }
+        }
+        f[bp] = p[0]; f[bq] = p[1];
+        return f;
+    };
+    // frameshift event cost; terminal events (near either seq end) cheaper
+    auto fsc = [&](int pos) {
+        return (pos < 3 || pos > L - 3) ? P.codon_fs_term : P.codon_fs;
+    };
+    auto occm = [&](int j) {
+        return (cp.ocnt[j] - (stok[j] >= 0 ? 1.f : 0.f)) * inv_nm1;
+    };
+
+    const int D = (int)P.codon_refine_band;   // max |s - 3k| drift, nt
+    const int ND = 2 * D + 1;
+    auto IX = [&](int k, int s) { return (size_t)k * ND + (s - 3 * k + D); };
+    std::vector<float>   dp((size_t)K * ND, NEG);
+    std::vector<uint8_t> tr((size_t)K * ND, 0);   // step+1 into cell
+    // codon 0 starts at s in [0, min(D, L)]: leading nts are a free
+    // prefix insertion emitted at boundary pi[0]; s == L is allowed so a
+    // stage-1 partial-codon artefact can be vacated entirely.
+    for (int s = 0; s <= std::min(D, L); ++s) dp[IX(0, s)] = 0.f;
+    // step preference order on ties: in-frame, +1 ins, -1 del, +2, -2,
+    // empty (whole-codon deletion from this row -- a normal in-frame gap).
+    static const int STEP[6] = {3, 4, 2, 5, 1, 0};
+    for (int k = 1; k < K; ++k) {
+        int slo = std::max(0, 3 * k - D), shi = std::min(L, 3 * k + D);
+        for (int s = slo; s <= shi; ++s) {
+            float bv = NEG; int bst = 0;
+            for (int st : STEP) {
+                int sp = s - st;
+                if (sp < 0) continue;
+                int dpk = sp - 3 * (k - 1);
+                if (dpk > D || dpk < -D) continue;      // predecessor bounds
+                float pv = dp[IX(k - 1, sp)];
+                if (pv <= NEG / 2) continue;
+                float cand;
+                if (st == 0) {                          // pi[k-1] empty
+                    cand = pv - psgp_open(occm(pi[k - 1]), P);
+                } else {
+                    int len = std::min(3, st);
+                    if (sp + len > L) len = L - sp;     // seq tail partial
+                    if (len < 1) continue;
+                    cand = pv + pscore_at(seq.c_str() + sp, len, pi[k - 1]);
+                    if (st > 3)      cand -= fsc(sp + 3);   // fs insertion
+                    else if (st < 3) cand -= fsc(sp);       // fs deletion
+                }
+                if (cand > bv) { bv = cand; bst = st; }
+            }
+            if (bv > NEG / 2) { dp[IX(k, s)] = bv; tr[IX(k, s)] = (uint8_t)(bst + 1); }
+        }
+    }
+    // endpoint: codon K-1 starts at s. s == L means the last stage-1 slot
+    // stays empty (e.g. its token was a partial-codon artefact); s < L
+    // fills raw[s..s+min(3,L-s)) and any trailing nts become a free
+    // insertion block after column pi[K-1].
+    int bes = -1; float eb = NEG;
+    {
+        int slo = std::max(0, 3 * (K - 1) - D), shi = std::min(L, 3 * (K - 1) + D);
+        for (int s = slo; s <= shi; ++s) {
+            float pv = dp[IX(K - 1, s)];
+            if (pv <= NEG / 2) continue;
+            float v = pv + (s < L
+                            ? pscore_at(seq.c_str() + s, std::min(3, L - s), pi[K - 1])
+                            : 0.f);
+            if (v > eb) { eb = v; bes = s; }
+        }
+    }
+    if (bes < 0) {                    // corridor unreachable: dump raw
+        pl.ins[0].push_back(seq);
+        return pl;
+    }
+    // traceback from codon K-1 down to 0
+    int s = bes;
+    if (s < L) {
+        int len = std::min(3, L - s);
+        pl.fill[pi[K - 1]] = partial_fill(seq.c_str() + s, len, pi[K - 1]);
+        if (s + len < L)
+            pl.ins[pi[K - 1] + 1].insert(pl.ins[pi[K - 1] + 1].begin(),
+                                         seq.substr(s + len));
+    }
+    for (int k = K - 1; k >= 1; --k) {
+        int st = (int)tr[IX(k, s)] - 1;
+        if (st < 0 || st > 5) break;  // unreached predecessor: stop
+        int sp = s - st;
+        if (st > 0) {
+            int len = std::min(3, st);
+            if (sp + len > L) len = L - sp;
+            pl.fill[pi[k - 1]] = partial_fill(seq.c_str() + sp, len, pi[k - 1]);
+            if (st > 3)               // skipped nts: ins block after pi[k-1]
+                pl.ins[pi[k - 1] + 1].insert(pl.ins[pi[k - 1] + 1].begin(),
+                                             seq.substr(sp + 3, st - 3));
+        }
+        s = sp;
+    }
+    if (s > 0)                        // leading nts -> insertion before pi[0]
+        pl.ins[pi[0]].insert(pl.ins[pi[0]].begin(), seq.substr(0, s));
+    return pl;
+}
+
+} // namespace
+
+// Merge per-row placements into a NT MSA. Insertion blocks at boundary b
+// are emitted before codon column b, ordered by row index (each event is
+// its own column, exactly how merge_profiles emits one-sided runs).
+// Codon columns no row covers are dropped (they can only arise from a
+// stage-1 column that refine uncovers everywhere). cofs receives the char
+// offset of each kept codon column in the output rows.
+static std::vector<std::string> codon_refine_merge(
+        const std::vector<Place>& pls, int C, std::vector<int>* cofs) {
+    const int n = (int)pls.size();
+    // Per boundary: insertion blocks of the SAME length share columns.
+    // Rationale: an indel inherited on an internal tree branch produces
+    // same-position, same-length insertions in every descendant row --
+    // emitting them into shared columns recovers those homologous pairs
+    // (the truth MSA groups them in one column). A row's k-th block of a
+    // given length gets its own column set, so a row can still carry two
+    // distinct events at one boundary.
+    std::vector<char> keep(C, 0);
+    for (int s = 0; s < n; ++s)
+        for (int j = 0; j < C; ++j)
+            if (pls[s].fill[j] != "---") keep[j] = 1;
+    cofs->clear();
+    std::vector<std::string> out(n);
+    for (int s = 0; s < n; ++s) {
+        std::string r;
+        for (int b = 0; b <= C; ++b) {
+            // bucket blocks at boundary b by (length, per-row occurrence);
+            // map key order is deterministic (len, occurrence).
+            std::map<std::pair<int,int>,
+                     std::map<int, const std::string*>> bk;
+            {
+                std::vector<std::map<int,int>> seen(n);
+                for (int t = 0; t < n; ++t)
+                    for (const auto& nts : pls[t].ins[b])
+                        bk[{(int)nts.size(),
+                            seen[t][(int)nts.size()]++}][t] = &nts;
+            }
+            for (auto& kv : bk)
+                for (int p = 0; p < kv.first.first; ++p) {
+                    auto it = kv.second.find(s);
+                    r += (it == kv.second.end() ? '-' : (*it->second)[p]);
+                }
+            if (b < C && keep[b]) {
+                if (s == 0) cofs->push_back((int)r.size());
+                r += pls[s].fill[b];
+            }
+        }
+        out[s] = r;
+    }
+    return out;
+}
+
+std::vector<std::string> codon_refine(
+        const std::vector<std::string>& seqs_nt,
+        const std::vector<std::string>& aln_nt,
+        const Params& P, int rounds) {
+    if (rounds < 1 || aln_nt.empty()) return aln_nt;
+    std::vector<std::string> cur = aln_nt;
+    int C = (int)cur[0].size() / 3;
+    std::vector<int> cofs(C);
+    for (int j = 0; j < C; ++j) cofs[j] = 3 * j;
+    for (int r = 0; r < rounds; ++r) {
+        CodonProf cp = codon_prof_build(cur, cofs);
+        // dot[t][j] = sum_b ccnt[j][b] * sub[t][b] over all rows; shared
+        // by every row (each subtracts its own contribution per cell).
+        std::vector<float> dot((size_t)65 * cp.C, 0.f);
+        for (int t = 0; t < 65; ++t)
+            for (int j = 0; j < cp.C; ++j) {
+                float s = 0;
+                for (int b = 0; b < 65; ++b)
+                    if (cp.ccnt[j][b]) s += cp.ccnt[j][b] * P.sub[t * 65 + b];
+                dot[(size_t)t * cp.C + j] = s;
+            }
+        std::vector<Place> pls(cp.nseq);
+        for (int s = 0; s < cp.nseq; ++s)
+            pls[s] = codon_realign_row(seqs_nt[s], cp, s, P, dot);
+        cur = codon_refine_merge(pls, cp.C, &cofs);
+    }
+    return cur;
 }
 
 Profile profile_from_seq(const std::string& seq, int alpha) {

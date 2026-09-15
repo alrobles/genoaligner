@@ -22,7 +22,8 @@ int main(int argc, char** argv) {
         fprintf(stderr, "usage: %s input.fasta output.fasta [--cpu] [--kmer K] [--global] "
                         "[--protein|--codon] [--gc-def N] [--gap-open G] [--gap-extend G] "
                         "[--psgp|--no-psgp] [--gappy T|--no-gappy] [--tree-out F] "
-                        "[--codon-qc F]\n",
+                        "[--codon-qc F] [--refine N] [--fs-cost X] [--fs-term-cost X]\n"
+                        "                 [--refine-band N]\n",
                 argv[0]);
         return 2;
     }
@@ -57,6 +58,12 @@ int main(int argc, char** argv) {
         else if (a == "--no-gappy") P.gappy = 0.0f;
         else if (a == "--tree-out" && i + 1 < argc) tree_out = argv[++i];
         else if (a == "--codon-qc" && i + 1 < argc) qc_out = argv[++i];
+        else if (a == "--refine" && i + 1 < argc) P.codon_refine = atoi(argv[++i]);
+        else if (a == "--fs-cost" && i + 1 < argc) P.codon_fs = atof(argv[++i]);
+        else if (a == "--fs-term-cost" && i + 1 < argc) P.codon_fs_term = atof(argv[++i]);
+        else if (a == "--refine-band" && i + 1 < argc) P.codon_refine_band = atof(argv[++i]);
+        else if (a == "--local-frame") P.codon_local_frame = 1;
+        else if (a == "--fs-enc-cost" && i + 1 < argc) P.codon_fs_enc = atof(argv[++i]);
         else { fprintf(stderr, "unknown arg: %s\n", a.c_str()); return 2; }
     }
 
@@ -75,8 +82,11 @@ int main(int argc, char** argv) {
 
     // codon mode: tokenize to codons up front, decode on output
     std::vector<genomsa::CodonQc> cqc;
+    const std::vector<std::string> orig = codon_mode ? seqs : std::vector<std::string>{};
     if (codon_mode) {
-        seqs = genomsa::codon_encode(seqs, P.gc_def, &cqc);
+        seqs = P.codon_local_frame
+               ? genomsa::codon_encode_local(seqs, P, &cqc)
+               : genomsa::codon_encode(seqs, P.gc_def, &cqc);
         int f1 = 0, f2 = 0, st = 0, pt = 0;
         for (auto& q : cqc) { f1 += q.frame == 1; f2 += q.frame == 2;
                               st += q.stops; pt += q.partial; }
@@ -107,7 +117,24 @@ int main(int argc, char** argv) {
             std::chrono::duration<double>(t1 - t0).count(),
             use_cpu ? "cpu-ref" : "gpu");
 
-    if (codon_mode) msa = genomsa::codon_decode(msa);
+    if (codon_mode) {
+        msa = genomsa::codon_decode(msa);
+        // --local-frame marks fs events as token-64 placeholders; only the
+        // refine pass (driven by the raw seqs) restores the real nts, so
+        // it is mandatory for content-correct output.
+        if (P.codon_local_frame && P.codon_refine < 1) {
+            P.codon_refine = 1;
+            fprintf(stderr, "note: --local-frame implies --refine 1\n");
+        }
+        if (P.codon_refine > 0) {
+            auto r0 = std::chrono::steady_clock::now();
+            msa = genomsa::codon_refine(orig, msa, P, P.codon_refine);
+            fprintf(stderr, "codon refine: %d round(s), %.2fs\n",
+                    P.codon_refine,
+                    std::chrono::duration<double>(
+                        std::chrono::steady_clock::now() - r0).count());
+        }
+    }
 
     FILE* f = fopen(out_path, "w");
     if (!f) { fprintf(stderr, "cannot write %s\n", out_path); return 1; }

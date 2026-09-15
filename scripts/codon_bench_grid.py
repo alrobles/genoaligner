@@ -164,6 +164,8 @@ def main():
     ap.add_argument("--tools", default="genomsa")
     ap.add_argument("--genomsa", default="genomsa")
     ap.add_argument("--genomsa-cpu", action="store_true")
+    ap.add_argument("--genomsa-args", default="",
+                    help="extra args appended to the genomsa command line")
     ap.add_argument("--macse", default="macse")
     ap.add_argument("--macse-refine", action="store_true")
     ap.add_argument("--prank", default="prank")
@@ -200,6 +202,8 @@ def main():
                    "--gc-def", str(args.gc)]
             if args.genomsa_cpu:
                 cmd.append("--cpu")
+            if args.genomsa_args:
+                cmd += args.genomsa_args.split()
             dt, rc = run(cmd, args.timeout, log)
             if rc == 0 and os.path.exists(outp):
                 got = outp
