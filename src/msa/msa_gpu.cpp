@@ -132,7 +132,52 @@ bool msa_align_gpu(const std::vector<std::string>& seqs, const Params& P,
     };
     int lvli = 0;
 
-    std::vector<void*> dev;
+    // Persistent device arena. NJ guide trees are near-caterpillar, so the
+    // level loop runs O(n) iterations; allocating+freeing per level costs
+    // ~24 synchronous HIP calls each and dominated walltime. Buffers grow
+    // on demand and persist across levels; freed once on function exit.
+    float*      d_fdata = nullptr; size_t cap_fdata = 0;
+    MsaPPPair*  d_pairs = nullptr; size_t cap_pairs = 0;
+    MsaPPResult* d_res  = nullptr; size_t cap_res   = 0;
+    uint8_t*    d_dirs  = nullptr; size_t cap_dirs  = 0;
+    uint8_t*    d_cig   = nullptr; size_t cap_cig   = 0;
+    int*        d_meta  = nullptr; size_t cap_meta  = 0;
+    float*      d_scr   = nullptr; size_t cap_scr   = 0;
+    size_t*     d_db = nullptr; size_t* d_da = nullptr;
+    size_t*     d_cb = nullptr;
+    size_t*     d_sb = nullptr; size_t* d_sa = nullptr;
+    size_t      cap_db = 0, cap_da = 0, cap_cb = 0, cap_sb = 0, cap_sa = 0;
+    auto ensure = [&](void** p, size_t* cap, size_t need,
+                      const char* what) {
+        if (need == 0) need = 8;
+        if (need <= *cap) return true;
+        if (*p) hipFree(*p);
+        const size_t bytes = need + need / 4;   // 25% growth headroom
+        if (hipMalloc(p, bytes) != hipSuccess) {
+            err = std::string("hipMalloc ") + what;
+            *cap = 0; *p = nullptr;
+            return false;
+        }
+        *cap = bytes;
+        return true;
+    };
+    // Frees whatever the arena pointers hold at scope exit (references, so
+    // reallocations through `ensure` stay covered on every exit path).
+    struct ArenaGuard {
+        float*& fdata; MsaPPPair*& pairs; MsaPPResult*& res;
+        uint8_t*& dirs; uint8_t*& cig; int*& meta; float*& scr;
+        size_t *&db, *&da, *&cb, *&sb, *&sa;
+        ~ArenaGuard() {
+            if (fdata) hipFree(fdata); if (pairs) hipFree(pairs);
+            if (res) hipFree(res);     if (dirs) hipFree(dirs);
+            if (cig) hipFree(cig);     if (meta) hipFree(meta);
+            if (scr) hipFree(scr);     if (db) hipFree(db);
+            if (da) hipFree(da);       if (cb) hipFree(cb);
+            if (sb) hipFree(sb);       if (sa) hipFree(sa);
+        }
+    } arena{d_fdata, d_pairs, d_res, d_dirs, d_cig, d_meta, d_scr,
+            d_db, d_da, d_cb, d_sb, d_sa};
+
     for (const auto& level : levels) {
         const int np = (int)level.size();
         // ---- pack this level's pairs -----------------------------------
@@ -184,41 +229,25 @@ bool msa_align_gpu(const std::vector<std::string>& seqs, const Params& P,
             }
         }
 
-        // ---- device buffers ---------------------------------------------
-        float*      d_fdata = nullptr;
-        MsaPPPair*  d_pairs = nullptr;
-        MsaPPResult* d_res  = nullptr;
-        uint8_t*    d_dirs  = nullptr;
-        uint8_t*    d_cig   = nullptr;
-        int*        d_meta  = nullptr;
-        float*      d_scr   = nullptr;
-        size_t*     d_db = nullptr; size_t* d_da = nullptr;
-        size_t*     d_cb = nullptr;
-        size_t*     d_sb = nullptr; size_t* d_sa = nullptr;
-        auto mal = [&](void** p, size_t bytes, const char* what) {
-            if (bytes == 0) bytes = 8;
-            if (hipMalloc(p, bytes) != hipSuccess) {
-                err = std::string("hipMalloc ") + what;
-                return false;
-            }
-            dev.push_back(*p);
-            return true;
-        };
-        if (!mal((void**)&d_fdata, fdata.size() * sizeof(float), "fdata") ||
-            !mal((void**)&d_pairs, np * sizeof(MsaPPPair), "pairs") ||
-            !mal((void**)&d_res,   np * sizeof(MsaPPResult), "res") ||
-            !mal((void**)&d_dirs,  dtot, "dirs") ||
-            !mal((void**)&d_cig,   ctot, "cig") ||
-            !mal((void**)&d_meta,  np * 2 * sizeof(int), "meta") ||
-            !mal((void**)&d_scr,   stot * sizeof(float), "scratch") ||
-            !mal((void**)&d_db, np * sizeof(size_t), "dir_base") ||
-            !mal((void**)&d_da, np * sizeof(size_t), "dir_avail") ||
-            !mal((void**)&d_cb, np * sizeof(size_t), "cig_base") ||
-            !mal((void**)&d_sb, np * sizeof(size_t), "scr_base") ||
-            !mal((void**)&d_sa, np * sizeof(size_t), "scr_avail")) {
-            hip_free_all(dev);
+        // ---- grow arena to this level's needs --------------------------
+        if (!ensure((void**)&d_fdata, &cap_fdata,
+                    fdata.size() * sizeof(float), "fdata") ||
+            !ensure((void**)&d_pairs, &cap_pairs,
+                    np * sizeof(MsaPPPair), "pairs") ||
+            !ensure((void**)&d_res, &cap_res,
+                    np * sizeof(MsaPPResult), "res") ||
+            !ensure((void**)&d_dirs, &cap_dirs, dtot, "dirs") ||
+            !ensure((void**)&d_cig, &cap_cig, ctot, "cig") ||
+            !ensure((void**)&d_meta, &cap_meta,
+                    np * 2 * sizeof(int), "meta") ||
+            !ensure((void**)&d_scr, &cap_scr,
+                    stot * sizeof(float), "scratch") ||
+            !ensure((void**)&d_db, &cap_db, np * sizeof(size_t), "dir_base") ||
+            !ensure((void**)&d_da, &cap_da, np * sizeof(size_t), "dir_avail") ||
+            !ensure((void**)&d_cb, &cap_cb, np * sizeof(size_t), "cig_base") ||
+            !ensure((void**)&d_sb, &cap_sb, np * sizeof(size_t), "scr_base") ||
+            !ensure((void**)&d_sa, &cap_sa, np * sizeof(size_t), "scr_avail"))
             return false;
-        }
         if (stats && dtot > stats->dir_bytes) stats->dir_bytes = dtot;
         if (lvldbg) {
             uint64_t h = fnv(fdata.data(), fdata.size() * sizeof(float),
@@ -259,7 +288,6 @@ bool msa_align_gpu(const std::vector<std::string>& seqs, const Params& P,
             !cp(d_cb, cig_base.data(), np * sizeof(size_t), "cig_base") ||
             !cp(d_sb, scr_base.data(), np * sizeof(size_t), "scr_base") ||
             !cp(d_sa, scr_av.data(),   np * sizeof(size_t), "scr_avail")) {
-            hip_free_all(dev);
             return false;
         }
 
@@ -319,7 +347,6 @@ bool msa_align_gpu(const std::vector<std::string>& seqs, const Params& P,
 #endif
         if (le != hipSuccess || se != hipSuccess) {
             err = std::string("kernel: ") + hipGetErrorString(le != hipSuccess ? le : se);
-            hip_free_all(dev);
             return false;
         }
 
@@ -331,10 +358,8 @@ bool msa_align_gpu(const std::vector<std::string>& seqs, const Params& P,
             !cp(hmeta.data(), d_meta, np * 2 * sizeof(int), "meta",
                 hipMemcpyDeviceToHost) ||
             !cp(hcig.data(),  d_cig, ctot, "cig", hipMemcpyDeviceToHost)) {
-            hip_free_all(dev);
             return false;
         }
-        hip_free_all(dev);
         if (lvldbg) {
             uint64_t h = fnv(hres.data(), np * sizeof(MsaPPResult),
                              1469598103934665603ull);
