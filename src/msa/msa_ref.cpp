@@ -663,34 +663,36 @@ static std::vector<std::string> codon_refine_merge(
             if (pls[s].fill[j] != "---") keep[j] = 1;
     cofs->clear();
     std::vector<std::string> out(n);
-    for (int s = 0; s < n; ++s) {
-        std::string r;
-        for (int b = 0; b <= C; ++b) {
-            // bucket blocks at boundary b by (length, per-row occurrence);
-            // map key order is deterministic (len, occurrence).
-            std::map<std::pair<int,int>,
-                     std::map<int, const std::string*>> bk;
-            {
-                std::vector<std::map<int,int>> seen(n);
-                for (int t = 0; t < n; ++t)
-                    for (const auto& nts : pls[t].ins[b])
-                        bk[{(int)nts.size(),
-                            seen[t][(int)nts.size()]++}][t] = &nts;
-            }
-            for (auto& kv : bk)
-                for (int p = 0; p < kv.first.first; ++p) {
-                    auto it = kv.second.find(s);
-                    r += (it == kv.second.end() ? '-' : (*it->second)[p]);
-                }
-            if (b < C && keep[b]) {
-                if (s == 0) cofs->push_back((int)r.size());
-                r += pls[s].fill[b];
-            }
+    // Buckets are per-BOUNDARY, not per-(row,boundary): build once per b.
+    for (int b = 0; b <= C; ++b) {
+        // bucket blocks at boundary b by (length, per-row occurrence);
+        // map key order is deterministic (len, occurrence).
+        std::map<std::pair<int,int>,
+                 std::map<int, const std::string*>> bk;
+        {
+            std::vector<std::map<int,int>> seen(n);
+            for (int t = 0; t < n; ++t)
+                for (const auto& nts : pls[t].ins[b])
+                    bk[{(int)nts.size(),
+                        seen[t][(int)nts.size()]++}][t] = &nts;
         }
-        out[s] = r;
+        for (auto& kv : bk)
+            for (int p = 0; p < kv.first.first; ++p)
+                for (int s = 0; s < n; ++s) {
+                    auto it = kv.second.find(s);
+                    out[s] += (it == kv.second.end() ? '-' : (*it->second)[p]);
+                }
+        if (b < C && keep[b]) {
+            cofs->push_back((int)out[0].size());
+            for (int s = 0; s < n; ++s) out[s] += pls[s].fill[b];
+        }
     }
     return out;
 }
+
+// defined below (line ~815); the refine row map is its simplest caller.
+static void parallel_for(int total, int nthreads,
+                         const std::function<void(int, int)>& fn);
 
 std::vector<std::string> codon_refine(
         const std::vector<std::string>& seqs_nt,
@@ -701,6 +703,10 @@ std::vector<std::string> codon_refine(
     int C = (int)cur[0].size() / 3;
     std::vector<int> cofs(C);
     for (int j = 0; j < C; ++j) cofs[j] = 3 * j;
+    const int nthreads = [] {
+        unsigned h = std::thread::hardware_concurrency();
+        return (int)std::min(h ? h : 8u, 32u);
+    }();
     for (int r = 0; r < rounds; ++r) {
         CodonProf cp = codon_prof_build(cur, cofs);
         // dot[t][j] = sum_b ccnt[j][b] * sub[t][b] over all rows; shared
@@ -713,9 +719,13 @@ std::vector<std::string> codon_refine(
                     if (cp.ccnt[j][b]) s += cp.ccnt[j][b] * P.sub[t * 65 + b];
                 dot[(size_t)t * cp.C + j] = s;
             }
+        // Per-row phase DPs are independent given the frozen profile:
+        // disjoint writes into pls[s], reads of cp/dot are read-only.
         std::vector<Place> pls(cp.nseq);
-        for (int s = 0; s < cp.nseq; ++s)
-            pls[s] = codon_realign_row(seqs_nt[s], cp, s, P, dot);
+        parallel_for(cp.nseq, nthreads, [&](int lo, int hi) {
+            for (int s = lo; s < hi; ++s)
+                pls[s] = codon_realign_row(seqs_nt[s], cp, s, P, dot);
+        });
         cur = codon_refine_merge(pls, cp.C, &cofs);
     }
     return cur;
