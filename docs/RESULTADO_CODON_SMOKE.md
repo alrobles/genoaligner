@@ -275,8 +275,15 @@ El usuario pidió re-explorar el algoritmo integral en GPU. Implementado:
 
 **Paridad verificada**: `--cpu` vs kernel emulado por shim =
 byte-idéntico en fs-0.5/local-frame/refine2; **`PARITY:PASS` también en
-MI210 real** (hipcc ROCm 6.4.3, gfx90a, nodo r07r28n01) — subset BMI1
-150 seqs, kernel 0.18 s.
+MI210 real** (hipcc ROCm 6.4.3, gfx90a) — subset BMI1 150 seqs y locus
+completo ND1 (n=941, gc=2) byte-idénticos.
+
+**Benchmark MI210 (ND1, n=941, `--codon --local-frame`)**: refine GPU
+0.86 s (kernel 0.81 s) vs host 0.46 s; end-to-end 37.6 s GPU vs 12.3 s
+CPU (dominado por `msa_align` etapa-1, no por refine). Conclusión: el
+port es *correcto* (paridad bit-exacta en hardware real) pero no rinde
+a n~10³ — un thread/fila subutiliza el GPU mientras `parallel_for`
+host reparte bien. Solo tendría sentido a n≫512.
 
 **Contexto cuantitativo** (análisis "genie" sobre verdad fs-0.5): ~98.6%
 de pares homólogos viven en columnas densas (occ≥10); las columnas
