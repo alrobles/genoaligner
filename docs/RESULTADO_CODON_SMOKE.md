@@ -292,6 +292,19 @@ sparse/evento que un P-P "integral" preservaría son ~1.4% → headroom
 etapa-1, no en eventos — por eso se portó la DP de filas (barata, útil
 a n≫512) y no un kernel P-P nuevo.
 
+**Descomposición del error denso** (fs-0.5 seed 300000, gdef): de 4.4M
+pares verdaderos, 19.7% correctos, **65.9% caen en columnas densas pero
+distintas** — y 17% de las columnas-verdad quedan *partidas* en ≥2
+columnas nuestras densas (mayoría 2-way: dos clados forman columnas
+densas paralelas para el mismo residuo ancestral). El histograma de
+distancia entre columnas erróneas tiene picos cada 3 (desplazamientos
+de columna-codón enteros) más una masa >50 cols (regiones paralelas).
+Un detector naive columna-a-columna (disjunto + gap-run) dio precisión
+0.7% — la señal correcta es a nivel segmento (bloques paralelos de un
+clado vs otro). Posible vía: realineamiento de bloques por sub-árbol.
+Pero ojo: offsets sistemáticos por clado pueden no dañar la topología
+(RF) — veredicto pendiente del IQ-TREE downstream.
+
 ## Validación 31-locus (datos reales)
 
 - `align_genes_genomsa_lf.sbatch`: 31/31 loci completados con
