@@ -98,8 +98,6 @@ def splits(tree_path):
     return out, taxa
 
 
-a, ta = splits(sys.argv[1])
-b, tb = splits(sys.argv[2])
 # restrict both to shared taxa: drop splits whose taxa differ? Proper RF on
 # shared set requires pruning; here we just report on each tree's splits
 # over the union taxa indexing -- safer: rebuild with union labels.
@@ -143,10 +141,19 @@ def project(tree_path, keep):
     return out, taxa
 
 
-shared = sorted(set(ta) & set(tb))
-sa, _ = project(sys.argv[1], shared)
-sb, _ = project(sys.argv[2], shared)
-rf = len(sa ^ sb)
-rf_norm = rf / (len(sa) + len(sb)) if (sa or sb) else 0.0
-print(f"shared_taxa={len(shared)} splits_a={len(sa)} splits_b={len(sb)} "
-      f"RF={rf} RF_norm={rf_norm:.4f}")
+def rf_distance(path_a, path_b):
+    """Return (rf, rf_norm, n_shared) on the shared taxon set."""
+    _, ta = splits(path_a)
+    _, tb = splits(path_b)
+    shared = sorted(set(ta) & set(tb))
+    sa, _ = project(path_a, shared)
+    sb, _ = project(path_b, shared)
+    rf = len(sa ^ sb)
+    rf_norm = rf / (len(sa) + len(sb)) if (sa or sb) else 0.0
+    return rf, rf_norm, len(shared)
+
+
+if __name__ == '__main__':
+    rf, rf_norm, nshared = rf_distance(sys.argv[1], sys.argv[2])
+    print(f"shared_taxa={nshared} "
+          f"RF={rf} RF_norm={rf_norm:.4f}")
