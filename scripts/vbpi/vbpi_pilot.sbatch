@@ -22,10 +22,14 @@ mkdir -p "$WORK"
 [ -f "$VBPI/.patched" ] || { python3 $REPO/patch_vbpi_torch.py "$VBPI" && touch "$VBPI/.patched"; }
 
 # support trees: every available backbone checkpoint + ufboot + Upham ref
-TREES=$(ls $ROOT/phylogenyAI/results/*/backbone.treefile \
-          $ROOT/phylogenyAI/results/*/backbone.ufboot \
-          $ROOT/phylogenyAI/data/upham_ref/upham_pruned_4353.tre 2>/dev/null | tr '\n' ' ')
-echo "support sources: $TREES"
+TREES=""
+for f in $ROOT/phylogenyAI/results/*/backbone.treefile \
+         $ROOT/phylogenyAI/results/*/backbone.ufboot \
+         $ROOT/phylogenyAI/data/upham_ref/upham_pruned_4353.tre; do
+  [ -f "$f" ] && TREES="$TREES $f"
+done
+[ -n "$TREES" ] || { echo "no support trees found"; exit 1; }
+echo "support sources:$TREES"
 
 for N in 128 256 512 1024; do
   D=$WORK/n$N
