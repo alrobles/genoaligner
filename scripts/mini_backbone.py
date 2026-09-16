@@ -1,17 +1,24 @@
 #!/usr/bin/env python3
 """Build mini-supermatrices for fast Upham-replication experiments.
 
-Subsets existing per-locus alignments (rows -> sampled taxa, all columns)
-from each alignment variant and concatenates into a supermatrix +
-IQ-TREE partition file, per replicate.
+Subsets existing per-locus alignments (rows -> sampled SPECIES, all
+columns) from each alignment variant and concatenates into a supermatrix
++ IQ-TREE partition file, per replicate.
+
+Row ids in the per-locus alignments are GenBank accessions; species names
+are recovered from genes_raw headers ("ACC.V Genus species ..."), keeping
+the accession with fewest ambiguous sites per species (same rule as
+pai_supermatrix.py).
 
 Usage:
   mini_backbone.py --outdir DIR --reps 5 --ntaxa 300 --nloci 8 \
-      --upham upham.tre --aln macse:DIR base:DIR lf:DIR
+      --upham upham.tre --raw DIR_genes_raw \
+      --aln macse:DIR base:DIR lf:DIR
 """
 import argparse
 import os
 import random
+import re
 
 p = argparse.ArgumentParser()
 p.add_argument('--outdir', required=True)
@@ -19,9 +26,12 @@ p.add_argument('--reps', type=int, default=5)
 p.add_argument('--ntaxa', type=int, default=300)
 p.add_argument('--nloci', type=int, default=8)
 p.add_argument('--upham', required=True)
+p.add_argument('--raw', required=True, help='genes_raw dir')
 p.add_argument('--aln', nargs='+', required=True,
                help='name:dir with per-locus fasta alignments')
 a = p.parse_args()
+
+SKIP_TOKENS = {'sp.', 'sp', 'cf.', 'cf', 'aff.', 'aff', 'nr', 'x'}
 
 
 def read_fasta(path):
@@ -36,35 +46,78 @@ def read_fasta(path):
     return {k: ''.join(v) for k, v in d.items()}
 
 
+def read_fasta_full_header(path):
+    d, name = {}, None
+    for line in open(path):
+        line = line.strip()
+        if line.startswith('>'):
+            name = line[1:]
+            d[name] = []
+        elif line and name:
+            d[name].append(line)
+    return {k: ''.join(v) for k, v in d.items()}
+
+
+def species_of(header):
+    toks = header.split()
+    if len(toks) < 3:
+        return None
+    g, s = toks[1], toks[2]
+    if s.lower() in SKIP_TOKENS or not g[0].isupper():
+        return None
+    return (re.sub(r'[^A-Za-z_]', '', g) + '_' +
+            re.sub(r'[^A-Za-z]', '', s))
+
+
 def leaves_from_newick(path):
     s = open(path).read()
-    out, cur = [], ''
-    for c in s:
-        if c in '(),:;':
-            if cur:
-                out.append(cur)
-            cur = ''
-        elif c not in ' \t\n':
-            cur += c
-        else:
-            cur = ''
-    return set(x.strip("'").strip('"') for x in out if not
-               x.replace('.', '').replace('-', '').isdigit())
+    s = re.sub(r'\[[^\]]*\]', '', s)          # strip [&...] annotations
+    out = []
+    for tok in re.split(r'[(),:;]', s):
+        tok = tok.strip().strip("'\"")
+        if tok and not re.match(r'^[\d.Ee+-]+$', tok):
+            out.append(tok)
+    return set(out)
 
 
-# discover per-variant locus files
+# ---- accession -> species map from raw headers ----
 variants = {}
 for spec in a.aln:
     name, d = spec.split(':', 1)
     variants[name] = {f.split('.')[0]: os.path.join(d, f)
                       for f in os.listdir(d) if f.endswith(('.fasta', '.fa'))}
-loci = sorted(set.intersection(*[set(v) for v in variants.values()]))
-rng = random.Random(0)
-loci = sorted(rng.sample(loci, min(a.nloci, len(loci))))
+loci_all = sorted(set.intersection(*[set(v) for v in variants.values()]))
+
+acc2sp = {}
+for g in loci_all:
+    rp = os.path.join(a.raw, f'{g}.fasta')
+    if not os.path.exists(rp):
+        continue
+    for h in read_fasta_full_header(rp):
+        acc = h.split()[0]
+        acc2sp.setdefault(acc, species_of(h))
+
+rng0 = random.Random(0)
+loci = sorted(rng0.sample(loci_all, min(a.nloci, len(loci_all))))
 print(f'loci ({len(loci)}): {loci}')
 
-alns = {vname: {g: read_fasta(variants[vname][g]) for g in loci}
-        for vname in variants}
+# ---- load alignments, species-keyed, best accession per species ----
+def badness(seq):
+    return sum(1 for c in seq if c not in 'ACGT')
+
+
+alns = {}   # variant -> locus -> {species: seq}
+for vname, files in variants.items():
+    alns[vname] = {}
+    for g in loci:
+        best = {}
+        for acc, seq in read_fasta(files[g]).items():
+            sp = acc2sp.get(acc)
+            if not sp:
+                continue
+            if sp not in best or badness(seq) < badness(best[sp]):
+                best[sp] = seq
+        alns[vname][g] = best
 
 upham_leaves = leaves_from_newick(a.upham)
 shared = set(upham_leaves)
@@ -72,7 +125,7 @@ for g in loci:
     for vname in variants:
         shared &= set(alns[vname][g])
 shared = sorted(shared)
-print(f'shared taxa across {len(loci)} loci x {len(variants)} variants '
+print(f'shared species across {len(loci)} loci x {len(variants)} variants '
       f'+ Upham: {len(shared)}')
 
 ntaxa = min(a.ntaxa, len(shared))
@@ -80,7 +133,6 @@ for rep in range(a.reps):
     r = random.Random(1000 + rep)
     taxa = sorted(r.sample(shared, ntaxa))
     rd = os.path.join(a.outdir, f'rep{rep}')
-    os.makedirs(rd, exist_ok=True)
     for vname in variants:
         vd = os.path.join(rd, vname)
         os.makedirs(vd, exist_ok=True)
