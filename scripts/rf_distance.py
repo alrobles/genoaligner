@@ -5,12 +5,23 @@ Usage: rf_distance.py a.tre b.tre
 Trees need not share all tips: the comparison is restricted to the shared
 taxon set (both trees pruned implicitly by intersecting split taxa).
 """
+import re
 import sys
+
+
+def strip_square_annotations(s):
+    """Remove nested NHX/BEAST square-bracket annotations."""
+    for _ in range(10):
+        cleaned = re.sub(r"\[[^\[\]]*\]", "", s)
+        if cleaned == s:
+            break
+        s = cleaned
+    return s
 
 
 def parse_newick(s):
     """Minimal Newick parser -> (children lists, labels)."""
-    s = s.strip().rstrip(";")
+    s = strip_square_annotations(s).strip().rstrip(";")
     children = {}
     labels = {}
     nid = 0
