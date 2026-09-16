@@ -8,9 +8,16 @@ alignment for -z to accept them), and writes one Newick per line.
 Usage: au_prep.py --fasta SM --out candidates.tre TREE [TREE...]
 """
 import argparse
+import re
 import sys
 
 from ete3 import Tree
+
+
+def read_tree(path):
+    # strip NHX/BEAST square-bracket annotations ete3 cannot parse
+    nw = re.sub(r"\[[^\[\]]*\]", "", open(path).read())
+    return Tree(nw, format=1)
 
 
 def fasta_taxa(path):
@@ -33,7 +40,7 @@ def main():
     kept = []
     common = set(aln)
     for p in a.trees:
-        t = Tree(p, format=1)
+        t = read_tree(p)
         names = {l.name for l in t.iter_leaves()}
         missing = names - aln
         if missing:
