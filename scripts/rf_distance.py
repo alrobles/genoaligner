@@ -5,12 +5,23 @@ Usage: rf_distance.py a.tre b.tre
 Trees need not share all tips: the comparison is restricted to the shared
 taxon set (both trees pruned implicitly by intersecting split taxa).
 """
+import re
 import sys
+
+
+def strip_square_annotations(s):
+    """Remove nested NHX/BEAST square-bracket annotations."""
+    for _ in range(10):
+        cleaned = re.sub(r"\[[^\[\]]*\]", "", s)
+        if cleaned == s:
+            break
+        s = cleaned
+    return s
 
 
 def parse_newick(s):
     """Minimal Newick parser -> (children lists, labels)."""
-    s = s.strip().rstrip(";")
+    s = strip_square_annotations(s).strip().rstrip(";")
     children = {}
     labels = {}
     nid = 0
@@ -58,8 +69,13 @@ def parse_newick(s):
     return children, labels, nid
 
 
+def read_newick(path):
+    with open(path) as handle:
+        return parse_newick(handle.read())
+
+
 def splits(tree_path):
-    children, labels, _ = parse_newick(open(tree_path).read())
+    children, labels, _ = read_newick(tree_path)
     # leaf labels only (internal labels like bootstrap supports excluded)
     taxa = sorted({labels[u] for u in children
                    if not children[u] and u in labels})
@@ -104,7 +120,7 @@ def splits(tree_path):
 # Simpler correct approach: compare split sets built on each tree's OWN
 # taxon list, projecting onto shared taxa.
 def project(tree_path, keep):
-    children, labels, _ = parse_newick(open(tree_path).read())
+    children, labels, _ = read_newick(tree_path)
     keep = set(keep)
     root = min(children)
     order = []
