@@ -17,14 +17,16 @@ def parse_newick(s):
     stack = []
     i = 0
     n = len(s)
-    cur = -1
+    # virtual root: top-level tokens (unrooted trees may start with a leaf)
+    nid += 1
+    children[nid] = []
+    cur = nid
     while i < n:
         c = s[i]
         if c == "(":
             nid += 1
             children[nid] = []
-            if cur >= 0:
-                children[cur].append(nid)
+            children[cur].append(nid)
             stack.append(cur)
             cur = nid
             i += 1
@@ -41,16 +43,16 @@ def parse_newick(s):
                 if lab:
                     labels[cur] = lab
             i = j
-            parent = stack.pop()
-            cur = parent
+            cur = stack.pop() if stack else cur
         else:
             j = i
             while j < n and s[j] not in ",()":
                 j += 1
             lab = s[i:j].split(":")[0].strip().strip("'\"")
             nid += 1
-            labels[nid] = lab
             children[nid] = []
+            if lab:
+                labels[nid] = lab
             children[cur].append(nid)
             i = j
     return children, labels, nid
@@ -58,15 +60,15 @@ def parse_newick(s):
 
 def splits(tree_path):
     children, labels, _ = parse_newick(open(tree_path).read())
-    # leaf set under each internal node -> canonical split
-    taxa = sorted({v for v in labels.values()
-                   if v and not isinstance(v, int)})
+    # leaf labels only (internal labels like bootstrap supports excluded)
+    taxa = sorted({labels[u] for u in children
+                   if not children[u] and u in labels})
     idx = {t: k for k, t in enumerate(taxa)}
     allm = (1 << len(taxa)) - 1
     out = set()
-    # post-order
+    # pre-order traversal; reversed gives children before parents
+    root = min(children)
     order = []
-    root = max(children)
     stack = [root]
     seen = set()
     while stack:
@@ -78,17 +80,18 @@ def splits(tree_path):
         order.append(u)
         stack.extend(children[u])
     mask = {}
-    for u in order:
+    for u in reversed(order):
         if not children[u]:
-            mask[u] = 1 << idx[labels[u]]
+            mask[u] = (1 << idx[labels[u]]) if labels.get(u) in idx else 0
         else:
             m = 0
             for v in children[u]:
                 m |= mask[v]
             mask[u] = m
-    for u, m in mask.items():
+    for u in order:
         if not children[u]:
             continue
+        m = mask[u]
         c = min(m, allm ^ m)
         if c and (c & (c - 1)):        # exclude trivial singletons
             out.add(c)
@@ -105,8 +108,7 @@ b, tb = splits(sys.argv[2])
 def project(tree_path, keep):
     children, labels, _ = parse_newick(open(tree_path).read())
     keep = set(keep)
-    mask = {}
-    root = max(children)
+    root = min(children)
     order = []
     stack = [root]
     seen = set()
@@ -122,9 +124,10 @@ def project(tree_path, keep):
     idx = {t: i for i, t in enumerate(taxa)}
     allm = (1 << len(taxa)) - 1
     out = set()
-    for u in order:
+    mask = {}
+    for u in reversed(order):
         if not children[u]:
-            t = labels[u]
+            t = labels.get(u)
             mask[u] = (1 << idx[t]) if t in keep else 0
         else:
             m = 0
