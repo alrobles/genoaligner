@@ -86,8 +86,20 @@ def leaves_from_newick(path):
 variants = {}
 for spec in a.aln:
     name, d = spec.split(':', 1)
-    variants[name] = {f.split('.')[0]: os.path.join(d, f)
-                      for f in os.listdir(d) if f.endswith(('.fasta', '.fa'))}
+    # index only canonical alignment files: KEY.aln.fasta / KEY.codon.fasta /
+    # KEY.fasta — skips macse_raw_*_aa.fasta etc. that share the locus prefix
+    files = {}
+    for f in os.listdir(d):
+        if not f.endswith(('.fasta', '.fa')):
+            continue
+        key = f.split('.')[0]
+        canon = f in (f'{key}.aln.fasta', f'{key}.codon.fasta',
+                      f'{key}.clipkit.fasta', f'{key}.fasta')
+        if canon or key not in files:
+            files.setdefault(key, f)
+        if canon:
+            files[key] = f
+    variants[name] = {k: os.path.join(d, f) for k, f in files.items()}
 loci_all = sorted(set.intersection(*[set(v) for v in variants.values()]))
 
 acc2sp = {}
