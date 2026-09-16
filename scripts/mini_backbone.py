@@ -29,6 +29,8 @@ p.add_argument('--upham', required=True)
 p.add_argument('--raw', required=True, help='genes_raw dir')
 p.add_argument('--aln', nargs='+', required=True,
                help='name:dir with per-locus fasta alignments')
+p.add_argument('--mincov', type=int, default=6,
+               help='min loci a species must have (missing -> gap rows)')
 a = p.parse_args()
 
 SKIP_TOKENS = {'sp.', 'sp', 'cf.', 'cf', 'aff.', 'aff', 'nr', 'x'}
@@ -120,13 +122,20 @@ for vname, files in variants.items():
         alns[vname][g] = best
 
 upham_leaves = leaves_from_newick(a.upham)
-shared = set(upham_leaves)
-for g in loci:
+# species must be in Upham and have >= mincov loci in EVERY variant
+cov = {}
+for sp in upham_leaves:
+    ok = True
     for vname in variants:
-        shared &= set(alns[vname][g])
-shared = sorted(shared)
-print(f'shared species across {len(loci)} loci x {len(variants)} variants '
-      f'+ Upham: {len(shared)}')
+        c = sum(sp in alns[vname][g] for g in loci)
+        if c < a.mincov:
+            ok = False
+            break
+    if ok:
+        cov[sp] = True
+shared = sorted(cov)
+print(f'shared species (>= {a.mincov}/{len(loci)} loci, all variants, '
+      f'Upham): {len(shared)}')
 
 ntaxa = min(a.ntaxa, len(shared))
 for rep in range(a.reps):
@@ -140,7 +149,9 @@ for rep in range(a.reps):
         with open(os.path.join(vd, 'supermatrix.fasta'), 'w') as sf:
             for t in taxa:
                 sf.write(f'>{t}\n')
-                sf.write(''.join(alns[vname][g][t] for g in loci) + '\n')
+                sf.write(''.join(alns[vname][g].get(t) or
+                                 '-' * len(next(iter(alns[vname][g].values())))
+                                 for g in loci) + '\n')
             for g in loci:
                 w = len(next(iter(alns[vname][g].values())))
                 parts.append(f'DNA, {g} = {pos}-{pos + w - 1}')
