@@ -16,7 +16,12 @@ from ete3 import Tree
 
 def read_tree(path):
     # strip NHX/BEAST square-bracket annotations ete3 cannot parse
-    nw = re.sub(r"\[[^\[\]]*\]", "", open(path).read())
+    nw = open(path).read()
+    for _ in range(3):  # nested/escaped annotations like [\[...\]]
+        nw2 = re.sub(r"\[[^\[\]]*\]", "", nw)
+        if nw2 == nw:
+            break
+        nw = nw2
     return Tree(nw, format=1)
 
 
