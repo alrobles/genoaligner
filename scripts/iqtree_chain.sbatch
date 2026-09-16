@@ -1,6 +1,7 @@
 #!/bin/bash -l
 #SBATCH --job-name=iqt_chain
-#SBATCH --partition=kbs
+#SBATCH --partition=sixhour
+#SBATCH --exclude=r06r26n01
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=16
