@@ -8,14 +8,14 @@ import importlib.util
 import os
 import sys
 
+mini, upham, variants = sys.argv[1], sys.argv[2], sys.argv[3:]
+
 spec = importlib.util.spec_from_file_location(
     'rf', os.path.join(os.path.dirname(os.path.abspath(__file__)),
                        'rf_distance.py'))
 rf = importlib.util.module_from_spec(spec)
 sys.argv = ['rf_distance.py']  # swallow its argv use
 spec.loader.exec_module(rf)
-
-mini, upham, variants = sys.argv[1], sys.argv[2], sys.argv[3:]
 pairs = [(v, 'upham') for v in variants] + \
         [(variants[i], variants[j])
          for i in range(len(variants)) for j in range(i + 1, len(variants))]
