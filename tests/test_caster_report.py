@@ -61,6 +61,16 @@ class CasterReportTest(unittest.TestCase):
             self.assertEqual(row["elapsed_seconds"], "42")
             self.assertEqual(row["max_rss_kb"], "12345")
 
+    def test_slurm_memory_is_used_without_gnu_time(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with open(os.path.join(directory, "run.meta.tsv"), "w") as handle:
+                handle.write(
+                    "key\tvalue\nstatus\tcomplete\nslurm_max_rss\t2.5G\n")
+            with open(os.path.join(directory, "caster.time"), "w") as handle:
+                handle.write("GNU time unavailable on this node\n")
+            row = REPORT.run_row("full", "", "genomsa", directory)
+            self.assertEqual(row["max_rss_kb"], "2621440")
+
 
 if __name__ == "__main__":
     unittest.main()

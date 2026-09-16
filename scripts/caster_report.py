@@ -5,6 +5,7 @@ import csv
 import glob
 import importlib.util
 import os
+import re
 import statistics
 
 
@@ -56,14 +57,29 @@ def read_meta(path):
     return values
 
 
-def max_rss_kb(path):
-    if not os.path.isfile(path):
+def memory_to_kb(value):
+    match = re.fullmatch(r"([0-9.]+)([KMGT]?)", value.strip())
+    if not match:
         return ""
+    number = float(match.group(1))
+    multiplier = {
+        "": 1,
+        "K": 1,
+        "M": 1024,
+        "G": 1024 ** 2,
+        "T": 1024 ** 3,
+    }[match.group(2)]
+    return str(round(number * multiplier))
+
+
+def max_rss_kb(path, fallback=""):
+    if not os.path.isfile(path):
+        return memory_to_kb(fallback)
     with open(path) as handle:
         for line in handle:
             if "Maximum resident set size (kbytes):" in line:
                 return line.rsplit(":", 1)[1].strip()
-    return ""
+    return memory_to_kb(fallback)
 
 
 def run_row(scope, rep, variant, outdir):
@@ -77,7 +93,9 @@ def run_row(scope, rep, variant, outdir):
         "threads": meta.get("threads", ""),
         "seed": meta.get("seed", ""),
         "elapsed_seconds": meta.get("elapsed_seconds", ""),
-        "max_rss_kb": max_rss_kb(os.path.join(outdir, "caster.time")),
+        "max_rss_kb": max_rss_kb(
+            os.path.join(outdir, "caster.time"),
+            meta.get("slurm_max_rss", "")),
         "slurm_job_id": meta.get("slurm_job_id", ""),
         "slurm_array_task_id": meta.get("slurm_array_task_id", ""),
     }
