@@ -99,48 +99,39 @@ for g in loci_all:
         acc = h.split()[0]
         acc2sp.setdefault(acc, species_of(h))
 
-rng0 = random.Random(0)
-loci = sorted(rng0.sample(loci_all, min(a.nloci, len(loci_all))))
-print(f'loci ({len(loci)}): {loci}')
+upham_leaves = leaves_from_newick(a.upham)
 
-# ---- load alignments, species-keyed, best accession per species ----
+
 def badness(seq):
     return sum(1 for c in seq if c not in 'ACGT')
 
 
-alns = {}   # variant -> locus -> {species: seq}
-for vname, files in variants.items():
-    alns[vname] = {}
-    for g in loci:
-        best = {}
-        for acc, seq in read_fasta(files[g]).items():
-            sp = acc2sp.get(acc)
-            if not sp:
-                continue
-            if sp not in best or badness(seq) < badness(best[sp]):
-                best[sp] = seq
-        alns[vname][g] = best
-
-upham_leaves = leaves_from_newick(a.upham)
-# species must be in Upham and have >= mincov loci in EVERY variant
-cov = {}
-for sp in upham_leaves:
-    ok = True
-    for vname in variants:
-        c = sum(sp in alns[vname][g] for g in loci)
-        if c < a.mincov:
-            ok = False
-            break
-    if ok:
-        cov[sp] = True
-shared = sorted(cov)
-print(f'shared species (>= {a.mincov}/{len(loci)} loci, all variants, '
-      f'Upham): {len(shared)}')
-
-ntaxa = min(a.ntaxa, len(shared))
+# per-rep: sample loci AND taxa -> reps measure subset variance, not noise
 for rep in range(a.reps):
     r = random.Random(1000 + rep)
-    taxa = sorted(r.sample(shared, ntaxa))
+    loci = sorted(r.sample(loci_all, min(a.nloci, len(loci_all))))
+
+    alns = {}
+    for vname, files in variants.items():
+        alns[vname] = {}
+        for g in loci:
+            best = {}
+            for acc, seq in read_fasta(files[g]).items():
+                sp = acc2sp.get(acc)
+                if not sp:
+                    continue
+                if sp not in best or badness(seq) < badness(best[sp]):
+                    best[sp] = seq
+            alns[vname][g] = best
+
+    shared = []
+    for sp in upham_leaves:
+        if all(sum(sp in alns[v][g] for g in loci) >= a.mincov
+               for v in variants):
+            shared.append(sp)
+    shared = sorted(shared)
+    taxa = sorted(r.sample(shared, min(a.ntaxa, len(shared))))
+
     rd = os.path.join(a.outdir, f'rep{rep}')
     for vname in variants:
         vd = os.path.join(rd, vname)
@@ -158,7 +149,10 @@ for rep in range(a.reps):
                 pos += w
         with open(os.path.join(vd, 'partitions.txt'), 'w') as pf:
             pf.write('\n'.join(parts) + '\n')
-        with open(os.path.join(vd, 'taxa.txt'), 'w') as tf:
-            tf.write('\n'.join(taxa) + '\n')
-    print(f'rep{rep}: {ntaxa} taxa x {pos - 1} sites -> {rd}')
+    with open(os.path.join(rd, 'loci.txt'), 'w') as lf:
+        lf.write('\n'.join(loci) + '\n')
+    with open(os.path.join(rd, 'taxa.txt'), 'w') as tf:
+        tf.write('\n'.join(taxa) + '\n')
+    print(f'rep{rep}: {len(taxa)}/{len(shared)} taxa x {pos-1} sites, '
+          f'loci={loci}')
 print('done')
