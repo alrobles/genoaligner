@@ -69,8 +69,13 @@ def parse_newick(s):
     return children, labels, nid
 
 
+def read_newick(path):
+    with open(path) as handle:
+        return parse_newick(handle.read())
+
+
 def splits(tree_path):
-    children, labels, _ = parse_newick(open(tree_path).read())
+    children, labels, _ = read_newick(tree_path)
     # leaf labels only (internal labels like bootstrap supports excluded)
     taxa = sorted({labels[u] for u in children
                    if not children[u] and u in labels})
@@ -115,7 +120,7 @@ def splits(tree_path):
 # Simpler correct approach: compare split sets built on each tree's OWN
 # taxon list, projecting onto shared taxa.
 def project(tree_path, keep):
-    children, labels, _ = parse_newick(open(tree_path).read())
+    children, labels, _ = read_newick(tree_path)
     keep = set(keep)
     root = min(children)
     order = []
