@@ -14,11 +14,16 @@ d = sys.argv[1]
 
 def patch(path, subs):
     s = open(path).read()
+    applied = skipped = 0
     for old, new in subs:
-        assert old in s, f'{path}: pattern not found: {old[:60]}'
-        s = s.replace(old, new)
+        if old in s:
+            s = s.replace(old, new)
+            applied += 1
+        else:
+            assert new in s, f'{path}: pattern missing and patch absent: {old[:60]}'
+            skipped += 1
     open(path, 'w').write(s)
-    print(f'patched {path}')
+    print(f'patched {path} ({applied} applied, {skipped} already done)')
 
 
 patch(f'{d}/vector_sbnModel.py', [
