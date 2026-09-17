@@ -135,7 +135,11 @@ summ(lambda r: r[0] == "A_align" and r[1] == "lf" and r[3] == "walltime_s",
      "genomsa lf per-locus align")
 summ(lambda r: r[0] == "A_align" and r[1] == "macse",
      "macse align jobs (sacct, incl. timed-out)")
-summ(lambda r: r[0] == "B_tree" and r[1] == "caster_mini",
+summ(lambda r: r[0] == "B_tree" and r[1] == "caster_mini" and r[3] == "walltime_s",
      "caster mini runs")
-summ(lambda r: r[0] == "B_tree" and r[1] == "caster_full",
+summ(lambda r: r[0] == "B_tree" and r[1] == "caster_full" and r[3] == "walltime_s",
      "caster full runs")
+summ(lambda r: r[0] == "B_tree" and r[1] == "slurm" and "mini_iqt" in r[6],
+     "mini_iqt cells")
+summ(lambda r: r[0] == "B_tree" and r[1] == "slurm" and "iqt_chain" in r[6],
+     "iqt_chain links")
