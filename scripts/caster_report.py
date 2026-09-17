@@ -213,8 +213,10 @@ def main():
     run_fields = [
         "scope", "rep", "variant", "status", "exit_code", "input",
         "input_bytes", "caster_bin", "caster_bin_sha256",
-        "caster_backend", "host", "threads", "seed", "elapsed_seconds",
-        "max_rss_kb", "slurm_job_id", "slurm_array_task_id",
+        "caster_backend", "caster_build_profile", "caster_aster_commit",
+        "caster_compiler", "caster_flags", "host", "host_arch", "threads",
+        "seed", "elapsed_seconds", "max_rss_kb", "slurm_job_id",
+        "slurm_array_task_id",
     ]
     summary_fields = [
         "scope", "variant", "comparison", "n", "rf_norm_mean",

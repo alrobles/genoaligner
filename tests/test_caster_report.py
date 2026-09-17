@@ -98,6 +98,26 @@ class CasterReportTest(unittest.TestCase):
             self.assertEqual(row["host"], "node1")
             self.assertEqual(row["host_arch"], "x86_64")
 
+    def test_report_writes_extended_provenance_columns(self):
+        with tempfile.TemporaryDirectory() as directory:
+            outdir = os.path.join(directory, "report")
+            result = subprocess.run(
+                [
+                    "python3",
+                    os.path.join(ROOT, "scripts", "caster_report.py"),
+                    "--root", directory,
+                    "--outdir", outdir,
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            with open(os.path.join(outdir, "caster_runs.tsv")) as handle:
+                header = handle.readline().rstrip("\n").split("\t")
+            self.assertIn("caster_aster_commit", header)
+            self.assertIn("host_arch", header)
+
 
 class CasterPendingTest(unittest.TestCase):
     def test_only_incomplete_cells_are_returned(self):
