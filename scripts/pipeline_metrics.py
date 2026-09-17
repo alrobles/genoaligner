@@ -83,8 +83,11 @@ def elapsed_s(el):
 
 
 for r in sacct(("align_genes", "align_mt", "macse"), a.since):
+    es = elapsed_s(r["elapsed"])
+    if es < 60:
+        continue  # pending/instant records carry no timing info
     add("A_align", "macse", r["job"], "job_walltime_s",
-        elapsed_s(r["elapsed"]), "s", f'sacct:{r["name"]}:{r["state"]}')
+        es, "s", f'sacct:{r["name"]}:{r["state"]}')
 
 # ---- stage B: tree inference jobs ----
 for r in sacct(("mini_iqt", "iqt_chain", "au_test", "ft_sm", "gsm_iqtree",
@@ -97,7 +100,7 @@ for r in sacct(("mini_iqt", "iqt_chain", "au_test", "ft_sm", "gsm_iqtree",
 for meta in glob.glob(f"{PAI}/results/caster_backbone/**/run.meta.tsv",
                       recursive=True):
     kv = dict(r for r in csv.reader(open(meta), delimiter="\t") if len(r) == 2)
-    if "elapsed_seconds" not in kv:
+    if kv.get("status") != "complete" or "elapsed_seconds" not in kv:
         continue
     scope = "mini" if "mini_v2" in meta else "full"
     parts = meta.split("/")
