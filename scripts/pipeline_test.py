@@ -48,6 +48,8 @@ ap.add_argument('--blastdb', default='')
 ap.add_argument('--genomsa', default='genomsa')
 ap.add_argument('--genomsa-args', default='')
 ap.add_argument('--macse', default='macse')
+ap.add_argument('--macse-args', default='',
+                help='extra macse flags, e.g. "-max_refine_iter 0"')
 ap.add_argument('--extract-script', default='')
 ap.add_argument('--timeout', type=int, default=5400)
 a = ap.parse_args()
@@ -163,7 +165,7 @@ def stage_align(gene, wd, log):
     else:
         if a.align_variant == 'macse':
             cmd = [a.macse, '-prog', 'alignSequences', '-seq', src,
-                   '-out_NT', out]
+                   '-out_NT', out] + a.macse_args.split()
         elif a.align_variant.startswith('genomsa'):
             cmd = [a.genomsa, src, out, '--codon', '--gc-def', '1', '--cpu']
             if a.align_variant == 'genomsa_lf':

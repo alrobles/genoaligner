@@ -50,6 +50,7 @@ GENE=${GL[$SLURM_ARRAY_TASK_ID]}
     --genomsa "${GENOMSA_BIN:-/beegfs/a474r867/phylogenyAI/data/sim_precision/bin/genomsa_cpu}" \
     --genomsa-args "${GENOMSA_ARGS:-}" \
     --macse "${MACSE:-macse}" \
+    --macse-args "${MACSE_ARGS:--max_refine_iter 0}" \
     --extract-script "${EXTRACT_SCRIPT:-/beegfs/a474r867/phylogenyAI/scripts/extract_gene_regions.py}"
 
 echo "PIPE_TEST_DONE $GENE"
