@@ -21,8 +21,34 @@ p.add_argument('--fasta', required=True)
 p.add_argument('--n', type=int, required=True)
 p.add_argument('--seed', type=int, default=0)
 p.add_argument('--trees', nargs='+', required=True)
+p.add_argument('--nni', type=int, default=60,
+               help='random NNI perturbations per induced tree to densify '
+                    'the subsplit support set (VBPI sampling needs dense support)')
 p.add_argument('--outdir', required=True)
 a = p.parse_args()
+
+rng = random.Random(a.seed + 7919)
+
+
+def nni_perturb(tree):
+    """One random NNI move: swap a child of internal node u with a child of
+    internal child v. Returns a new tree, or None if no valid edge found."""
+    t = tree.copy()
+    internals = [n for n in t.traverse() if not n.is_leaf() and len(n.children) >= 2]
+    rng.shuffle(internals)
+    for u in internals:
+        int_children = [c for c in u.children if not c.is_leaf() and len(c.children) >= 2]
+        if not int_children or len(u.children) < 2:
+            continue
+        v = rng.choice(int_children)
+        others = [c for c in u.children if c is not v]
+        if not others:
+            continue
+        x, y = rng.choice(others), rng.choice(v.children)
+        x.detach(); y.detach()
+        u.add_child(y); v.add_child(x)
+        return t
+    return None
 
 recs = {r.id: r for r in SeqIO.parse(a.fasta, 'fasta')}
 ids = sorted(recs)
@@ -54,4 +80,9 @@ with open(f'{a.outdir}/support.trees', 'w') as out:
                     preserve_branch_length=False)
             out.write(t.write(format=9) + '\n')
             n_out += 1
+            for _ in range(a.nni):
+                pt = nni_perturb(t)
+                if pt is not None:
+                    out.write(pt.write(format=9) + '\n')
+                    n_out += 1
 print(f'wrote {n_out} induced support trees -> {a.outdir}/support.trees')
