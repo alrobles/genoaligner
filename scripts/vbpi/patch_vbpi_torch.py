@@ -30,6 +30,31 @@ patch(f'{d}/vector_sbnModel.py', [
      "temp_mat = self.CPD_params.new_zeros(self.ss_mask.size())"),
     ("self.one_tensor = torch.tensor([1.0])",
      "self.one_tensor = self.CPD_params.new_tensor([1.0])"),
+
+    # Off-support fallback in sample_tree: sparse support sets (few trees)
+    # leave parent subsplit contexts unobserved -> KeyError in
+    # ss_reverse_map. Pool this clade's observed divisions from any sister
+    # context; if never resolved, peel one taxon deterministically.
+    ("    def sample_tree(self, rooted=False):",
+     """    def _fallback_split(self, clade_bitarr):
+        c = clade_bitarr.to01()
+        pool = [child for k, ch in self.subsplit_supp_dict.items()
+                if k[self.ntaxa:] == c for child in ch]
+        if pool:
+            return pool[np.random.randint(len(pool))]
+        b = bitarray('0' * self.ntaxa)
+        b[clade_bitarr.find(1)] = 1
+        return b.to01()
+
+    def sample_tree(self, rooted=False):"""),
+    ("""                split_prob = self.get_subsplit_CPDs(split_bitarr)
+                # split = self.ss_reverse_map[split_bitarr][np.random.choice(len(split_prob), p=split_prob)]
+                split = self.ss_reverse_map[split_bitarr][torch.multinomial(split_prob, 1).item()]""",
+     """                if split_bitarr in self.ss_reverse_map:
+                    split_prob = self.get_subsplit_CPDs(split_bitarr)
+                    split = self.ss_reverse_map[split_bitarr][torch.multinomial(split_prob, 1).item()]
+                else:
+                    split = self._fallback_split(parent_clade_bitarr)"""),
 ])
 
 patch(f'{d}/base_branchModel.py', [
