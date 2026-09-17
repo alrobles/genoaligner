@@ -12,7 +12,8 @@
 #
 # Env knobs:
 #   WORK           run dir (metrics.tsv lands here)          [required]
-#   GENES          comma list, e.g. CYTB,ND1                 [required]
+#   GENELIST       space-separated list, e.g. "CYTB ND1"     [required]
+#                  (NOT comma-separated: sbatch --export splits on commas)
 #   STAGES         subset of ortho,extract,align,trim        [align,trim]
 #   ALIGN_VARIANT  macse|genomsa|genomsa_lf|mafft            [genomsa]
 #   TRIM_MODE      clipkit mode                              [smart-gap]
@@ -24,14 +25,14 @@
 #   GENOMSA_ARGS   extra genomsa flags (e.g. "--refine 2")
 #
 # Example (align+trim on the 8-gene pilot):
-#   sbatch --array=0-7 --export=WORK=$P/results/pipe_test/lf,GENES=APOB,BDNF,BRCA1,COI,CYTB,GHR,IRBP,RAG1A,ALIGN_VARIANT=genomsa_lf,GENES_SRC=$P/data/pilot_200_8genes pipeline_test.sbatch
+#   sbatch --array=0-7 --export=WORK=$P/results/pipe_test/lf,GENELIST="APOB BDNF BRCA1 COI CYTB GHR IRBP RAG1A",ALIGN_VARIANT=genomsa_lf,GENES_SRC=$P/data/pilot_200_8genes pipeline_test.sbatch
 
 set -o pipefail
 REPO=/beegfs/a474r867/genoaligner/repo
 ENV=/beegfs/a474r867/miniconda3/envs/genoml-phylo
 export PATH="$ENV/bin:$PATH"
 
-IFS=',' read -ra GL <<< "${GENES:?set GENES}"
+read -ra GL <<< "${GENELIST:?set GENELIST}"
 GENE=${GL[$SLURM_ARRAY_TASK_ID]}
 
 # per-task work subdir shares the metrics file via append

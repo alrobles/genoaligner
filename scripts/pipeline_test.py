@@ -85,7 +85,7 @@ def run(cmd, log, timeout):
                            timeout=timeout)
         rc, secs = p.returncode, time.time() - t0
         log.write(f"$ {' '.join(map(str, cmd))}\n# {secs:.1f}s rc={rc}\n"
-                  f"{p.stderr[-1500:]}\n")
+                  f"STDOUT:{p.stdout[-1500:]}\nSTDERR:{p.stderr[-1500:]}\n")
         return secs, rc
     except subprocess.TimeoutExpired:
         secs = time.time() - t0
