@@ -55,17 +55,21 @@ for variant, d in (("base", "genomsa_codon"), ("lf", "genomsa_codon_lf"),
             add("A_align", variant, gene, "align_s", st.group(3), "s", lf)
 
 # ---- stage A: MACSE jobs via sacct ----
-def sacct(names, since):
+def sacct(names, since, collapse=False):
+    cmd = ["sacct", "--format=JobID,JobName,Elapsed,State",
+           "-S", since, "--parsable2", "-n"]
+    if collapse:
+        cmd.insert(1, "-X")
     try:
-        out = subprocess.run(
-            ["sacct", "-X", "--format=JobID,JobName,Elapsed,State",
-             "-S", since, "--parsable2", "-n"],
-            capture_output=True, text=True, timeout=60).stdout
+        out = subprocess.run(cmd, capture_output=True, text=True,
+                             timeout=60).stdout
     except Exception:
         return []
     recs = []
     for line in out.splitlines():
         f = line.split("|")
+        if len(f) >= 4 and not collapse and "." in f[0]:
+            continue  # batch/extern step rows
         if len(f) >= 4 and any(n in f[1] for n in names):
             recs.append({"job": f[0], "name": f[1],
                          "elapsed": f[2], "state": f[3]})
@@ -93,8 +97,11 @@ for r in sacct(("align_genes", "align_mt", "macse"), a.since):
 for r in sacct(("mini_iqt", "iqt_chain", "au_test", "ft_sm", "gsm_iqtree",
                 "macse_iqtree", "codon_sm_iqtree", "sm_iqtree",
                 "caster_full", "caster_mini"), a.since):
+    es = elapsed_s(r["elapsed"])
+    if es < 10:
+        continue
     add("B_tree", "slurm", r["job"], "job_walltime_s",
-        elapsed_s(r["elapsed"]), "s", f'sacct:{r["name"]}:{r["state"]}')
+        es, "s", f'sacct:{r["name"]}:{r["state"]}')
 
 # ---- stage B: caster meta ----
 for meta in glob.glob(f"{PAI}/results/caster_backbone/**/run.meta.tsv",
