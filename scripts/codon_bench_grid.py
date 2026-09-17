@@ -7,11 +7,18 @@ One invocation = one (cell, replicate). Prints one TSV row:
 
 Tools (each optional, discovered on PATH):
     genomsa    genomsa --cpu|--gpu --codon --gc-def GC
+    genomsa_lf genomsa --codon --local-frame (frame-aware variant)
     macse      macse -prog alignSequences -seq IN -out_NT OUT
                (-max_refine_iter 0 unless --macse-refine)
     prank      prank -d=IN -o=OUT -codon [-F]
     threestep  MAFFT on translated AA -> back-translate (TranslatorX-analog;
                sequences with internal stops fail by construction)
+
+With --tree FASTTREE each successful alignment is also fed to FastTree
+(-nt -gtr) and the resulting tree scored by RF distance against
+sim_true_tree.nwk; sim_true.fasta itself gets the same treatment so the
+table carries the estimator's noise floor. TSV gains two columns
+(rf rf_norm) after status.
 
 Each instance dir holds sim_in.fasta, sim_true.fasta, manifest.json,
 events.tsv, per-tool outputs and a status line, so every number in the
@@ -28,6 +35,8 @@ import time
 
 SIM = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                    "codon_sim_v2.py")
+RFD = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                   "rf_distance.py")
 
 STOPS1 = {"TAA", "TAG", "TGA"}
 STOPS2 = STOPS1 - {"TGA"} | {"AGA", "AGG"}
@@ -70,6 +79,30 @@ def run(cmd, timeout, log, **kw):
         if log:
             log.write(f"$ {' '.join(str(c) for c in cmd)}\n# TIMEOUT {dt:.0f}s\n")
         return dt, -9
+
+
+def tree_score(aln_path, true_tree, wd, tag, ft_bin, timeout, log):
+    """FastTree on aln_path -> RF vs true_tree. Returns (rf, rf_norm)."""
+    tre = os.path.join(wd, f"{tag}.ft.tre")
+    cmd = [ft_bin, "-nt", "-gtr", aln_path]
+    t0 = time.time()
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True,
+                           timeout=timeout)
+    except subprocess.TimeoutExpired:
+        if log:
+            log.write(f"$ {' '.join(cmd)}\n# TIMEOUT\n")
+        return None
+    dt = time.time() - t0
+    if log:
+        log.write(f"$ {' '.join(cmd)}\n# {dt:.1f}s rc={p.returncode}\n")
+    if p.returncode != 0 or not p.stdout.strip().startswith("("):
+        return None
+    open(tre, "w").write(p.stdout)
+    q = subprocess.run([sys.executable, RFD, tre, true_tree],
+                       capture_output=True, text=True)
+    m = re.search(r"RF=(\d+) RF_norm=(\S+)", q.stdout)
+    return (m.group(1), m.group(2)) if m else None
 
 
 def score(got_path, sim_args, n):
@@ -170,6 +203,9 @@ def main():
     ap.add_argument("--macse-refine", action="store_true")
     ap.add_argument("--prank", default="prank")
     ap.add_argument("--prank-F", action="store_true")
+    ap.add_argument("--tree", default="",
+                    help="FastTree binary: when set, infer a tree from "
+                         "every alignment and score RF vs the true tree")
     ap.add_argument("--timeout", type=int, default=7200)
     args = ap.parse_args()
 
@@ -196,13 +232,15 @@ def main():
         got = None
         dt = 0.0
         status = "ok"
-        if tool == "genomsa":
-            outp = os.path.join(args.workdir, "genomsa.fasta")
+        if tool in ("genomsa", "genomsa_lf"):
+            outp = os.path.join(args.workdir, f"{tool}.fasta")
             cmd = [args.genomsa, inp, outp, "--codon",
                    "--gc-def", str(args.gc)]
             if args.genomsa_cpu:
                 cmd.append("--cpu")
-            if args.genomsa_args:
+            if tool == "genomsa_lf":
+                cmd.append("--local-frame")
+            elif args.genomsa_args:
                 cmd += args.genomsa_args.split()
             dt, rc = run(cmd, args.timeout, log)
             if rc == 0 and os.path.exists(outp):
@@ -242,6 +280,14 @@ def main():
         else:
             status = "unknown-tool"
 
+        rf = rfn = "nan"
+        if got and args.tree:
+            true_tree = os.path.join(args.workdir, "sim_true_tree.nwk")
+            ts = tree_score(got, true_tree, args.workdir, tool,
+                            args.tree, args.timeout, log)
+            if ts:
+                rf, rfn = ts
+
         if got:
             sc = score(got, sim_args, args.n)
             if sc is None:
@@ -249,18 +295,31 @@ def main():
                 rows.append([args.cell, str(args.rep), str(args.n),
                              str(args.L), str(args.gc), tool,
                              "nan", "nan", "0", "0", "0",
-                             f"{dt:.0f}", status])
+                             f"{dt:.0f}", status, rf, rfn])
             else:
                 rows.append([args.cell, str(args.rep), str(args.n),
                              str(args.L), str(args.gc), tool,
                              sc["sps"], sc["tc"], sc["w_got"],
                              sc["w_true"], sc["purity"],
-                             f"{dt:.0f}", status])
+                             f"{dt:.0f}", status, rf, rfn])
         else:
             rows.append([args.cell, str(args.rep), str(args.n),
                          str(args.L), str(args.gc), tool,
                          "nan", "nan", "0", "0", "0",
-                         f"{dt:.0f}", status])
+                         f"{dt:.0f}", status, rf, rfn])
+
+    # noise floor: FastTree on the true alignment itself
+    if args.tree:
+        true_aln = os.path.join(args.workdir, "sim_true.fasta")
+        true_tree = os.path.join(args.workdir, "sim_true_tree.nwk")
+        if os.path.exists(true_aln) and os.path.exists(true_tree):
+            ts = tree_score(true_aln, true_tree, args.workdir,
+                            "truesim", args.tree, args.timeout, log)
+            if ts:
+                rows.append([args.cell, str(args.rep), str(args.n),
+                             str(args.L), str(args.gc), "truesim",
+                             "1.0", "1.0", "0", "0", "1.0", "0", "ok",
+                             ts[0], ts[1]])
 
     log.close()
     for r in rows:
