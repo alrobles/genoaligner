@@ -11,6 +11,7 @@ Usage:
 """
 import argparse
 import random
+import re
 
 from Bio import SeqIO
 from ete3 import Tree
@@ -43,6 +44,8 @@ with open(f'{a.outdir}/support.trees', 'w') as out:
             line = line.strip()
             if not line or not line.startswith('('):
                 continue
+            for _ in range(3):  # strip nested NHX/BEAST [\[...\]] annotations
+                line = re.sub(r"\[[^\[\]]*\]", "", line)
             t = Tree(line)
             leaves = set(t.get_leaf_names())
             if not leaves & keep_set:
