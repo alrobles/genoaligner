@@ -208,10 +208,15 @@ class CasterScaleReportTest(unittest.TestCase):
                         "key\tvalue\n"
                         "status\tcomplete\n"
                         f"elapsed_seconds\t{elapsed}\n")
+                with open(
+                        os.path.join(run, "caster.treefile"), "w") as handle:
+                    handle.write("((A,B),(C,D));\n")
             rows = SCALE.scaling_rows(directory, [1, 2, 4])
             self.assertEqual(rows[1]["speedup_vs_first"], "1.666667")
             self.assertEqual(rows[1]["parallel_efficiency"], "0.833333")
             self.assertEqual(rows[2]["parallel_efficiency"], "0.500000")
+            self.assertEqual(rows[2]["rf_vs_first"], 0)
+            self.assertEqual(rows[2]["topology_status"], "ok")
 
 
 if __name__ == "__main__":

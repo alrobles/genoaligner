@@ -43,14 +43,11 @@ has no checkpoint restart. The minis use `sixhour`. Every run uses seed 233,
 records binary identity, backend, host, wall time and maximum resident memory,
 and keeps completed outputs on resubmission.
 
-For CPU allocation tuning on all 4,353 taxa, create a deterministic 30,000-site
-benchmark and run the scaling array:
+For CPU allocation tuning on all 4,353 taxa, run the scaling job. It creates a
+deterministic 30,000-site benchmark when needed, then compares runtime, memory
+and RF across 1–32 threads:
 
 ```bash
-python3 scripts/caster_sample_alignment.py \
-  --input /beegfs/a474r867/phylogenyAI/data/supermatrix_genomsa/supermatrix.fasta \
-  --output /beegfs/a474r867/phylogenyAI/results/caster_backbone/benchmark/supermatrix-30000.fasta \
-  --sites 30000
 sbatch scripts/caster_cpu_scale.sbatch
 ```
 

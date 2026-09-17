@@ -12,8 +12,15 @@ set -euo pipefail
 
 ROOT=${PHYLOGENY_ROOT:-/beegfs/a474r867/phylogenyAI}
 REPO=${GENOALIGNER_REPO:-/beegfs/a474r867/genoaligner/repo}
+SOURCE=${CASTER_BENCH_SOURCE:-$ROOT/data/supermatrix_genomsa/supermatrix.fasta}
+SITES=${CASTER_BENCH_SITES:-30000}
 INPUT=${CASTER_BENCH_INPUT:-$ROOT/results/caster_backbone/benchmark/supermatrix-30000.fasta}
 OUT_ROOT=${CASTER_BENCH_OUT:-$ROOT/results/caster_backbone/benchmark/cpu-scale}
+
+if [ ! -s "$INPUT" ]; then
+    python3 "$REPO/scripts/caster_sample_alignment.py" \
+        --input "$SOURCE" --output "$INPUT" --sites "$SITES"
+fi
 
 for threads in 1 2 4 8 16 32; do
     THREADS=$threads CASTER_BACKEND=cpu-portable \
