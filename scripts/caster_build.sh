@@ -55,6 +55,7 @@ mv "$BIN_TMP" "$BIN"
 
 {
     printf 'key\tvalue\n'
+    printf 'runtime_backend\tcpu-%s\n' "$PROFILE"
     printf 'profile\t%s\n' "$PROFILE"
     printf 'aster_commit\t%s\n' "$ASTER_COMMIT"
     printf 'compiler\t%s\n' "$("$CXX" --version | sed -n '1p')"

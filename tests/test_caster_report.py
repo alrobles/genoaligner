@@ -83,14 +83,20 @@ class CasterReportTest(unittest.TestCase):
                     "status\tfailed\n"
                     "exit_code\t132\n"
                     "caster_backend\tcpu-portable\n"
+                    "caster_build_profile\tportable\n"
+                    "caster_aster_commit\tabc123\n"
                     "caster_bin_sha256\tabc123\n"
-                    "host\tnode1\n")
+                    "host\tnode1\n"
+                    "host_arch\tx86_64\n")
             row = REPORT.run_row("full", "", "genomsa", directory)
             self.assertEqual(row["status"], "failed")
             self.assertEqual(row["exit_code"], "132")
             self.assertEqual(row["caster_backend"], "cpu-portable")
+            self.assertEqual(row["caster_build_profile"], "portable")
+            self.assertEqual(row["caster_aster_commit"], "abc123")
             self.assertEqual(row["caster_bin_sha256"], "abc123")
             self.assertEqual(row["host"], "node1")
+            self.assertEqual(row["host_arch"], "x86_64")
 
 
 class CasterPendingTest(unittest.TestCase):
@@ -156,7 +162,7 @@ class CasterRunTest(unittest.TestCase):
         os.chmod(path, 0o755)
         return path
 
-    def run_caster(self, directory, caster):
+    def run_caster(self, directory, caster, **environment_overrides):
         output = os.path.join(directory, "output")
         environment = os.environ.copy()
         environment.update({
@@ -165,6 +171,7 @@ class CasterRunTest(unittest.TestCase):
             "THREADS": "2",
             "TIME_BIN": os.path.join(directory, "missing-time"),
         })
+        environment.update(environment_overrides)
         result = subprocess.run(
             [
                 "bash", os.path.join(ROOT, "scripts", "caster_run.sh"),
@@ -195,6 +202,19 @@ class CasterRunTest(unittest.TestCase):
             self.assertEqual(result.returncode, 132)
             self.assertEqual(meta["status"], "failed")
             self.assertEqual(meta["exit_code"], "132")
+
+    def test_declared_backend_mismatch_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            caster = self.make_caster(directory, 0)
+            with open(f"{caster}.build.tsv", "w") as handle:
+                handle.write(
+                    "key\tvalue\n"
+                    "runtime_backend\tcpu-portable\n"
+                    "profile\tportable\n")
+            result, _ = self.run_caster(
+                directory, caster, CASTER_BACKEND="hip-amd")
+            self.assertEqual(result.returncode, 65)
+            self.assertIn("does not match", result.stderr)
 
 
 class CasterScaleReportTest(unittest.TestCase):

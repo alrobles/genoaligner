@@ -11,7 +11,6 @@ CASTER_BIN=${CASTER_BIN:-$ROOT/tools/ASTER-v1.25/bin/caster-site-portable}
 TIME_BIN=${TIME_BIN:-/usr/bin/time}
 THREADS=${THREADS:-${SLURM_CPUS_PER_TASK:-1}}
 SEED=${SEED:-233}
-CASTER_BACKEND=${CASTER_BACKEND:-cpu-portable}
 INPUT=$1
 OUT=$2
 TREE=$OUT/caster.treefile
@@ -19,6 +18,22 @@ TREE=$OUT/caster.treefile
 test -s "$INPUT"
 test -x "$CASTER_BIN"
 command -v flock >/dev/null
+
+BUILD_META="${CASTER_BIN}.build.tsv"
+read_build_meta() {
+    local key=$1
+    if [ -s "$BUILD_META" ]; then
+        awk -F '\t' -v key="$key" '$1 == key {print $2; exit}' "$BUILD_META"
+    fi
+}
+
+DECLARED_BACKEND=$(read_build_meta runtime_backend)
+CASTER_BACKEND=${CASTER_BACKEND:-${DECLARED_BACKEND:-cpu-unknown}}
+if [ -n "$DECLARED_BACKEND" ] && [ "$CASTER_BACKEND" != "$DECLARED_BACKEND" ]; then
+    echo "CASTER_BACKEND=$CASTER_BACKEND does not match $DECLARED_BACKEND" >&2
+    exit 65
+fi
+
 mkdir -p "$OUT"
 
 if [ -s "$TREE" ] && grep -q ';' "$TREE"; then
@@ -43,8 +58,13 @@ LOG_TMP=$OUT/caster.log.tmp
 TIME_TMP=$OUT/caster.time.tmp
 META_TMP=$OUT/run.meta.tsv.tmp
 CASTER_SHA256=$(sha256sum "$CASTER_BIN" | awk '{print $1}')
+CASTER_BUILD_PROFILE=$(read_build_meta profile)
+CASTER_ASTER_COMMIT=$(read_build_meta aster_commit)
+CASTER_COMPILER=$(read_build_meta compiler)
+CASTER_FLAGS=$(read_build_meta flags)
 INPUT_BYTES=$(stat -c %s "$INPUT")
 HOST=$(hostname)
+HOST_ARCH=$(uname -m)
 
 write_meta() {
     local status=$1
@@ -62,7 +82,12 @@ write_meta() {
         printf 'caster_bin\t%s\n' "$CASTER_BIN"
         printf 'caster_bin_sha256\t%s\n' "$CASTER_SHA256"
         printf 'caster_backend\t%s\n' "$CASTER_BACKEND"
+        printf 'caster_build_profile\t%s\n' "$CASTER_BUILD_PROFILE"
+        printf 'caster_aster_commit\t%s\n' "$CASTER_ASTER_COMMIT"
+        printf 'caster_compiler\t%s\n' "$CASTER_COMPILER"
+        printf 'caster_flags\t%s\n' "$CASTER_FLAGS"
         printf 'host\t%s\n' "$HOST"
+        printf 'host_arch\t%s\n' "$HOST_ARCH"
         printf 'threads\t%s\n' "$THREADS"
         printf 'seed\t%s\n' "$SEED"
         printf 'start_utc\t%s\n' "$START_UTC"

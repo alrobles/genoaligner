@@ -28,6 +28,24 @@ guaranteed to expose the same instruction set. Each binary has an adjacent
 `build.tsv` provenance file. Select a non-default profile at runtime with
 `CASTER_BIN=/path/to/caster-site-strict`.
 
+The sidecar declares the runtime backend, ASTER commit, compiler, flags and
+SHA-256. The runner rejects an explicit `CASTER_BACKEND` that contradicts this
+declaration rather than publishing mislabelled CPU/GPU results. The production
+backend namespace is:
+
+```text
+cpu-portable   heterogeneous-cluster baseline
+cpu-strict     floating-point reference
+cpu-native     architecture-pinned diagnostic only
+hip-amd        future integrated AMD accelerator
+hip-nvidia     future integrated NVIDIA accelerator
+```
+
+Only the CPU backends are integrated into `caster-site`. The standalone HIP
+executor is not a complete tree-search backend and must not be labelled
+`hip-amd` or `hip-nvidia` in backbone reports until it controls the same
+scoring path and passes exact CPU-reference validation.
+
 ## Submit
 
 ```bash
