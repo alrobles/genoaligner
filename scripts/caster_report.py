@@ -89,7 +89,13 @@ def run_row(scope, rep, variant, outdir):
         "rep": rep,
         "variant": variant,
         "status": meta.get("status", "missing"),
+        "exit_code": meta.get("exit_code", ""),
         "input": meta.get("input", ""),
+        "input_bytes": meta.get("input_bytes", ""),
+        "caster_bin": meta.get("caster_bin", ""),
+        "caster_bin_sha256": meta.get("caster_bin_sha256", ""),
+        "caster_backend": meta.get("caster_backend", ""),
+        "host": meta.get("host", ""),
         "threads": meta.get("threads", ""),
         "seed": meta.get("seed", ""),
         "elapsed_seconds": meta.get("elapsed_seconds", ""),
@@ -200,9 +206,10 @@ def main():
         "rf_norm", "status", "tree_a", "tree_b",
     ]
     run_fields = [
-        "scope", "rep", "variant", "status", "input", "threads", "seed",
-        "elapsed_seconds", "max_rss_kb", "slurm_job_id",
-        "slurm_array_task_id",
+        "scope", "rep", "variant", "status", "exit_code", "input",
+        "input_bytes", "caster_bin", "caster_bin_sha256",
+        "caster_backend", "host", "threads", "seed", "elapsed_seconds",
+        "max_rss_kb", "slurm_job_id", "slurm_array_task_id",
     ]
     summary_fields = [
         "scope", "variant", "comparison", "n", "rf_norm_mean",
