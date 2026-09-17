@@ -89,7 +89,18 @@ def run_row(scope, rep, variant, outdir):
         "rep": rep,
         "variant": variant,
         "status": meta.get("status", "missing"),
+        "exit_code": meta.get("exit_code", ""),
         "input": meta.get("input", ""),
+        "input_bytes": meta.get("input_bytes", ""),
+        "caster_bin": meta.get("caster_bin", ""),
+        "caster_bin_sha256": meta.get("caster_bin_sha256", ""),
+        "caster_backend": meta.get("caster_backend", ""),
+        "caster_build_profile": meta.get("caster_build_profile", ""),
+        "caster_aster_commit": meta.get("caster_aster_commit", ""),
+        "caster_compiler": meta.get("caster_compiler", ""),
+        "caster_flags": meta.get("caster_flags", ""),
+        "host": meta.get("host", ""),
+        "host_arch": meta.get("host_arch", ""),
         "threads": meta.get("threads", ""),
         "seed": meta.get("seed", ""),
         "elapsed_seconds": meta.get("elapsed_seconds", ""),
@@ -200,8 +211,11 @@ def main():
         "rf_norm", "status", "tree_a", "tree_b",
     ]
     run_fields = [
-        "scope", "rep", "variant", "status", "input", "threads", "seed",
-        "elapsed_seconds", "max_rss_kb", "slurm_job_id",
+        "scope", "rep", "variant", "status", "exit_code", "input",
+        "input_bytes", "caster_bin", "caster_bin_sha256",
+        "caster_backend", "caster_build_profile", "caster_aster_commit",
+        "caster_compiler", "caster_flags", "host", "host_arch", "threads",
+        "seed", "elapsed_seconds", "max_rss_kb", "slurm_job_id",
         "slurm_array_task_id",
     ]
     summary_fields = [
