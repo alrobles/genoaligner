@@ -73,10 +73,13 @@ def sacct(names, since):
 
 
 def elapsed_s(el):
-    # sacct format [DD-]HH:MM:SS
-    days, _, t = el.partition("-")
-    h, m, s = t.split(":")
-    return (int(days or 0) * 86400) + int(h) * 3600 + int(m) * 60 + int(s)
+    # sacct format [DD-]HH:MM:SS; empty/malformed -> 0
+    days, _, t = (el or "").partition("-")
+    parts = t.split(":")
+    if len(parts) != 3:
+        return 0
+    h, m, s = (int(x or 0) for x in parts)
+    return (int(days or 0) * 86400) + h * 3600 + m * 60 + s
 
 
 for r in sacct(("align_genes", "align_mt", "macse"), a.since):
