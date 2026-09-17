@@ -43,8 +43,10 @@ patch(f'{d}/vector_sbnModel.py', [
     ("    def sample_tree(self, rooted=False):",
      """    def _fallback_split(self, clade_bitarr):
         c = clade_bitarr.to01()
-        pool = [child for k, ch in self.subsplit_supp_dict.items()
-                if k[self.ntaxa:] == c for child in ch]
+        cn = clade_bitarr.count()
+        pool = [ch for k, chs in self.subsplit_supp_dict.items()
+                if k[self.ntaxa:] == c for ch in chs
+                if 0 < bitarray(ch).count() < cn]
         if pool:
             return pool[np.random.randint(len(pool))]
         b = bitarray('0' * self.ntaxa)
