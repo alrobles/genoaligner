@@ -126,6 +126,13 @@ record_failure() {
         write_meta failed "$exit_code" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             "$((end_epoch - START_EPOCH))" "$slurm_max_rss" "$failure_meta"
         mv "$failure_meta" "$OUT/run.meta.tsv"
+        if [ -e "$LOG_TMP" ]; then
+            mv "$LOG_TMP" "$OUT/caster.log"
+        fi
+        if [ -e "$TIME_TMP" ]; then
+            mv "$TIME_TMP" "$OUT/caster.time"
+        fi
+        rm -f "$TREE_TMP"
     fi
 }
 trap 'record_failure "$?"' EXIT

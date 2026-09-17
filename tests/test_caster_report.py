@@ -222,6 +222,10 @@ class CasterRunTest(unittest.TestCase):
             self.assertEqual(result.returncode, 132)
             self.assertEqual(meta["status"], "failed")
             self.assertEqual(meta["exit_code"], "132")
+            self.assertTrue(os.path.isfile(os.path.join(
+                directory, "output", "caster.log")))
+            self.assertFalse(os.path.exists(os.path.join(
+                directory, "output", "caster.treefile.tmp")))
 
     def test_declared_backend_mismatch_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
