@@ -240,7 +240,7 @@ def main():
                 cmd.append("--cpu")
             if tool == "genomsa_lf":
                 cmd.append("--local-frame")
-            elif args.genomsa_args:
+            if args.genomsa_args:
                 cmd += args.genomsa_args.split()
             dt, rc = run(cmd, args.timeout, log)
             if rc == 0 and os.path.exists(outp):
