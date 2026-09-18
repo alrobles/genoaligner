@@ -136,6 +136,9 @@ record_failure() {
     fi
 }
 trap 'record_failure "$?"' EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
+trap 'exit 129' HUP
 
 if [ -x "$TIME_BIN" ]; then
     "$TIME_BIN" -v -o "$TIME_TMP" \
@@ -161,5 +164,5 @@ mv "$TIME_TMP" "$OUT/caster.time"
 mv "$META_TMP" "$OUT/run.meta.tsv"
 mv "$TREE_TMP" "$TREE"
 finished=true
-trap - EXIT
+trap - EXIT TERM INT HUP
 echo "CASTER complete: $TREE"

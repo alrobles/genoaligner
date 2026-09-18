@@ -1,7 +1,9 @@
 import importlib.util
 import os
+import signal
 import subprocess
 import tempfile
+import time
 import unittest
 
 
@@ -177,6 +179,10 @@ class CasterRunTest(unittest.TestCase):
                 "        shift\n"
                 "    fi\n"
                 "done\n"
+                "if [ -n \"${CASTER_TEST_STARTED:-}\" ]; then\n"
+                "    : > \"$CASTER_TEST_STARTED\"\n"
+                "fi\n"
+                "sleep \"${CASTER_TEST_SLEEP:-0}\"\n"
                 f"if [ {exit_code} -ne 0 ]; then exit {exit_code}; fi\n"
                 "printf '((A,B),(C,D));\\n' > \"$output\"\n")
         os.chmod(path, 0o755)
@@ -226,6 +232,39 @@ class CasterRunTest(unittest.TestCase):
                 directory, "output", "caster.log")))
             self.assertFalse(os.path.exists(os.path.join(
                 directory, "output", "caster.treefile.tmp")))
+
+    def test_termination_records_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            caster = self.make_caster(directory, 0)
+            output = os.path.join(directory, "output")
+            started = os.path.join(directory, "started")
+            environment = os.environ.copy()
+            environment.update({
+                "CASTER_BIN": caster,
+                "CASTER_BACKEND": "cpu-test",
+                "CASTER_TEST_SLEEP": "30",
+                "CASTER_TEST_STARTED": started,
+                "TIME_BIN": os.path.join(directory, "missing-time"),
+            })
+            process = subprocess.Popen(
+                [
+                    "bash", os.path.join(ROOT, "scripts", "caster_run.sh"),
+                    self.make_input(directory), output,
+                ],
+                env=environment,
+                preexec_fn=os.setsid,
+            )
+            for _ in range(100):
+                if os.path.exists(started):
+                    break
+                time.sleep(0.01)
+            self.assertTrue(os.path.exists(started))
+            os.killpg(process.pid, signal.SIGTERM)
+            self.assertEqual(process.wait(timeout=5), 143)
+            meta = REPORT.read_meta(os.path.join(
+                output, "run.meta.tsv"))
+            self.assertEqual(meta["status"], "failed")
+            self.assertEqual(meta["exit_code"], "143")
 
     def test_declared_backend_mismatch_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
