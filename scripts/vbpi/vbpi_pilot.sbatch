@@ -35,7 +35,8 @@ for N in 128 256 512 1024; do
   D=$WORK/n$N
   if [ ! -s "$D/support.trees" ]; then
     /beegfs/a474r867/miniconda3/envs/vbpi/bin/python $REPO/prep_pilot.py \
-        --fasta $SM --n $N --seed 0 --trees $TREES --outdir $D
+        --fasta $SM --n $N --seed 0 --trees $TREES --outdir $D \
+        --nni "${NNI:-400}"
   fi
   /beegfs/a474r867/miniconda3/envs/vbpi/bin/python $REPO/vbpi_driver.py \
       --vbpi-src $VBPI --fasta $D/sub.fasta --trees $D/support.trees \
