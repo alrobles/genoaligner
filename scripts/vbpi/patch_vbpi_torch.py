@@ -102,6 +102,14 @@ patch(f'{d}/vector_sbnModel.py', [
 ])
 
 patch(f'{d}/base_branchModel.py', [
+    # Off-support embedding lookups -> padding row (zero feature), same
+    # semantic as the leaf padding already used in this model.
+    ("neigh_ss_idx.append(self.embedding_map[node.split_bitarr])",
+     "neigh_ss_idx.append(self.embedding_map.get(node.split_bitarr, self.padding_dim))"),
+    ("neigh_ss_idx.append(self.embedding_map[comb_parent_bipart_bitarr_root_to_leaf.to01() + child_bipart_bitarr.to01()])",
+     "neigh_ss_idx.append(self.embedding_map.get(comb_parent_bipart_bitarr_root_to_leaf.to01() + child_bipart_bitarr.to01(), self.padding_dim))"),
+    ("neigh_ss_idx.append(self.embedding_map[comb_parent_bipart_bitarr_leaf_to_root.to01() + child_bipart_bitarr.to01()])",
+     "neigh_ss_idx.append(self.embedding_map.get(comb_parent_bipart_bitarr_leaf_to_root.to01() + child_bipart_bitarr.to01(), self.padding_dim))"),
     ("self.feature_padded = torch.cat((self.sx, torch.zeros(1, self.feature_dim)), dim=0)",
      "self.feature_padded = torch.cat((self.sx, self.sx.new_zeros(1, self.feature_dim)), dim=0)"),
     ("neigh_ss_idxes = torch.LongTensor(neigh_ss_idxes)",
