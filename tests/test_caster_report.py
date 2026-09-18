@@ -59,12 +59,16 @@ class CasterReportTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with open(os.path.join(directory, "run.meta.tsv"), "w") as handle:
                 handle.write(
-                    "key\tvalue\nstatus\tcomplete\nelapsed_seconds\t42\n")
+                    "key\tvalue\n"
+                    "status\tcomplete\n"
+                    "elapsed_seconds\t42\n"
+                    "chunk\t10000\n")
             with open(os.path.join(directory, "caster.time"), "w") as handle:
                 handle.write("Maximum resident set size (kbytes): 12345\n")
             row = REPORT.run_row("full", "", "genomsa", directory)
             self.assertEqual(row["status"], "complete")
             self.assertEqual(row["elapsed_seconds"], "42")
+            self.assertEqual(row["chunk"], "10000")
             self.assertEqual(row["max_rss_kb"], "12345")
 
     def test_slurm_memory_is_used_without_gnu_time(self):
@@ -170,6 +174,9 @@ class CasterRunTest(unittest.TestCase):
             handle.write(
                 "#!/bin/bash\n"
                 "set -euo pipefail\n"
+                "if [ -n \"${CASTER_TEST_ARGS:-}\" ]; then\n"
+                "    printf '%s\\n' \"$@\" > \"$CASTER_TEST_ARGS\"\n"
+                "fi\n"
                 "output=\n"
                 "while [ \"$#\" -gt 0 ]; do\n"
                 "    if [ \"$1\" = -o ]; then\n"
@@ -208,18 +215,48 @@ class CasterRunTest(unittest.TestCase):
             text=True,
             env=environment,
         )
-        return result, REPORT.read_meta(os.path.join(
-            output, "run.meta.tsv"))
+        metadata_path = os.path.join(output, "run.meta.tsv")
+        metadata = (
+            REPORT.read_meta(metadata_path)
+            if os.path.exists(metadata_path)
+            else {}
+        )
+        return result, metadata
 
     def test_success_records_provenance(self):
         with tempfile.TemporaryDirectory() as directory:
             caster = self.make_caster(directory, 0)
-            result, meta = self.run_caster(directory, caster)
+            arguments = os.path.join(directory, "arguments")
+            result, meta = self.run_caster(
+                directory,
+                caster,
+                CASTER_CHUNK="77",
+                CASTER_TEST_ARGS=arguments,
+            )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(meta["status"], "complete")
             self.assertEqual(meta["exit_code"], "0")
             self.assertEqual(meta["caster_backend"], "cpu-test")
+            self.assertEqual(meta["chunk"], "77")
             self.assertEqual(len(meta["caster_bin_sha256"]), 64)
+            with open(arguments) as handle:
+                caster_arguments = handle.read().splitlines()
+            self.assertIn("--chunk", caster_arguments)
+            self.assertEqual(
+                caster_arguments[caster_arguments.index("--chunk") + 1],
+                "77",
+            )
+
+    def test_invalid_chunk_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            caster = self.make_caster(directory, 0)
+            result, _ = self.run_caster(
+                directory,
+                caster,
+                CASTER_CHUNK="0",
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("positive integer", result.stderr)
 
     def test_failure_records_exit_code(self):
         with tempfile.TemporaryDirectory() as directory:
