@@ -95,3 +95,19 @@ APOB dropped 1 (189 kb BAC clone AC139752.4), COI dropped 68
 MACSE silent rc=1: raw genomic records killing the pairwise-distance
 phase. MACSE completed 7/8 loci on the filtered set (CYTB needs
 >90 min timeout); -seq_lr routes surviving >10 kb records.
+
+## Cross-matrix topology logL (-te, complete 3x3, 2026-09-18)
+
+Optimized logL per candidate topology on each supermatrix
+(3786 shared taxa, partitioned; one iqtree2 -te per cell):
+
+| Matrix \ Topology | genomsa | MACSE | Upham |
+|---|---|---|---|
+| base  | **-3,704,902** | -3,718,137 | -3,711,967 |
+| codon | -3,977,857 | **-3,954,166** | -3,983,792 |
+| lf    | **-3,888,076** | -3,892,225 | -3,900,234 |
+
+The diagonal wins in all three matrices. On the lf matrix the
+genomsa-derived topology beats MACSE by dL 4,149 and Upham by
+dL 12,158. Upham's topology never wins any matrix; on codon and lf it
+is the worst candidate.
