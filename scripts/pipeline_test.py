@@ -54,6 +54,19 @@ ap.add_argument('--macse-lr-len', type=int, default=10000,
                 help='seqs longer than this go to a -seq_lr side file '
                      '(MACSE adds them after the main MSA; guards the '
                      'pairwise-distance phase against genomic outliers)')
+ap.add_argument('--acc-csv', default='',
+                help='Upham accession CSV; records whose accession is absent '
+                     'are dropped by prefilter')
+ap.add_argument('--acc-fasta', default='',
+                help='target-taxon fasta (e.g. supermatrix); records whose '
+                     'accession is absent from its headers are dropped')
+ap.add_argument('--species-file', default='',
+                help='species whitelist (one per line, Genus_species or '
+                     'Genus species); non-matching records dropped')
+ap.add_argument('--max-len', type=int, default=0,
+                help='prefilter: drop seqs longer than N bp (0=off)')
+ap.add_argument('--median-mult', type=float, default=0.0,
+                help='prefilter: drop seqs longer than M x median (0=off)')
 ap.add_argument('--extract-script', default='')
 ap.add_argument('--timeout', type=int, default=5400)
 a = ap.parse_args()
@@ -123,6 +136,81 @@ def run(cmd, log, timeout):
         return secs, -9
 
 
+def stage_prefilter(gene, wd, log):
+    """Drop records not in the target set before any downstream stage.
+
+    Filters (all optional, composable):
+      acc-csv     accession present in the curated Upham CSV
+      acc-fasta   accession present in target-taxon fasta headers
+      species     binomial parsed from header present in whitelist
+      max-len / median-mult   length sanity
+    Writes filtered.fasta + dropped.tsv (auditable).
+    """
+    src = find_input(gene)
+    out = os.path.join(wd, 'filtered.fasta')
+    drop_f = os.path.join(wd, 'dropped.tsv')
+    if not src:
+        emit(gene, 'prefilter', 'prefilter', 'skipped', 'no-input', 0, 0)
+        return
+    acc_csv = set()
+    if a.acc_csv:
+        for row in csv.reader(open(a.acc_csv)):
+            if len(row) >= 2:
+                acc_csv.add(row[1].strip())
+    acc_fa = set()
+    if a.acc_fasta:
+        acc_fa = {l.split()[0][1:].split('.')[0]
+                  for l in open(a.acc_fasta) if l.startswith('>')}
+    spp_ok = set()
+    if a.species_file:
+        spp_ok = {l.strip().replace(' ', '_').lower()
+                  for l in open(a.species_file) if l.strip()}
+    t0 = time.time()
+    recs, lens = [], []
+    name, seq = None, []
+    for line in open(src):
+        line = line.rstrip()
+        if line.startswith('>'):
+            if name is not None:
+                recs.append((name, seq))
+            name, seq = line[1:], []
+        else:
+            seq.append(line)
+    if name is not None:
+        recs.append((name, seq))
+    lens = sorted(sum(map(len, s)) for _, s in recs)
+    med = lens[len(lens) // 2] if lens else 0
+    lim_med = med * a.median_mult if a.median_mult > 0 else 0
+    with open(out, 'w') as fo, open(drop_f, 'w') as fd:
+        fd.write('name\treason\tlen\n')
+        kept = 0
+        for name, seq in recs:
+            L = sum(map(len, seq))
+            acc = name.split()[0].split('.')[0]
+            binomial = '_'.join(name.split()[1:3]).lower()
+            reason = ''
+            if acc_csv and acc not in acc_csv:
+                reason = 'acc-not-in-csv'
+            elif acc_fa and acc not in acc_fa:
+                reason = 'acc-not-in-target'
+            elif spp_ok and binomial not in spp_ok:
+                reason = 'species-not-in-whitelist'
+            elif a.max_len and L > a.max_len:
+                reason = f'len>{a.max_len}'
+            elif lim_med and L > lim_med:
+                reason = f'len>{a.median_mult}x-median'
+            if reason:
+                fd.write(f'{name}\t{reason}\t{L}\n')
+            else:
+                kept += 1
+                fo.write(f'>{name}\n' + '\n'.join(seq) + '\n')
+    secs = time.time() - t0
+    log.write(f'# prefilter {len(recs)} -> {kept} seqs\n')
+    emit(gene, 'prefilter', 'prefilter', 'seqs_in', len(recs), secs, 0)
+    emit(gene, 'prefilter', 'prefilter', 'seqs', kept, 0, 0)
+    emit(gene, 'prefilter', 'prefilter', 'dropped', len(recs) - kept, 0, 0)
+
+
 def find_input(gene):
     """Locate the per-gene fasta in genes-src (flat or pilot layout)."""
     for c in (os.path.join(a.genes_src, f'{gene}.fasta'),
@@ -170,6 +258,8 @@ def stage_extract(gene, wd, log):
 def stage_align(gene, wd, log):
     src = os.path.join(wd, 'extracted.fasta')
     if not os.path.exists(src):
+        src = os.path.join(wd, 'filtered.fasta')
+    if not os.path.exists(src):
         src = find_input(gene)
         if not src:
             emit(gene, 'align', a.align_variant, 'skipped', 'no-input',
@@ -192,7 +282,7 @@ def stage_align(gene, wd, log):
             secs, rc = time.time() - t0, -9
     else:
         if a.align_variant == 'macse':
-            main, lr = f'{wdir}/macse_in.fasta', f'{wdir}/macse_lr.fasta'
+            main, lr = f'{wd}/macse_in.fasta', f'{wd}/macse_lr.fasta'
             if a.macse_lr_len > 0:
                 n_lr = split_by_len(src, main, lr, a.macse_lr_len)
             else:
@@ -245,6 +335,8 @@ def main():
         wd = os.path.join(a.work, gene)
         os.makedirs(wd, exist_ok=True)
         log = open(os.path.join(wd, 'pipeline.log'), 'a')
+        if 'prefilter' in stages:
+            stage_prefilter(gene, wd, log)
         if 'ortho' in stages:
             stage_ortho(gene, wd, log)
         if 'extract' in stages:

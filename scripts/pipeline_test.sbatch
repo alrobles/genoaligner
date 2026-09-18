@@ -51,6 +51,12 @@ GENE=${GL[$SLURM_ARRAY_TASK_ID]}
     --genomsa-args "${GENOMSA_ARGS:-}" \
     --macse "${MACSE:-macse}" \
     --macse-args "${MACSE_ARGS:--max_refine_iter 0}" \
+    --macse-lr-len "${MACSE_LR_LEN:-10000}" \
+    --acc-csv "${ACC_CSV:-}" \
+    --acc-fasta "${ACC_FASTA:-}" \
+    --species-file "${SPECIES_FILE:-}" \
+    --max-len "${MAX_LEN:-0}" \
+    --median-mult "${MEDIAN_MULT:-0}" \
     --extract-script "${EXTRACT_SCRIPT:-/beegfs/a474r867/phylogenyAI/scripts/extract_gene_regions.py}"
 
 echo "PIPE_TEST_DONE $GENE"
