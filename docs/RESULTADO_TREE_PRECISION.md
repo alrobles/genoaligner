@@ -63,3 +63,35 @@ On the real 31-locus panel: genomsa ~41 min total, lf ~14 min, MACSE
 - FastTree proxy, not the production partitioned-ML estimator.
 - MACSE ran with -max_refine_iter 0 (its own refinement off) — its true
   ceiling is higher than measured here.
+
+## Full-scale RF vs Upham (measured, 2026-09-18)
+
+RF distances vs `upham_pruned_4353.tre`, 3786 shared taxa
+(`scripts/rf_distance.py`):
+
+| Tree | RF | RF_norm |
+|---|---|---|
+| backbone, supermatrix base | 2112 | 0.279 |
+| backbone, supermatrix codon/MACSE | 2268 | 0.300 |
+| backbone, supermatrix genomsa | 2050 | 0.271 |
+| lf chain s3 (mid-run) | 2040 | 0.270 |
+| lf chain s1 (mid-run) | 2086 | 0.276 |
+| genomsa vs codon (pairwise) | 2690 | 0.309 |
+
+All our backbones sit at RF_norm ~0.27-0.30 vs Upham — comparable
+divergence to independent analyses of these data. Our own methods
+disagree with each other (0.309) more than either disagrees with Upham.
+lf chains still running; numbers are snapshots of intermediate trees.
+
+Cross-matrix logL (-te, au_test): Upham is the *worst* candidate
+topology on the codon matrix (see conversation notes); lf row pending
+(te_lf_1,2 done ~3.5h, te_lf_0 resubmitted on kbs after sixhour cap).
+
+## Pilot curation (prefilter, measured)
+
+8-gene x 200-seq pilot, ACC_CSV + MEDIAN_MULT=20:
+APOB dropped 1 (189 kb BAC clone AC139752.4), COI dropped 68
+(complete mitogenomes ~16 kb), other genes clean. Root cause of the
+MACSE silent rc=1: raw genomic records killing the pairwise-distance
+phase. MACSE completed 7/8 loci on the filtered set (CYTB needs
+>90 min timeout); -seq_lr routes surviving >10 kb records.
