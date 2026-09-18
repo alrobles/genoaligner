@@ -62,12 +62,18 @@ records binary identity, backend, host, wall time and maximum resident memory,
 and keeps completed outputs on resubmission.
 
 For CPU allocation tuning on all 4,353 taxa, run the scaling job. It creates a
-deterministic 30,000-site benchmark when needed, then compares runtime, memory
+deterministic 3,000-site benchmark when needed, then compares runtime, memory
 and RF across 1–32 threads:
 
 ```bash
 sbatch scripts/caster_cpu_scale.sbatch
 ```
+
+The smaller default is intended to keep the single-thread reference within the
+six-hour partition limit. Override `CASTER_BENCH_SITES`, `CASTER_BENCH_THREADS`,
+`CASTER_BENCH_INPUT`, or `CASTER_BENCH_OUT` with `sbatch --export` for a
+targeted confirmation. The default input and output paths include the site
+count so a shorter retry cannot silently reuse a previous 30,000-site sample.
 
 ## Outputs
 
