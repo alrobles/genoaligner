@@ -57,6 +57,7 @@ GENE=${GL[$SLURM_ARRAY_TASK_ID]}
     --species-file "${SPECIES_FILE:-}" \
     --max-len "${MAX_LEN:-0}" \
     --median-mult "${MEDIAN_MULT:-0}" \
+    --timeout "${TIMEOUT:-5400}" \
     --extract-script "${EXTRACT_SCRIPT:-/beegfs/a474r867/phylogenyAI/scripts/extract_gene_regions.py}"
 
 echo "PIPE_TEST_DONE $GENE"
