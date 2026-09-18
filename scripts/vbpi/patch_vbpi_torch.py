@@ -46,7 +46,8 @@ patch(f'{d}/vector_sbnModel.py', [
         cn = clade_bitarr.count()
         pool = [ch for k, chs in self.subsplit_supp_dict.items()
                 if k[self.ntaxa:] == c for ch in chs
-                if 0 < bitarray(ch).count() < cn]
+                if 0 < (bitarray(ch) & clade_bitarr).count() < cn
+                and bitarray(ch) == (bitarray(ch) & clade_bitarr)]
         if pool:
             return pool[np.random.randint(len(pool))]
         b = bitarray('0' * self.ntaxa)
@@ -62,6 +63,42 @@ patch(f'{d}/vector_sbnModel.py', [
                     split = self.ss_reverse_map[split_bitarr][torch.multinomial(split_prob, 1).item()]
                 else:
                     split = self._fallback_split(parent_clade_bitarr)"""),
+    ("""        if not rooted:
+            root.unroot()
+        
+        return root""",
+     """        if node_split_stack:
+            print(f'sample_tree: {len(node_split_stack)} unresolved nodes '
+                  f'left on stack (would become unnamed leaves); '
+                  f'resolving by singleton peel')
+            while node_split_stack:
+                node, _sb = node_split_stack.pop()
+                pcb = bitarray(_sb[self.ntaxa:])
+                while pcb.count() > 1:
+                    i1 = pcb.find(1)
+                    s1 = bitarray('0' * self.ntaxa); s1[i1] = 1
+                    rest = pcb ^ s1
+                    c1 = node.add_child(); c2 = node.add_child()
+                    c1.name = self.taxa[i1]
+                    c1.clade_bitarr = bitarray(s1)
+                    c1.split_bitarr = min([c1.clade_bitarr, ~c1.clade_bitarr]).to01()
+                    if rest.count() > 1:
+                        node = c2
+                        pcb = rest
+                    else:
+                        c2.name = self.taxa[rest.find(1)]
+                        c2.clade_bitarr = bitarray(rest)
+                        c2.split_bitarr = min([c2.clade_bitarr, ~c2.clade_bitarr]).to01()
+                        break
+                else:
+                    node.name = self.taxa[pcb.find(1)]
+                    node.clade_bitarr = pcb
+                    node.split_bitarr = min([pcb, ~pcb]).to01()
+
+        if not rooted:
+            root.unroot()
+        
+        return root"""),
 ])
 
 patch(f'{d}/base_branchModel.py', [
