@@ -83,6 +83,8 @@ patch(f'{d}/vector_sbnModel.py', [
                     c1.clade_bitarr = bitarray(s1)
                     c1.split_bitarr = min([c1.clade_bitarr, ~c1.clade_bitarr]).to01()
                     if rest.count() > 1:
+                        c2.clade_bitarr = bitarray(rest)
+                        c2.split_bitarr = min([c2.clade_bitarr, ~c2.clade_bitarr]).to01()
                         node = c2
                         pcb = rest
                     else:
