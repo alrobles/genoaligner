@@ -50,6 +50,10 @@ ap.add_argument('--genomsa-args', default='')
 ap.add_argument('--macse', default='macse')
 ap.add_argument('--macse-args', default='',
                 help='extra macse flags, e.g. "-max_refine_iter 0"')
+ap.add_argument('--macse-lr-len', type=int, default=10000,
+                help='seqs longer than this go to a -seq_lr side file '
+                     '(MACSE adds them after the main MSA; guards the '
+                     'pairwise-distance phase against genomic outliers)')
 ap.add_argument('--extract-script', default='')
 ap.add_argument('--timeout', type=int, default=5400)
 a = ap.parse_args()
@@ -58,6 +62,30 @@ os.makedirs(a.work, exist_ok=True)
 M = open(os.path.join(a.work, 'metrics.tsv'), 'a')
 if os.stat(os.path.join(a.work, 'metrics.tsv')).st_size == 0:
     M.write('gene\tstage\tvariant\tkey\tvalue\tseconds\texit\n')
+
+
+def split_by_len(src, main_path, lr_path, maxlen):
+    """Split FASTA into main (len<=maxlen) and lr (len>maxlen). Returns lr count."""
+    n_lr = 0
+    with open(src) as fi, open(main_path, 'w') as fm, open(lr_path, 'w') as fl:
+        name, seq = None, []
+        def dump():
+            nonlocal n_lr
+            if name is None:
+                return
+            dest = fl if sum(map(len, seq)) > maxlen else fm
+            if dest is fl:
+                n_lr += 1
+            dest.write(f'>{name}\n' + '\n'.join(seq) + '\n')
+        for line in fi:
+            line = line.rstrip()
+            if line.startswith('>'):
+                dump()
+                name, seq = line[1:], []
+            else:
+                seq.append(line)
+        dump()
+    return n_lr
 
 
 def emit(gene, stage, variant, key, value, secs, rc):
@@ -164,8 +192,18 @@ def stage_align(gene, wd, log):
             secs, rc = time.time() - t0, -9
     else:
         if a.align_variant == 'macse':
-            cmd = [a.macse, '-prog', 'alignSequences', '-seq', src,
-                   '-out_NT', out] + a.macse_args.split()
+            main, lr = f'{wdir}/macse_in.fasta', f'{wdir}/macse_lr.fasta'
+            if a.macse_lr_len > 0:
+                n_lr = split_by_len(src, main, lr, a.macse_lr_len)
+            else:
+                main, n_lr = src, 0
+            cmd = [a.macse, '-prog', 'alignSequences', '-seq', main,
+                   '-out_NT', out]
+            if n_lr:
+                cmd += ['-seq_lr', lr]
+            cmd += a.macse_args.split()
+            if n_lr:
+                log.write(f'# macse_lr: {n_lr} seqs > {a.macse_lr_len} bp\n')
         elif a.align_variant.startswith('genomsa'):
             cmd = [a.genomsa, src, out, '--codon', '--gc-def', '1', '--cpu']
             if a.align_variant == 'genomsa_lf':
