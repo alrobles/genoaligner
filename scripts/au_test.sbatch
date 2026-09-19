@@ -15,6 +15,6 @@ set -euo pipefail
 source /beegfs/a474r867/miniconda3/etc/profile.d/conda.sh
 conda activate genoml-phylo
 
-iqtree2 -s "$SM/supermatrix.fasta" -p "$SCHEME" \
+iqtree2 -s "${ALN:-$SM/supermatrix.fasta}" -p "$SCHEME" \
     -z "$TREES" -zb 10000 -au \
-    -nt 16 -ntmax 16 -pre "$PRE"
+    -nt "${NT:-16}" -ntmax "${NT:-16}" -pre "$PRE"
