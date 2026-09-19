@@ -338,7 +338,7 @@ La documentación de esta ruta no autoriza cancelar jobs, sobrescribir matrices/
 
 ## 10. Plan experimental progresivo y modificaciones
 
-Estado: protocolo propuesto el 2026-09-18; documentado, todavía no implementado ni ejecutado. Las cantidades de réplicas, semillas, presupuestos y umbrales de esta sección son decisiones de diseño para la siguiente campaña, no resultados medidos. No reemplazan ni reinterpretan retrospectivamente los números de la auditoría.
+Estado: protocolo propuesto el 2026-09-18. C0–C3 están implementados (ver tabla 10.7); las simulaciones E1+ todavía no se han ejecutado. Las cantidades de réplicas, semillas, presupuestos y umbrales de esta sección son decisiones de diseño para la siguiente campaña, no resultados medidos. No reemplazan ni reinterpretan retrospectivamente los números de la auditoría.
 
 ### 10.1 Principio de trabajo
 
@@ -360,7 +360,7 @@ RF CPU/GPU cero no demuestra que el árbol sea biológicamente correcto. Menor R
 - Para esta campaña, generar una vez cada entrada y conservar `sim_true.fasta`, árbol y manifiesto por hash. El análisis posterior debe leer esos artefactos; no regenerar la verdad cada vez que se puntúa otro backend.
 - Se comprobó que `/beegfs/a474r867/miniconda3/envs/genoml-phylo/bin/iqtree2`, versión 2.4.0, anuncia AliSim y sus opciones de simulación. AliSim será el generador independiente principal del panel inicial, sin volver a alinear sus secuencias.
 - En ese entorno se localizaron NumPy y SciPy; no se localizaron DendroPy ni msprime. No asumirlos instalados. Preparar dependencias adicionales en un entorno aislado, con versiones fijadas y publicadas al menos siete días antes, únicamente cuando se apruebe esa fase.
-- La workflow CPU actual ejecuta `scripts/check_kernel_cpu.sh`, pero no la suite Python `tests/test_caster_report.py`. Incorporar esa suite al gate de CASTER para que las regresiones RF no dependan de ejecución manual.
+- La workflow CPU ejecuta `scripts/check_kernel_cpu.sh` y, desde C0, también la suite Python (`test_caster_report.py`), de modo que las regresiones RF no dependen de ejecución manual.
 
 ### 10.3 Variables e hipótesis contrastables
 
@@ -481,17 +481,17 @@ Los experimentos biológicos pueden mostrar error incluso en CPU de referencia. 
 
 ### 10.7 Cambios de implementación y artefactos previstos
 
-Estos archivos/interfaces son objetivos de implementación, no archivos nuevos ya creados por esta planificación:
+Estado de implementación (2026-09-19): C0, C2 y C3 en PR #11 de genoaligner-devel (abierto); C1 en ASTER PR #8 (abierto, validado en CPU, MI210 y A100). C4–C6 pendientes.
 
-| Bloque | Repositorio y superficie | Cambio previsto |
-|---|---|---|
-| C0: RF | genoaligner-devel: scripts/rf_distance.py, tests/test_caster_report.py y workflow CPU | Filtrar ambos lados de la bipartición, ampliar invariancias y ejecutar la suite Python en CI |
-| C1: gate numérico | ASTER: validateScores y benchmark del ejecutor | Rechazar no finitos antes de la tolerancia; negativos que prueben que el gate falla |
-| C2: identidad y runner | genoaligner-devel: caster_run.sh, caster_pending.py y reportes | Hash de entrada/configuración, reutilización condicionada al manifiesto, duración de alta resolución y estados sin ambigüedad |
-| C3: experimentos | genoaligner-devel: nuevo scripts/caster_experiment.py y extensión de caster_scale_report.py | Manifiesto inmutable, celdas/réplicas, invocación de AliSim, consumo de trazas congeladas y análisis pareado; no regenerar verdad al reportar |
-| C4: observabilidad | ASTER: algorithms.hpp, sequence.hpp y frontera del ejecutor | Fases y contadores de trabajo lógico, captura de trazas sin duplicarlas por hilo; separar build instrumentado de build cronometrado |
-| C5: scheduler/HIP | ASTER: twoStepWorkflow, Tripartition/Gene, ThreadPool y PortableHipExecutor | Estado privado, orden determinista, tiles que no alteran ventanas e integración real de scores |
-| C6: recuperación/escala | ASTER y launchers de genoaligner-devel | Estado serializable, checkpoint seguro y luego comparación de una/dos/tres GPU |
+| Bloque | Repositorio y superficie | Cambio | Estado |
+|---|---|---|---|
+| C0: RF | genoaligner-devel: scripts/rf_distance.py, tests/test_caster_report.py y workflow CPU | Ambos lados de la bipartición filtrados; invariancias y suite Python en CI | Implementado |
+| C1: gate numérico | ASTER: validateScores y benchmark del ejecutor | Rechazo de no finitos/vacíos antes de la tolerancia; negativos que prueban el gate | Implementado, PR #8 |
+| C2: identidad y runner | genoaligner-devel: caster_run.sh, caster_pending.py y reportes | Hash de entrada/configuración, reutilización condicionada al manifiesto, alta resolución y estados sin ambigüedad | Implementado |
+| C3: experimentos | genoaligner-devel: scripts/caster_experiment.py | Manifiesto inmutable, celdas/réplicas, invocación de AliSim, datasets congelados por hash y análisis pareado; no regenera verdad al reportar | Implementado |
+| C4: observabilidad | ASTER: algorithms.hpp, sequence.hpp y frontera del ejecutor | Fases y contadores de trabajo lógico, captura de trazas sin duplicarlas por hilo; separar build instrumentado de build cronometrado | Pendiente |
+| C5: scheduler/HIP | ASTER: twoStepWorkflow, Tripartition/Gene, ThreadPool y PortableHipExecutor | Estado privado, orden determinista, tiles que no alteran ventanas e integración real de scores | Pendiente |
+| C6: recuperación/escala | ASTER y launchers de genoaligner-devel | Estado serializable, checkpoint seguro y luego comparación de una/dos/tres GPU | Pendiente |
 
 Interfaz propuesta del harness:
 
