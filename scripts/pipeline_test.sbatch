@@ -14,7 +14,9 @@
 #   WORK           run dir (metrics.tsv lands here)          [required]
 #   GENELIST       space-separated list, e.g. "CYTB ND1"     [required]
 #                  (NOT comma-separated: sbatch --export splits on commas)
-#   STAGES         subset of ortho,extract,align,trim        [align,trim]
+#   STAGELIST      space-separated stages (like GENELIST -- comma lists
+#                  get split by sbatch --export and silently truncate)
+#                  subset of: prefilter ortho extract align trim [align trim]
 #   ALIGN_VARIANT  macse|genomsa|genomsa_lf|mafft            [genomsa]
 #   TRIM_MODE      clipkit mode                              [smart-gap]
 #   STRIP_FS       1 => replace '!' with '-' in trimmed out  [off]
@@ -34,12 +36,14 @@ export PATH="$ENV/bin:$PATH"
 
 read -ra GL <<< "${GENELIST:?set GENELIST}"
 GENE=${GL[$SLURM_ARRAY_TASK_ID]}
+STAGES_ARG="${STAGELIST:-align trim}"
+STAGES_ARG="${STAGES_ARG// /,}"
 
 # per-task work subdir shares the metrics file via append
 "$ENV/bin/python3" "$REPO/scripts/pipeline_test.py" \
     --work "${WORK:?set WORK}" \
     --genes "$GENE" \
-    --stages "${STAGES:-align,trim}" \
+    --stages "$STAGES_ARG" \
     --align-variant "${ALIGN_VARIANT:-genomsa}" \
     --trim-mode "${TRIM_MODE:-smart-gap}" \
     ${STRIP_FS:+--strip-fs} \
