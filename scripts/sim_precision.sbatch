@@ -71,6 +71,7 @@ python3 "$REPO/scripts/codon_bench_grid.py" "$WD" \
     --tools "${TOOLS:-genomsa,genomsa_lf,macse,threestep}" \
     --genomsa "$BIN/genomsa_cpu" --genomsa-cpu \
     --genomsa-args="${GENOMSA_EXTRA_ARGS:-}" \
+    --guide-w "${GUIDE_W:-20}" \
     --macse "$MACSE" --tree "$FT" \
     --timeout 5400 \
     > "$WD/results.tsv" 2>"$WD/stderr.log"

@@ -87,6 +87,12 @@ struct Params {
     // escape costs codon_fs_enc but saves only codon_stop_pen=60); a real
     // frameshift still wins because its off-frame tail accrues >=2 stops.
     float  codon_fs_enc   = 80.0f;
+    // Guided re-tokenization (phase-2): weight of the per-nt guide bonus
+    // inside the local-frame encode DP. bonus[r] is a signed agreement
+    // score of raw nt r with a prior alignment's column profile; the DP
+    // then prefers to exclude low-agreement nts as frameshift blocks.
+    // 0 disables (identical to codon_encode_local).
+    float  guide_w        = 0.0f;
 };
 
 // Position-specific gap penalties -- THE SPEC. The kernel implements the
@@ -135,6 +141,17 @@ std::vector<std::string> codon_encode(const std::vector<std::string>& seqs,
 // Params::codon_local_frame (implies codon_refine >= 1).
 std::vector<std::string> codon_encode_local(
         const std::vector<std::string>& seqs, const Params& P,
+        std::vector<CodonQc>* qc = nullptr);
+// Guided variant: identical DP to codon_encode_local, but a codon block
+// [i-3,i) earns P.guide_w * (bonus[i-3]+bonus[i-2]+bonus[i-1]) on top of
+// its intrinsic score. bonus[r] is the signed agreement of raw nt r with
+// a prior alignment's column profile (built by the caller, e.g. from a
+// first-pass MSA): the DP then re-places frameshift blocks where context
+// disagrees, fixing pass-1 misplacements the blind DP could not see.
+// guide[s] may be empty (seq has no guide -> plain local encode).
+std::vector<std::string> codon_encode_guided(
+        const std::vector<std::string>& seqs, const Params& P,
+        const std::vector<std::vector<float>>& guide,
         std::vector<CodonQc>* qc = nullptr);
 // Expand codon-token aligned rows back to nucleotides (token 64 -> NNN).
 std::vector<std::string> codon_decode(const std::vector<std::string>& rows);

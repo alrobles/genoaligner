@@ -199,6 +199,8 @@ def main():
     ap.add_argument("--genomsa-cpu", action="store_true")
     ap.add_argument("--genomsa-args", default="",
                     help="extra args appended to the genomsa command line")
+    ap.add_argument("--guide-w", type=float, default=20.0,
+                    help="guide bonus weight for the genomsa_lf2 variant")
     ap.add_argument("--macse", default="macse")
     ap.add_argument("--macse-refine", action="store_true")
     ap.add_argument("--prank", default="prank")
@@ -232,7 +234,7 @@ def main():
         got = None
         dt = 0.0
         status = "ok"
-        if tool in ("genomsa", "genomsa_lf"):
+        if tool in ("genomsa", "genomsa_lf", "genomsa_lf2"):
             outp = os.path.join(args.workdir, f"{tool}.fasta")
             cmd = [args.genomsa, inp, outp, "--codon",
                    "--gc-def", str(args.gc)]
@@ -242,7 +244,26 @@ def main():
                 cmd.append("--local-frame")
             if args.genomsa_args:
                 cmd += args.genomsa_args.split()
-            dt, rc = run(cmd, args.timeout, log)
+            if tool == "genomsa_lf2":
+                # phase-2 guided re-tokenization: pass 1 produces a blind
+                # lf alignment; pass 2 re-encodes with the column-agreement
+                # bonus (--guide-aln) so fs blocks move to context-
+                # disagreeing positions.
+                p1 = os.path.join(args.workdir, "genomsa_lf2_p1.fasta")
+                cmd1 = [args.genomsa, inp, p1, "--codon",
+                        "--gc-def", str(args.gc), "--local-frame"]
+                if args.genomsa_cpu:
+                    cmd1.append("--cpu")
+                dt1, rc = run(cmd1, args.timeout, log)
+                if rc == 0 and os.path.exists(p1):
+                    cmd += ["--guide-aln", p1,
+                            "--guide-w", str(args.guide_w)]
+                    dt2, rc = run(cmd, args.timeout, log)
+                    dt = dt1 + dt2
+                else:
+                    rc = rc if rc else 1
+            else:
+                dt, rc = run(cmd, args.timeout, log)
             if rc == 0 and os.path.exists(outp):
                 got = outp
             else:
