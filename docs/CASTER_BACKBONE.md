@@ -63,7 +63,9 @@ and keeps completed outputs on resubmission.
 
 For CPU allocation tuning on all 4,353 taxa, run the scaling job. It creates a
 deterministic 3,000-site benchmark when needed, then compares runtime, memory
-and RF across thread counts that can perform scoring work:
+and RF across thread counts that can perform scoring work. See the
+[roadmap and technical review](RUTA_MEJORA_BACKBONE.md) before interpreting
+its timings or RF results:
 
 ```bash
 sbatch scripts/caster_cpu_scale.sbatch
