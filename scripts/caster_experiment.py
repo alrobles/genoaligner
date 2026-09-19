@@ -562,6 +562,7 @@ def run_unit(manifest, case, ds, spec, variant, rep, root, log=print):
         "status": meta.get("status", ""),
         "exit_code": meta.get("exit_code", ""),
         "elapsed_seconds": meta.get("elapsed_seconds", ""),
+        "budget_seconds": budget,
         "input_sha256": meta.get("input_sha256", ""),
         "caster_config_sha256": meta.get("caster_config_sha256", ""),
         "slurm_job_id": meta.get("slurm_job_id", ""),
@@ -667,7 +668,7 @@ def paired_analysis(results, baseline, candidate, bootstrap_seed=41001,
 
 # ---------------- emit ------------------------------------------------------
 
-def e1_cells():
+def e1_cells(budget_seconds=1200):
     cells = []
     for length in (3000, 10000, 40000, 160000, 320000):
         cells.append({
@@ -676,7 +677,7 @@ def e1_cells():
             "tree": {"shape": "balanced", "height": 0.2},
             "mask": {"kind": "none"},
             "chunk": 10000,
-            "budget_seconds": 1200,
+            "budget_seconds": budget_seconds,
             "regime": "n_ge_100",
         })
     for n in (32, 60, 99, 100, 101, 256):
@@ -686,13 +687,13 @@ def e1_cells():
             "tree": {"shape": "balanced", "height": 0.2},
             "mask": {"kind": "none"},
             "chunk": 10000,
-            "budget_seconds": 1200,
+            "budget_seconds": budget_seconds,
             "regime": "n_lt_100" if n < 100 else "n_ge_100",
         })
     return cells
 
 
-def e2_cells():
+def e2_cells(budget_seconds=1200):
     cells = []
     for shape in ("balanced", "pectinate", "yule"):
         for mask in ({"kind": "none"},
@@ -705,14 +706,15 @@ def e2_cells():
                 "tree": {"shape": shape, "height": 0.2},
                 "mask": mask,
                 "chunk": 10000,
-                "budget_seconds": 1200,
+                "budget_seconds": budget_seconds,
                 "regime": "n_ge_100",
             })
     return cells
 
 
-def emit_manifest(panel, alisim_bin, caster_bin):
-    cells = e1_cells() if panel == "e1" else e2_cells()
+def emit_manifest(panel, alisim_bin, caster_bin, budget_seconds=1200):
+    cells = (e1_cells(budget_seconds) if panel == "e1"
+             else e2_cells(budget_seconds))
     return {
         "schema": SCHEMA,
         "protocol": f"caster-{panel}-panel",
@@ -730,14 +732,15 @@ def emit_manifest(panel, alisim_bin, caster_bin):
         },
         "baseline_variant": "cpu_ref",
         "repetitions": 3,
-        "budgets": {"search_seconds": 1200},
+        "budgets": {"search_seconds": budget_seconds},
     }
 
 
 # ---------------- cli -------------------------------------------------------
 
 def cmd_emit(args):
-    manifest = emit_manifest(args.panel, args.alisim_bin, args.caster_bin)
+    manifest = emit_manifest(args.panel, args.alisim_bin, args.caster_bin,
+                             budget_seconds=args.budget_seconds)
     text = json.dumps(manifest, indent=1, sort_keys=True)
     if args.out:
         with open(args.out, "w") as handle:
@@ -834,6 +837,7 @@ def main():
     p.add_argument("--panel", choices=["e1", "e2"], required=True)
     p.add_argument("--alisim-bin", required=True)
     p.add_argument("--caster-bin", required=True)
+    p.add_argument("--budget-seconds", type=int, default=1200)
     p.add_argument("--out")
     p.set_defaults(func=cmd_emit)
     for name in ("plan", "materialize", "run", "status", "analyze"):
