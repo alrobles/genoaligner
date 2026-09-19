@@ -23,7 +23,7 @@ int main(int argc, char** argv) {
                         "[--protein|--codon] [--gc-def N] [--gap-open G] [--gap-extend G] "
                         "[--psgp|--no-psgp] [--gappy T|--no-gappy] [--tree-out F] "
                         "[--codon-qc F] [--refine N] [--fs-cost X] [--fs-term-cost X]\n"
-                        "                 [--refine-band N]\n",
+                        "                 [--refine-band N] [--local-frame|--no-local-frame]\n",
                 argv[0]);
         return 2;
     }
@@ -42,6 +42,7 @@ int main(int argc, char** argv) {
     }
     if (codon_mode) P = genomsa::codon_params(gc_def);
     bool use_cpu = false;
+    bool lf_set = false;
     std::string tree_out, qc_out;
     for (int i = 3; i < argc; ++i) {
         std::string a = argv[i];
@@ -62,10 +63,14 @@ int main(int argc, char** argv) {
         else if (a == "--fs-cost" && i + 1 < argc) P.codon_fs = atof(argv[++i]);
         else if (a == "--fs-term-cost" && i + 1 < argc) P.codon_fs_term = atof(argv[++i]);
         else if (a == "--refine-band" && i + 1 < argc) P.codon_refine_band = atof(argv[++i]);
-        else if (a == "--local-frame") P.codon_local_frame = 1;
+        else if (a == "--local-frame") { P.codon_local_frame = 1; lf_set = true; }
+        else if (a == "--no-local-frame") { P.codon_local_frame = 0; lf_set = true; }
         else if (a == "--fs-enc-cost" && i + 1 < argc) P.codon_fs_enc = atof(argv[++i]);
         else { fprintf(stderr, "unknown arg: %s\n", a.c_str()); return 2; }
     }
+    // --local-frame is the default in codon mode (downstream RF parity
+    // with base + real gain under frameshifts); --no-local-frame opts out.
+    if (codon_mode && !lf_set) P.codon_local_frame = 1;
 
     std::vector<genoaligner::io::FastaRecord> recs;
     auto tr0 = std::chrono::steady_clock::now();
