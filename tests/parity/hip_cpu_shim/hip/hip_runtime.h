@@ -25,6 +25,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <atomic>
 #include <thread>
 #include <mutex>
@@ -224,6 +225,29 @@ inline void sync_block() { if (Emu* e = cur()) e->block_bar.wait(); }
 inline void sync_warp()  { if (Emu* e = cur()) e->warps[warp_of()]->bar.wait(); }
 
 }  // namespace shim
+
+// ---------------------------------------------------------------------------
+// Minimal device-memory surface, added for the MSA GPU driver (src/msa/
+// msa_gpu.cpp): under the shim "device" allocations are host heap, copies are
+// memcpy, and there is exactly one device. This lets the SHIPPED driver code
+// -- packing arithmetic, buffer sizing, level batching -- run bit-exact on a
+// GPU-less host instead of being duplicated under an #ifdef.
+// ---------------------------------------------------------------------------
+enum hipMemcpyKind { hipMemcpyHostToDevice = 1, hipMemcpyDeviceToHost = 2,
+                     hipMemcpyDeviceToDevice = 3, hipMemcpyHostToHost = 4 };
+
+inline hipError_t hipMalloc(void** p, size_t n) {
+    *p = std::malloc(n ? n : 1);
+    return *p ? hipSuccess : hipError_t(-1);
+}
+inline hipError_t hipFree(void* p) { std::free(p); return hipSuccess; }
+inline hipError_t hipMemcpy(void* d, const void* s, size_t n, hipMemcpyKind) {
+    if (n) std::memcpy(d, s, n);
+    return hipSuccess;
+}
+inline hipError_t hipGetDeviceCount(int* n) { *n = 1; return hipSuccess; }
+inline hipError_t hipGetLastError() { return hipSuccess; }
+inline hipError_t hipDeviceSynchronize() { return hipSuccess; }
 
 // The intrinsic surface the kernels use. Under emulation these are real
 // exchanges between real threads; with no context they degrade to returning

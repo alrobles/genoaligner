@@ -1,0 +1,99 @@
+Bootstrap: docker
+From: nvidia/cuda:12.6.3-devel-ubuntu24.04
+
+# genoaligner NVIDIA HIP shim image.
+#
+# RATIONALE AND FINAL VERDICT (2026-09-10):
+#
+# The ROCm base image was the wrong artifact for the NVIDIA target -- its hipcc
+# is an AMD-clang wrapper with no nvcc, so __HIP_PLATFORM_NVIDIA__ trips a
+# precondition inside AMD's own hip_runtime.h (job 29068829).
+#
+# This recipe takes the opposite approach: a CUDA devel base, which DOES give a
+# working nvcc, then tries to add the HIP-for-NVIDIA userland on top.
+#
+# RESULT: nvcc works, but HIP-for-NVIDIA is NOT DISTRIBUTABLE ANY MORE.
+#   - nvcc 12.6.85 present, compiles a real CUDA kernel -> NVCC_COMPILE: PASS
+#   - hip-runtime-nvidia / hipcc are NOT in the ROCm apt repo for noble 6.4.3
+#   - so hipcc is still ABSENT and a HIP-pure build for NVIDIA is impossible
+#     from published packages.
+#
+# CONCLUSION: the "one HIP source, both backends" strategy holds for AMD only.
+# For NVIDIA the path is hipify-clang -> CUDA -> nvcc, which needs no new
+# dependency and uses the nvcc this image already proves works.
+#
+# Kept in the repo because it is the artifact that proved the negative, and
+# because it is a perfectly good CUDA build image (via the hipify fallback).
+
+Bootstrap: docker
+From: nvidia/cuda:12.6.3-devel-ubuntu24.04
+
+%labels
+    org.genoaligner.role        nvidia_shim_negative
+    org.genoaligner.base        cuda12.6-devel
+    org.genoaligner.gpu_required false
+
+%environment
+    export CUDA_HOME=/usr/local/cuda
+    export PATH=/usr/local/cuda/bin:$PATH
+    export LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}
+
+%post
+    set -eux
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        cmake g++ make git curl ca-certificates wget python3
+    rm -rf /var/lib/apt/lists/*
+
+    mkdir -p /opt/genoaligner
+    nvcc --version | tail -2 > /opt/genoaligner/toolchain.txt
+
+    # --- route 1: ROCm's HIP-NV redistribution, if the mirror has it -------
+    # The ROCm apt repo carries hip-runtime-nvidia / hipcc for the nvcc
+    # platform on some versions. Try, but do not die if absent.
+    set +e
+    wget -qO /tmp/rocm.gpg https://repo.radeon.com/rocm/rocm.gpg
+    if [ -s /tmp/rocm.gpg ]; then
+        mkdir -p /usr/share/keyrings
+        cp /tmp/rocm.gpg /usr/share/keyrings/rocm.gpg
+        echo "deb [signed-by=/usr/share/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/6.4.3 noble main" \
+            > /etc/apt/sources.list.d/rocm.list
+        apt-get update -qq
+        apt-get install -y --no-install-recommends hip-runtime-nvidia hipcc 2>&1 | tail -5
+    fi
+    ROUTE1=$?
+    set -e
+
+    if [ "$ROUTE1" -eq 0 ] && command -v hipcc >/dev/null 2>&1; then
+        echo "route1_hipcc=yes" >> /opt/genoaligner/toolchain.txt
+    else
+        echo "route1_hipcc=no (hip-runtime-nvidia/hipcc not installable here)" \
+            >> /opt/genoaligner/toolchain.txt
+    fi
+    echo "nvcc=$(command -v nvcc || echo none)" >> /opt/genoaligner/toolchain.txt
+    echo "hipcc=$(command -v hipcc || echo none)" >> /opt/genoaligner/toolchain.txt
+    cat /opt/genoaligner/toolchain.txt
+
+%runscript
+    cat /opt/genoaligner/toolchain.txt
+    echo "hipcc : $(command -v hipcc || echo none)"
+    echo "nvcc  : $(command -v nvcc  || echo none)"
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        nvidia-smi -L 2>/dev/null || echo "nvidia-smi present but no device (normal without --nv)"
+    fi
+
+%test
+    set +e
+    echo "=== NVIDIA shim image self-test ==="
+    nvcc --version | tail -2
+    echo "--- can nvcc compile a kernel? (proves CUDA works, GPU not needed) ---"
+    cat > /tmp/k.cu <<'EOF'
+#include <cstdio>
+__global__ void k(float* a){ a[threadIdx.x] *= 2.0f; }
+int main(){ printf("nvcc_kernel_compiled_ok\n"); return 0; }
+EOF
+    nvcc -o /tmp/k /tmp/k.cu && echo "NVCC_COMPILE: PASS" || echo "NVCC_COMPILE: FAIL"
+    echo "--- is hipcc present? ---"
+    command -v hipcc && hipcc --version | head -1 || echo "hipcc: ABSENT"
+    echo "SHIM_TEST: informational"
+    exit 0

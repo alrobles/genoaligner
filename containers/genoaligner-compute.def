@@ -1,0 +1,78 @@
+Bootstrap: docker
+From: rocm/dev-ubuntu-24.04:6.4.3-complete
+
+# genoaligner GPU COMPUTE image (run-time, AMD/ROCm).
+#
+# Purpose: run the aligned kernels on the MI210 fleet with a known-good ROCm
+# runtime. Executed with `apptainer exec --rocm` so the HOST kernel driver
+# (/dev/kfd, /dev/dri) is bound in while the userland ROCm stack comes from
+# the image. This decouples "what we link against" from "what the node has".
+#
+# This one DOES require a working AMD driver on the node. It is the artifact
+# that makes the MI210 fleet usable without conda and without modules.
+#
+# Usage on a Slurm GPU node:
+#   apptainer exec --rocm --bind /beegfs:/beegfs \
+#       genoaligner-compute.sif genoaligner_probe
+
+%labels
+    org.genoaligner.role        compute
+    org.genoaligner.rocm        6.4.3
+    org.genoaligner.gpu_required true
+    org.genoaligner.runtime     "apptainer exec --rocm <sif>"
+
+%environment
+    export ROCM_PATH=/opt/rocm
+    export PATH=/opt/rocm/bin:$PATH
+    export LD_LIBRARY_PATH=/opt/rocm/lib:${LD_LIBRARY_PATH:-}
+    export HSA_ENABLE_SDMA=0
+
+%post
+    set -e
+    if command -v dnf >/dev/null 2>&1; then
+        dnf install -y cmake gcc-c++ make which python3 findutils
+        dnf clean all
+    elif command -v apt-get >/dev/null 2>&1; then
+        apt-get update
+        DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            cmake g++ make python3 curl ca-certificates
+        rm -rf /var/lib/apt/lists/*
+    fi
+
+    mkdir -p /opt/genoaligner
+    hipcc --version 2>&1 | head -2 > /opt/genoaligner/toolchain.txt || true
+    echo "gpu_required=true" >> /opt/genoaligner/toolchain.txt
+
+%runscript
+    if [ $# -eq 0 ]; then
+        cat /opt/genoaligner/toolchain.txt
+        echo "--- device ---"
+        rocminfo 2>/dev/null | grep -E "gfx|Marketing Name" | head -6 \
+            || echo "NO GPU VISIBLE -- did you pass --rocm and request a GPU?"
+    else
+        exec "$@"
+    fi
+
+%test
+    set -e
+    # Build a kernel and run it -- proves the runtime actually works, not just
+    # that the compilers are present.
+    cat > /tmp/probe.hip <<'EOF'
+#include <hip/hip_runtime.h>
+#include <cstdio>
+__global__ void k(float* a){ int i=threadIdx.x; a[i]=a[i]*2.0f; }
+int main(){
+    float h[8]; for(int i=0;i<8;i++) h[i]=(float)i;
+    float* d;
+    if (hipMalloc(&d, sizeof(h)) != hipSuccess) { printf("MALLOC_FAIL\n"); return 1; }
+    hipMemcpy(d,h,sizeof(h),hipMemcpyHostToDevice);
+    k<<<1,8>>>(d);
+    hipDeviceSynchronize();
+    hipMemcpy(h,d,sizeof(h),hipMemcpyDeviceToHost);
+    bool ok=true; for(int i=0;i<8;i++) if(h[i]!=2.0f*i) ok=false;
+    printf(ok ? "COMPUTE_IMAGE_TEST: PASS\n" : "COMPUTE_IMAGE_TEST: FAIL\n");
+    return ok?0:1;
+}
+EOF
+    hipcc -o /tmp/probe /tmp/probe.hip
+    /tmp/probe

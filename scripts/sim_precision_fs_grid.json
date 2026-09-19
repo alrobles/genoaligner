@@ -1,0 +1,13 @@
+{
+  "comment": "frameshift-focused subset of codon_smoke_grid.json for parameter sweeps: same cell params, same seeds (rep r<k> is the identical instance across runs). 'easy' kept as sanity control.",
+  "defaults": {"n": 128, "L": 1500, "gc": 1, "omega": 0.3},
+  "reps": 10,
+  "cells": [
+    {"id": "easy",      "sub": 0.02, "indel": 0.005},
+    {"id": "fs-0.1",    "sub": 0.02, "indel": 0.02, "fs_frac": 0.001},
+    {"id": "fs-0.5",    "sub": 0.02, "indel": 0.02, "fs_frac": 0.005},
+    {"id": "fs-1",      "sub": 0.02, "indel": 0.02, "fs_frac": 0.01},
+    {"id": "fs-3",      "sub": 0.02, "indel": 0.02, "fs_frac": 0.03},
+    {"id": "pseudo-mix","sub": 0.03, "indel": 0.01, "fs_frac": 0.01, "stop_frac": 0.05, "frag5": 40, "frag3": 40, "err": 0.001, "lr_frac": 0.25}
+  ]
+}
