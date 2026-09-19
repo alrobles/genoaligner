@@ -234,7 +234,7 @@ def main():
         got = None
         dt = 0.0
         status = "ok"
-        if tool in ("genomsa", "genomsa_lf", "genomsa_lf2"):
+        if tool in ("genomsa", "genomsa_gf", "genomsa_lf", "genomsa_lf2"):
             outp = os.path.join(args.workdir, f"{tool}.fasta")
             cmd = [args.genomsa, inp, outp, "--codon",
                    "--gc-def", str(args.gc)]
@@ -242,6 +242,11 @@ def main():
                 cmd.append("--cpu")
             if tool == "genomsa_lf":
                 cmd.append("--local-frame")
+            elif tool == "genomsa_gf":
+                # explicit global-frame baseline: codon mode defaults to
+                # local-frame, so the pre-default behavior needs the
+                # opt-out flag
+                cmd.append("--no-local-frame")
             if args.genomsa_args:
                 cmd += args.genomsa_args.split()
             if tool == "genomsa_lf2":
