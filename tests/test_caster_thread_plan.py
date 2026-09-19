@@ -1,4 +1,5 @@
 import importlib.util
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -63,6 +64,26 @@ class CasterThreadPlanTest(unittest.TestCase):
             PLAN.requested_threads("3,1,3", 3, 32),
             [3, 1],
         )
+
+    def test_cli_reports_invalid_chunk_without_traceback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fasta = Path(directory) / "input.fasta"
+            fasta.write_text(">one\nACGT\n>two\nACGT\n")
+            result = subprocess.run(
+                [
+                    str(SCRIPT),
+                    "--input",
+                    str(fasta),
+                    "--chunk",
+                    "0",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("sites and chunk size must be positive", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
 
 
 if __name__ == "__main__":

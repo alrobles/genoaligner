@@ -82,11 +82,11 @@ def main():
     parser.add_argument("--threads")
     args = parser.parse_args()
 
-    sites = fasta_sites(args.input)
-    chunks = effective_chunks(sites, args.chunk)
     if args.max_threads < 1:
         parser.error("--max-threads must be positive")
     try:
+        sites = fasta_sites(args.input)
+        chunks = effective_chunks(sites, args.chunk)
         if args.threads:
             threads = requested_threads(
                 args.threads,
