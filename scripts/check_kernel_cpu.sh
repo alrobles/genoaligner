@@ -300,6 +300,153 @@ else
     exit 1
 fi
 
+echo
+echo "--- [host] MSA CPU reference test ---"
+# Pure host code (no HIP, no shim): the M1 reference that fixes the semantics
+# every later GPU kernel must reproduce. Same rule as everywhere: silence is
+# not a pass, so the explicit ALL OK verdict is required.
+if g++ -O2 -std=c++17 -I"$REPO_ROOT/include" -o "$BUILD_DIR/test_msa_ref" \
+       "$REPO_ROOT/src/msa/msa_ref.cpp" "$REPO_ROOT/tests/msa/test_msa_ref.cpp" \
+       2>"$BUILD_DIR/msa_build.log"; then
+    if ! "$BUILD_DIR/test_msa_ref" | tee "$BUILD_DIR/msa_test.out" | tail -12; then
+        echo
+        echo "=== CPU GATE FAILED (MSA reference) — do not submit to the cluster ==="
+        exit 1
+    fi
+    if ! grep -q "ALL OK" "$BUILD_DIR/msa_test.out"; then
+        echo "  !!! MSA ref test produced no ALL OK verdict — treating as FAILURE."
+        exit 1
+    fi
+else
+    echo "  !!! MSA ref test failed to BUILD:"
+    sed -n '1,20p' "$BUILD_DIR/msa_build.log"
+    exit 1
+fi
+
+echo
+echo "--- [host] codon-mode unit tests ---"
+# Codon tokenization/translation/scoring invariants: the alpha=65 spec the
+# GPU codon path must reproduce (sub_ext path, whole-codon indels).
+if g++ -O2 -std=c++17 -pthread -I"$REPO_ROOT/include" -o "$BUILD_DIR/test_codon" \
+       "$REPO_ROOT/src/msa/msa_ref.cpp" "$REPO_ROOT/tests/msa/test_codon.cpp" \
+       2>"$BUILD_DIR/codon_build.log"; then
+    if ! "$BUILD_DIR/test_codon" | tee "$BUILD_DIR/codon_test.out" | tail -5; then
+        echo "=== CPU GATE FAILED (codon tests) ==="
+        exit 1
+    fi
+    if ! grep -q "ALL OK" "$BUILD_DIR/codon_test.out"; then
+        echo "  !!! codon test produced no ALL OK verdict — treating as FAILURE."
+        exit 1
+    fi
+else
+    echo "  !!! codon test failed to BUILD:"
+    sed -n '1,20p' "$BUILD_DIR/codon_build.log"
+    exit 1
+fi
+
+echo
+echo "--- [shim] MSA profile-profile kernel parity ---"
+# The shipped msa_pp_trace_kernel body under the CPU shim vs the M1 reference:
+# different code paths (direction bytes vs value re-derivation) asserting the
+# same score, span and column CIGAR. This is the gate every later MSA kernel
+# optimisation must keep green.
+if g++ -O2 -std=c++17 -pthread -DGENOALIGNER_HIP_SHIM -I"$SHIM_DIR" -I"$REPO_ROOT/include" \
+       -o "$BUILD_DIR/msa_pp_parity" \
+       "$REPO_ROOT/tests/parity/msa_pp_parity.cpp" "$REPO_ROOT/src/msa/msa_ref.cpp" \
+       2>"$BUILD_DIR/msa_pp_build.log"; then
+    if ! "$BUILD_DIR/msa_pp_parity" | tee "$BUILD_DIR/msa_pp.out" | tail -15; then
+        echo
+        echo "=== CPU GATE FAILED (MSA pp kernel parity) — do not submit ==="
+        exit 1
+    fi
+    if ! grep -q "RESULT: PASS" "$BUILD_DIR/msa_pp.out"; then
+        echo "  !!! MSA pp parity produced no PASS verdict — treating as FAILURE."
+        exit 1
+    fi
+else
+    echo "  !!! MSA pp parity failed to BUILD:"
+    sed -n '1,20p' "$BUILD_DIR/msa_pp_build.log"
+    exit 1
+fi
+
+echo
+echo "--- [shim] MSA level-batched pipeline parity ---"
+# The parallel decomposition itself: independent nodes per guide-tree level
+# aligned by the kernel and merged level-by-level must equal the sequential
+# post-order driver BIT-EXACTLY. A pipeline that differs from the sequential
+# reference is a scheduling bug no single-pair test can see.
+if g++ -O2 -std=c++17 -pthread -DGENOALIGNER_HIP_SHIM -I"$SHIM_DIR" -I"$REPO_ROOT/include" \
+       -o "$BUILD_DIR/msa_pipeline_parity" \
+       "$REPO_ROOT/tests/parity/msa_pipeline_parity.cpp" "$REPO_ROOT/src/msa/msa_ref.cpp" \
+       2>"$BUILD_DIR/msa_pipe_build.log"; then
+    if ! "$BUILD_DIR/msa_pipeline_parity" | tee "$BUILD_DIR/msa_pipe.out" | tail -15; then
+        echo
+        echo "=== CPU GATE FAILED (MSA pipeline parity) — do not submit ==="
+        exit 1
+    fi
+    if ! grep -q "RESULT: PASS" "$BUILD_DIR/msa_pipe.out"; then
+        echo "  !!! MSA pipeline parity produced no PASS verdict — treating as FAILURE."
+        exit 1
+    fi
+else
+    echo "  !!! MSA pipeline parity failed to BUILD:"
+    sed -n '1,20p' "$BUILD_DIR/msa_pipe_build.log"
+    exit 1
+fi
+
+echo
+echo "--- [shim] MSA GPU driver parity (shipped code) ---"
+# src/msa/msa_gpu.cpp itself, compiled under the shim: the real packing
+# arithmetic, buffer sizing and level batching, not a paraphrase. Must equal
+# the sequential reference bit-exactly. This is the strongest statement the
+# CPU gate can make about the GPU path before a device run.
+if g++ -O2 -std=c++17 -pthread -DGENOALIGNER_HIP_SHIM -I"$SHIM_DIR" -I"$REPO_ROOT/include" \
+       -o "$BUILD_DIR/msa_driver_parity" \
+       "$REPO_ROOT/tests/parity/msa_driver_parity.cpp" \
+       "$REPO_ROOT/src/msa/msa_gpu.cpp" "$REPO_ROOT/src/msa/nj_gpu.cpp" \
+       "$REPO_ROOT/src/msa/msa_ref.cpp" \
+       2>"$BUILD_DIR/msa_drv_build.log"; then
+    if ! "$BUILD_DIR/msa_driver_parity" | tee "$BUILD_DIR/msa_drv.out" | tail -15; then
+        echo
+        echo "=== CPU GATE FAILED (MSA driver parity) — do not submit ==="
+        exit 1
+    fi
+    if ! grep -q "RESULT: PASS" "$BUILD_DIR/msa_drv.out"; then
+        echo "  !!! MSA driver parity produced no PASS verdict — treating as FAILURE."
+        exit 1
+    fi
+else
+    echo "  !!! MSA driver parity failed to BUILD:"
+    sed -n '1,20p' "$BUILD_DIR/msa_drv_build.log"
+    exit 1
+fi
+
+echo
+echo "--- [shim] NJ0 exact dense Neighbor Joining parity (shipped code) ---"
+# src/msa/nj_gpu.cpp + the kernel bodies under the shim vs genomsa::nj_tree:
+# Tree.nodes identical, including on matrices with exact Q ties (the
+# lexicographic (q,a,b) reduction is what makes the device argmin equal the
+# host's first-minimum scan). Emits ALL OK or N FAILURES.
+if g++ -O2 -std=c++17 -pthread -DGENOALIGNER_HIP_SHIM -I"$SHIM_DIR" -I"$REPO_ROOT/include" \
+       -o "$BUILD_DIR/nj_gpu_test" \
+       "$REPO_ROOT/tests/msa/test_nj_gpu.cpp" \
+       "$REPO_ROOT/src/msa/nj_gpu.cpp" "$REPO_ROOT/src/msa/msa_ref.cpp" \
+       2>"$BUILD_DIR/nj_gpu_build.log"; then
+    if ! "$BUILD_DIR/nj_gpu_test" | tee "$BUILD_DIR/nj_gpu.out" | tail -8; then
+        echo
+        echo "=== CPU GATE FAILED (NJ0 parity) — do not submit ==="
+        exit 1
+    fi
+    if ! grep -q "ALL OK" "$BUILD_DIR/nj_gpu.out"; then
+        echo "  !!! NJ0 parity produced no ALL OK verdict — treating as FAILURE."
+        exit 1
+    fi
+else
+    echo "  !!! NJ0 parity failed to BUILD:"
+    sed -n '1,20p' "$BUILD_DIR/nj_gpu_build.log"
+    exit 1
+fi
+
 # --- Stage 6: REAL biological sequences -------------------------------------
 # Stage 5 exercises the API. This stage changes the INPUT: real mtDNA instead of
 # generated bases, because repeats, low-complexity and structured regions are where

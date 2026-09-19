@@ -1,0 +1,67 @@
+Bootstrap: docker
+From: rocm/dev-ubuntu-24.04:6.4.3-complete
+
+# genoaligner GPU COMPILE image.
+#
+# Purpose: make the build environment itself portable and reproducible.
+# Everything needed to build the HIP sources lives inside the image, so the
+# build no longer depends on Lmod, PATH archaeology, module load order, the
+# cmake GLIBCXX mismatch, or which cluster you are on. Copy the .sif, run it.
+#
+# Deliberately does NOT require a GPU. It carries compilers, not runtime
+# libraries -- the host driver is bound at run time (--rocm / --nv). That is
+# why it builds and can be verified on any CPU box, including reumanlab.
+#
+# The base tag matches the ROCm version the KU HPC modules expose (6.4.3),
+# so images built here are ABI-comparable with the bare-metal path.
+
+%labels
+    org.genoaligner.role        compile
+    org.genoaligner.rocm        6.4.3
+    org.genoaligner.gpu_required false
+    org.genoaligner.maintainer  Angel L. Robles Fernandez (Reuman Lab, KU)
+
+%environment
+    export ROCM_PATH=/opt/rocm
+    export PATH=/opt/rocm/bin:$PATH
+    export LD_LIBRARY_PATH=/opt/rocm/lib:${LD_LIBRARY_PATH:-}
+    # Keep the build deterministic regardless of host locale/env.
+    export LC_ALL=C
+    export HIPCC_COMPILE_FLAGS_APPEND=""
+
+%post
+    set -e
+    # The manylinux base is CentOS-family; make the toolchain explicit anyway
+    # so the image does not silently depend on base-image defaults.
+    if command -v dnf >/dev/null 2>&1; then
+        dnf install -y cmake gcc-c++ make git which python3 findutils diffutils
+        dnf clean all
+    elif command -v apt-get >/dev/null 2>&1; then
+        apt-get update
+        DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            cmake g++ make git python3 curl ca-certificates
+        rm -rf /var/lib/apt/lists/*
+    fi
+
+    mkdir -p /opt/genoaligner
+    hipcc --version 2>&1 | head -2 > /opt/genoaligner/toolchain.txt || true
+    cmake --version | head -1 >> /opt/genoaligner/toolchain.txt
+    gcc --version | head -1 >> /opt/genoaligner/toolchain.txt
+    echo "gpu_required=false" >> /opt/genoaligner/toolchain.txt
+
+%runscript
+    # Default behaviour: report the toolchain. Pass a command to override.
+    if [ $# -eq 0 ]; then
+        cat /opt/genoaligner/toolchain.txt
+        echo "--- device (only meaningful under --rocm/--nv) ---"
+        (rocminfo 2>/dev/null | grep -E "gfx|Marketing Name" | head -4) \
+            || echo "no GPU visible (expected: compile-only image)"
+    else
+        exec "$@"
+    fi
+
+%test
+    set -e
+    hipcc --version
+    cmake --version
+    echo "COMPILE_IMAGE_TEST: PASS (no GPU required)"

@@ -24,3 +24,6 @@ jobs:
 
       - name: Run the CPU gate
         run: bash scripts/check_kernel_cpu.sh
+
+      - name: Run the CASTER scripts test suite
+        run: python3 -m unittest discover -s tests -p 'test_caster_report.py'

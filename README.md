@@ -11,10 +11,12 @@ The goal is **portability with verified correctness**, not peak throughput.
 Correctness is established against an independent CPU dynamic program and three
 external oracles (edlib, rapidfuzz, SeqAn3) on both vendor paths.
 
-- **Status:** production (v1.0.0). WFA and Smith-Waterman score plus traceback
-  (CIGAR) verified on CPU, MI210 (hipcc) and five NVIDIA GPUs; the public API is
-  tested on device. The production checklist is in
-  [docs/PLAN_PRODUCCION.md](docs/PLAN_PRODUCCION.md).
+- **Status:** production aligner (v1.0.0) plus development pipeline. WFA score
+  and traceback (CIGAR) verified on CPU, MI210 (hipcc) and five NVIDIA GPUs; the
+  public API is tested on device; the production checklist is in
+  [docs/PLAN_PRODUCCION.md](docs/PLAN_PRODUCCION.md). The `scripts/caster_*` and
+  `docs/RUTA_MEJORA_BACKBONE.md` workflow (CASTER backbone experiments, provenance,
+  immutable-dataset harness) is development-stage.
 - **Scope:** this is a **pairwise** aligner (edit distance / WFA). It is not a
   multiple aligner and does not replace MAFFT or MACSE, and it is not a search tool
   that recruits candidates from a database.
@@ -178,7 +180,8 @@ rule as one `smax` per batch.
   with an explicit error, not degraded. Score-only has no such limit.
 - **SW rejects `gap_extend > gap_open` when `with_cigar`** — under that regime
   the DP prefers re-opening adjacent 1-gaps and no CIGAR can re-score to the
-  DP's own score. Score-only accepts it; the score stays exact.
+  DP's own score (see `docs/RESULTADO_H9_SW2_TRACE.md`). Score-only accepts it;
+  the score stays exact.
 - **SW traceback memory is O(m·n)** — one direction byte per DP cell. Pairs
   that would exceed `SW_MAX_TRACE_CELLS` come back `too_large`, not crashed.
 
@@ -224,15 +227,24 @@ the flat one. That comparison uses the published figure, not a measurement of th
 binary. Portability is the contribution, not throughput.
 
 Full method, the non-determinism evidence, and what these numbers do *not* support:
-[docs/RESULTADO_B6_TCUPS.md](docs/RESULTADO_B6_TCUPS.md).
+[docs/RESULTADO_B6_TCUPS.md](docs/RESULTADO_B6_TCUPS.md). Earlier, cross-job
+measurements (superseded for comparison purposes): [docs/BENCHMARK_FASE6.md](docs/BENCHMARK_FASE6.md).
 
 ## Documentation
 
 - [CONTRIBUTING.md](CONTRIBUTING.md) — the rules this codebase is held to.
 - [docs/DEPLOYMENT_MANIFEST.md](docs/DEPLOYMENT_MANIFEST.md) — deploying elsewhere.
 - [docs/PLAN_PRODUCCION.md](docs/PLAN_PRODUCCION.md) — production readiness checklist.
-- [docs/RESULTADO_B6_TCUPS.md](docs/RESULTADO_B6_TCUPS.md) — measured TCUPS with
-  error bars, six GPUs, two vendors.
+- [docs/BENCHMARK_FASE6.md](docs/BENCHMARK_FASE6.md) — six GPUs, two vendors.
+- [docs/RESULTADO_FASE7_OPTIMIZACION.md](docs/RESULTADO_FASE7_OPTIMIZACION.md) —
+  the block-occupancy fix (1.5-4.4x) and how it was measured.
+- [docs/OPTION_A_ANALYSIS.md](docs/OPTION_A_ANALYSIS.md) — why one HIP source.
+- [docs/CONTAINERS.md](docs/CONTAINERS.md) — apptainer images and 3-host
+  replicability.
+- The SW work: [docs/PLAN_SMITH_WATERMAN.md](docs/PLAN_SMITH_WATERMAN.md) and the
+  `RESULTADO_H8/H9/H10/H11/H12` files — kernel, traceback, API, NVIDIA, parasail.
+- `scripts/*.sbatch` are the validation jobs as actually run on the KU HPC
+  cluster (hardcoded cluster paths, kept as evidence; they are not portable).
 
 ## Licence
 
