@@ -61,9 +61,12 @@ has no checkpoint restart. The minis use `sixhour`. Every run uses seed 233,
 records binary identity, backend, host, wall time and maximum resident memory,
 and keeps completed outputs on resubmission.
 
-For CPU allocation tuning on all 4,353 taxa, run the scaling job. It creates a
-deterministic 3,000-site benchmark when needed, then compares runtime, memory
-and RF across 1–32 threads:
+The scaling job creates a deterministic 3,000-column sample of all 4,353
+terminal labels and records runtime, memory and RF across 1–32 threads.
+With ASTER v1.25's default `--chunk 10000`, this input has one statistical
+chunk, so it is a control-plane stress test, not a production CPU-scaling
+benchmark. See the [roadmap and technical review](RUTA_MEJORA_BACKBONE.md)
+before interpreting its timings or RF results:
 
 ```bash
 sbatch scripts/caster_cpu_scale.sbatch

@@ -108,9 +108,11 @@ def splits(tree_path):
         if not children[u]:
             continue
         m = mask[u]
-        c = min(m, allm ^ m)
-        if c and (c & (c - 1)):        # exclude trivial singletons
-            out.add(c)
+        other = allm ^ m
+        # nontrivial split: both sides need >= 2 taxa; min() canonicalizes,
+        # it does not pick the smaller side
+        if (m & (m - 1)) and (other & (other - 1)):
+            out.add(min(m, other))
     return out, taxa
 
 
@@ -149,11 +151,11 @@ def project(tree_path, keep):
                 m |= mask[v]
             mask[u] = m
         m = mask[u]
-        if not children[u] or m == 0 or m == allm:
+        if not children[u]:
             continue
-        c = min(m, allm ^ m)
-        if c and (c & (c - 1)):
-            out.add(c)
+        other = allm ^ m
+        if (m & (m - 1)) and (other & (other - 1)):
+            out.add(min(m, other))
     return out, taxa
 
 

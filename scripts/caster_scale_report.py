@@ -25,7 +25,8 @@ def scaling_rows(out_root, thread_counts):
             "benchmark", "", f"t{threads}", run_directory)
         elapsed = run["elapsed_seconds"]
         elapsed_value = float(elapsed) if elapsed else None
-        if threads == thread_counts[0] and run["status"] == "complete":
+        if (threads == thread_counts[0]
+                and run["result_state"] == "verified_complete"):
             baseline = elapsed_value
         speedup = baseline / elapsed_value if baseline and elapsed_value else None
         topology = REPORT.compare(
@@ -34,6 +35,7 @@ def scaling_rows(out_root, thread_counts):
         runs.append({
             "threads": threads,
             "status": run["status"],
+            "result_state": run["result_state"],
             "elapsed_seconds": elapsed,
             "speedup_vs_first": f"{speedup:.6f}" if speedup else "",
             "parallel_efficiency": (
@@ -42,6 +44,7 @@ def scaling_rows(out_root, thread_counts):
             "max_rss_kb": run["max_rss_kb"],
             "host": run["host"],
             "caster_bin_sha256": run["caster_bin_sha256"],
+            "caster_config_sha256": run["caster_config_sha256"],
             "shared_taxa_vs_first": topology["shared_taxa"],
             "rf_vs_first": topology["rf"],
             "rf_norm_vs_first": topology["rf_norm"],

@@ -3,10 +3,12 @@
 import argparse
 import csv
 import glob
+import hashlib
 import importlib.util
 import os
 import re
 import statistics
+import subprocess
 
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -57,6 +59,65 @@ def read_meta(path):
     return values
 
 
+def tree_complete(path):
+    if not os.path.isfile(path) or os.path.getsize(path) == 0:
+        return False
+    with open(path) as handle:
+        return ";" in handle.read()
+
+
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def slurm_job_active(job_id):
+    if not job_id or job_id in ("local", "none"):
+        return None
+    try:
+        result = subprocess.run(
+            ["squeue", "-h", "-j", str(job_id), "-o", "%T"],
+            capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    return bool(result.stdout.strip())
+
+
+def result_state(outdir, input_path=None):
+    """Interpreted state of a run directory.
+
+    verified_complete requires a complete manifest whose input hash still
+    matches the input file on disk. A valid tree without a verifiable
+    manifest is legacy_unverified -- present but not reusable evidence.
+    """
+    meta = read_meta(os.path.join(outdir, "run.meta.tsv"))
+    status = meta.get("status", "missing")
+    if not tree_complete(os.path.join(outdir, "caster.treefile")):
+        if status == "complete":
+            return "output_missing"
+        if status == "running" and slurm_job_active(
+                meta.get("slurm_job_id")) is False:
+            return "stale_running"
+        return status
+    if status != "complete":
+        return status if status != "missing" else "unmanifested"
+    if not meta.get("input_sha256") or not meta.get("caster_config_sha256"):
+        return "legacy_unverified"
+    input_path = input_path or meta.get("input", "")
+    if not input_path or not os.path.isfile(input_path):
+        return "input_missing"
+    if str(os.path.getsize(input_path)) != meta.get("input_bytes", ""):
+        return "input_mismatch"
+    if file_sha256(input_path) != meta["input_sha256"]:
+        return "input_mismatch"
+    return "verified_complete"
+
+
 def memory_to_kb(value):
     match = re.fullmatch(r"([0-9.]+)([KMGT]?)", value.strip())
     if not match:
@@ -89,9 +150,11 @@ def run_row(scope, rep, variant, outdir):
         "rep": rep,
         "variant": variant,
         "status": meta.get("status", "missing"),
+        "result_state": result_state(outdir),
         "exit_code": meta.get("exit_code", ""),
         "input": meta.get("input", ""),
         "input_bytes": meta.get("input_bytes", ""),
+        "input_sha256": meta.get("input_sha256", ""),
         "caster_bin": meta.get("caster_bin", ""),
         "caster_bin_sha256": meta.get("caster_bin_sha256", ""),
         "caster_backend": meta.get("caster_backend", ""),
@@ -99,6 +162,7 @@ def run_row(scope, rep, variant, outdir):
         "caster_aster_commit": meta.get("caster_aster_commit", ""),
         "caster_compiler": meta.get("caster_compiler", ""),
         "caster_flags": meta.get("caster_flags", ""),
+        "caster_config_sha256": meta.get("caster_config_sha256", ""),
         "host": meta.get("host", ""),
         "host_arch": meta.get("host_arch", ""),
         "threads": meta.get("threads", ""),
@@ -211,11 +275,12 @@ def main():
         "rf_norm", "status", "tree_a", "tree_b",
     ]
     run_fields = [
-        "scope", "rep", "variant", "status", "exit_code", "input",
-        "input_bytes", "caster_bin", "caster_bin_sha256",
-        "caster_backend", "caster_build_profile", "caster_aster_commit",
-        "caster_compiler", "caster_flags", "host", "host_arch", "threads",
-        "seed", "elapsed_seconds", "max_rss_kb", "slurm_job_id",
+        "scope", "rep", "variant", "status", "result_state", "exit_code",
+        "input", "input_bytes", "input_sha256", "caster_bin",
+        "caster_bin_sha256", "caster_backend", "caster_build_profile",
+        "caster_aster_commit", "caster_compiler", "caster_flags",
+        "caster_config_sha256", "host", "host_arch", "threads", "seed",
+        "elapsed_seconds", "max_rss_kb", "slurm_job_id",
         "slurm_array_task_id",
     ]
     summary_fields = [
