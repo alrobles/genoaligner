@@ -275,6 +275,29 @@ class RunUnitTest(unittest.TestCase):
                 d, "runs", "c1", rec["dataset_id"], "v1", "rep1",
                 "result.json")))
 
+    def test_timeout_terminates_process_group(self):
+        with tempfile.TemporaryDirectory() as d:
+            pidfile = os.path.join(d, "caster.pid")
+            caster = os.path.join(d, "slow_caster")
+            with open(caster, "w") as handle:
+                handle.write("#!/bin/bash\n"
+                             f"echo $$ > {pidfile}\n"
+                             "sleep 60\n")
+            os.chmod(caster, 0o755)
+            manifest = self.manifest(caster)
+            case = dict(manifest["cells"][0], budget_seconds=2)
+            _, rec = EXP.materialize_dataset(
+                manifest, case, 11001, d, log=lambda m: None)
+            result = EXP.run_unit(
+                manifest, case, rec["dataset_id"], rec["spec"],
+                "v1", 1, d, log=lambda m: None)
+            self.assertTrue(result["driver_timed_out"])
+            self.assertEqual(result["result_state"], "timeout")
+            with open(pidfile) as handle:
+                caster_pid = int(handle.read().strip())
+            with self.assertRaises(ProcessLookupError):
+                os.kill(caster_pid, 0)   # no orphaned CASTER survives
+
 
 class PairedAnalysisTest(unittest.TestCase):
     def row(self, ds, variant, rep, elapsed, state="verified_complete",

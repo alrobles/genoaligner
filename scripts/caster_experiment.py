@@ -33,6 +33,7 @@ import math
 import os
 import random
 import re
+import signal
 import statistics
 import subprocess
 import sys
@@ -526,11 +527,20 @@ def run_unit(manifest, case, ds, spec, variant, rep, root, log=print):
         output, _ = proc.communicate(timeout=budget)
     except subprocess.TimeoutExpired:
         timed_out = True
-        proc.terminate()           # SIGTERM -> runner records timeout
+        # Signal the whole process group: bash defers TERM traps while a
+        # foreground child runs, so signalling only the runner would leave
+        # CASTER orphaned and racing the next unit.
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
         try:
             output, _ = proc.communicate(timeout=30)
         except subprocess.TimeoutExpired:
-            proc.kill()
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
             output, _ = proc.communicate()
     with open(os.path.join(run_dir, "driver.log"), "w") as handle:
         handle.write(output or "")
