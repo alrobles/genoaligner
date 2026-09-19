@@ -222,7 +222,9 @@ def find_input(gene):
 
 
 def stage_ortho(gene, wd, log):
-    if not a.blastdb or not os.path.exists(a.blastdb + '.nal'):
+    db_ok = a.blastdb and any(
+        os.path.exists(a.blastdb + ext) for ext in ('.nal', '.ndb', '.nin'))
+    if not db_ok:
         emit(gene, 'ortho', 'blast', 'skipped', 'no-blastdb', 0, 0)
         return
     bait = os.path.join(a.baits_src, f'{gene}.baits.fasta')
@@ -242,6 +244,8 @@ def stage_ortho(gene, wd, log):
 
 def stage_extract(gene, wd, log):
     rec = os.path.join(a.records_src, f'{gene}.records.fasta')
+    if not os.path.exists(rec):
+        rec = os.path.join(a.records_src, f'{gene}.fasta')
     bait = os.path.join(a.baits_src, f'{gene}.baits.fasta')
     out = os.path.join(wd, 'extracted.fasta')
     rep = os.path.join(wd, 'extract.tsv')
