@@ -66,9 +66,12 @@ CARGS=${SPEC#*|}
 WD=$OUT/$CELL/r$REP
 mkdir -p "$WD"
 
+TOOLSLIST_ARG="${TOOLSLIST:-genomsa genomsa_lf macse threestep}"
+TOOLSLIST_ARG="${TOOLSLIST_ARG// /,}"
+
 python3 "$REPO/scripts/codon_bench_grid.py" "$WD" \
     --cell "$CELL" --rep "$REP" $CARGS \
-    --tools "${TOOLS:-genomsa,genomsa_lf,macse,threestep}" \
+    --tools "$TOOLSLIST_ARG" \
     --genomsa "$BIN/genomsa_cpu" --genomsa-cpu \
     --genomsa-args="${GENOMSA_EXTRA_ARGS:-}" \
     --guide-w "${GUIDE_W:-20}" \
