@@ -11,6 +11,7 @@ CASTER_BIN=${CASTER_BIN:-$ROOT/tools/ASTER-v1.25/bin/caster-site-portable}
 TIME_BIN=${TIME_BIN:-/usr/bin/time}
 THREADS=${THREADS:-${SLURM_CPUS_PER_TASK:-1}}
 SEED=${SEED:-233}
+CASTER_CHUNK=${CASTER_CHUNK:-10000}
 INPUT=$1
 OUT=$2
 TREE=$OUT/caster.treefile
@@ -18,6 +19,10 @@ TREE=$OUT/caster.treefile
 test -s "$INPUT"
 test -x "$CASTER_BIN"
 command -v flock >/dev/null
+if ! [[ "$CASTER_CHUNK" =~ ^[1-9][0-9]*$ ]]; then
+    echo "CASTER_CHUNK must be a positive integer" >&2
+    exit 2
+fi
 
 BUILD_META="${CASTER_BIN}.build.tsv"
 read_build_meta() {
@@ -90,6 +95,7 @@ write_meta() {
         printf 'host_arch\t%s\n' "$HOST_ARCH"
         printf 'threads\t%s\n' "$THREADS"
         printf 'seed\t%s\n' "$SEED"
+        printf 'chunk\t%s\n' "$CASTER_CHUNK"
         printf 'start_utc\t%s\n' "$START_UTC"
         printf 'end_utc\t%s\n' "$end_utc"
         printf 'elapsed_seconds\t%s\n' "$elapsed"
@@ -143,9 +149,11 @@ trap 'exit 129' HUP
 if [ -x "$TIME_BIN" ]; then
     "$TIME_BIN" -v -o "$TIME_TMP" \
         "$CASTER_BIN" -t "$THREADS" --seed "$SEED" \
+        --chunk "$CASTER_CHUNK" \
         -o "$TREE_TMP" "$INPUT" 2> "$LOG_TMP"
 else
     "$CASTER_BIN" -t "$THREADS" --seed "$SEED" \
+        --chunk "$CASTER_CHUNK" \
         -o "$TREE_TMP" "$INPUT" 2> "$LOG_TMP"
     printf 'GNU time unavailable on this node\n' > "$TIME_TMP"
 fi

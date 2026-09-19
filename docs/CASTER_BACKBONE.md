@@ -63,17 +63,26 @@ and keeps completed outputs on resubmission.
 
 For CPU allocation tuning on all 4,353 taxa, run the scaling job. It creates a
 deterministic 3,000-site benchmark when needed, then compares runtime, memory
-and RF across 1–32 threads:
+and RF across thread counts that can perform scoring work:
 
 ```bash
 sbatch scripts/caster_cpu_scale.sbatch
 ```
 
-The smaller default is intended to keep the single-thread reference within the
-six-hour partition limit. Override `CASTER_BENCH_SITES`, `CASTER_BENCH_THREADS`,
-`CASTER_BENCH_INPUT`, or `CASTER_BENCH_OUT` with `sbatch --export` for a
-targeted confirmation. The default input and output paths include the site
-count so a shorter retry cannot silently reuse a previous 30,000-site sample.
+CASTER v1.25 assigns whole `--chunk` regions to its worker pool. The default
+3,000-column FASTA therefore has one effective scoring chunk and cannot
+measure multi-thread scaling. The submitter derives the effective chunk count,
+chooses only useful thread counts, and rejects an explicit
+`CASTER_BENCH_THREADS` value that would leave workers idle. `CASTER_BENCH_CHUNK`
+is recorded and passed explicitly, but changing it also changes local
+frequency estimation and is not a scheduling-only optimization.
+
+The smaller default remains useful as a single-thread end-to-end baseline
+within the six-hour partition limit. Override `CASTER_BENCH_SITES`,
+`CASTER_BENCH_THREADS`, `CASTER_BENCH_CHUNK`, `CASTER_BENCH_INPUT`, or
+`CASTER_BENCH_OUT` with `sbatch --export` for a targeted confirmation. The
+default input and output paths include the site count so a shorter retry
+cannot silently reuse a previous 30,000-site sample.
 
 ## Outputs
 

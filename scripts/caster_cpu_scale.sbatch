@@ -14,7 +14,8 @@ ROOT=${PHYLOGENY_ROOT:-/beegfs/a474r867/phylogenyAI}
 REPO=${GENOALIGNER_REPO:-/beegfs/a474r867/genoaligner/repo}
 SOURCE=${CASTER_BENCH_SOURCE:-$ROOT/data/supermatrix_genomsa/supermatrix.fasta}
 SITES=${CASTER_BENCH_SITES:-3000}
-THREAD_COUNTS=${CASTER_BENCH_THREADS:-"1 2 4 8 16 32"}
+REQUESTED_THREADS=${CASTER_BENCH_THREADS:-}
+CASTER_CHUNK=${CASTER_BENCH_CHUNK:-10000}
 INPUT=${CASTER_BENCH_INPUT:-$ROOT/results/caster_backbone/benchmark/supermatrix-${SITES}.fasta}
 OUT_ROOT=${CASTER_BENCH_OUT:-$ROOT/results/caster_backbone/benchmark/cpu-scale-${SITES}}
 
@@ -23,12 +24,25 @@ if [ ! -s "$INPUT" ]; then
         --input "$SOURCE" --output "$INPUT" --sites "$SITES"
 fi
 
+PLAN_ARGS=(
+    --input "$INPUT"
+    --chunk "$CASTER_CHUNK"
+    --max-threads "${SLURM_CPUS_PER_TASK:-32}"
+)
+if [ -n "$REQUESTED_THREADS" ]; then
+    PLAN_ARGS+=(--threads "$REQUESTED_THREADS")
+fi
+IFS=$'\t' read -r ALIGNMENT_SITES EFFECTIVE_CHUNKS THREAD_COUNTS < <(
+    python3 "$REPO/scripts/caster_thread_plan.py" "${PLAN_ARGS[@]}"
+)
+echo "alignment_sites=$ALIGNMENT_SITES"
+echo "caster_chunk=$CASTER_CHUNK"
+echo "effective_scoring_chunks=$EFFECTIVE_CHUNKS"
+echo "thread_counts=$THREAD_COUNTS"
+
 for threads in $THREAD_COUNTS; do
-    if ! [[ "$threads" =~ ^[1-9][0-9]*$ ]] || [ "$threads" -gt 32 ]; then
-        echo "invalid CASTER_BENCH_THREADS value: $threads" >&2
-        exit 2
-    fi
-    THREADS=$threads CASTER_BACKEND=cpu-portable \
+    THREADS=$threads CASTER_CHUNK=$CASTER_CHUNK \
+        CASTER_BACKEND=cpu-portable \
         "$REPO/scripts/caster_run.sh" "$INPUT" "$OUT_ROOT/t$threads"
 done
 
