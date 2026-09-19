@@ -74,6 +74,8 @@ patch(f'{d}/vector_sbnModel.py', [
             while node_split_stack:
                 node, _sb = node_split_stack.pop()
                 pcb = bitarray(_sb[self.ntaxa:])
+                node.clade_bitarr = pcb
+                node.split_bitarr = min([pcb, ~pcb]).to01()
                 while pcb.count() > 1:
                     i1 = pcb.find(1)
                     s1 = bitarray('0' * self.ntaxa); s1[i1] = 1
