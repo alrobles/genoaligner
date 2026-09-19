@@ -30,7 +30,7 @@
 #   sbatch --array=0-7 --export=WORK=$P/results/pipe_test/lf,GENELIST="APOB BDNF BRCA1 COI CYTB GHR IRBP RAG1A",ALIGN_VARIANT=genomsa_lf,GENES_SRC=$P/data/pilot_200_8genes pipeline_test.sbatch
 
 set -o pipefail
-REPO=/beegfs/a474r867/genoaligner/repo
+REPO=${REPO:-/beegfs/a474r867/genoaligner/repo}
 ENV=/beegfs/a474r867/miniconda3/envs/genoml-phylo
 export PATH="$ENV/bin:$PATH"
 

@@ -16,7 +16,7 @@
 
 set -u
 PAI=/beegfs/a474r867/phylogenyAI
-REPO=/beegfs/a474r867/genoaligner/repo
+REPO=${REPO:-/beegfs/a474r867/genoaligner/repo}
 GRID=${SIMP_GRID:-$REPO/scripts/codon_smoke_grid.json}
 OUT=${SIMP_OUT:-$PAI/data/sim_precision}
 BIN=$OUT/bin
