@@ -16,6 +16,18 @@
 #include <chrono>
 #include <string>
 #include <vector>
+#include <array>
+#include <unordered_map>
+
+static int nt4c(char c) {
+    switch (c) {
+        case 'A': case 'a': return 0;
+        case 'C': case 'c': return 1;
+        case 'G': case 'g': return 2;
+        case 'T': case 't': case 'U': case 'u': return 3;
+        default: return -1;
+    }
+}
 
 int main(int argc, char** argv) {
     if (argc < 3) {
@@ -23,7 +35,8 @@ int main(int argc, char** argv) {
                         "[--protein|--codon] [--gc-def N] [--gap-open G] [--gap-extend G] "
                         "[--psgp|--no-psgp] [--gappy T|--no-gappy] [--tree-out F] "
                         "[--codon-qc F] [--refine N] [--fs-cost X] [--fs-term-cost X]\n"
-                        "                 [--refine-band N]\n",
+                        "                 [--refine-band N] [--local-frame|--no-local-frame]\n"
+                        "                 [--guide-aln F] [--guide-w W]\n",
                 argv[0]);
         return 2;
     }
@@ -42,7 +55,8 @@ int main(int argc, char** argv) {
     }
     if (codon_mode) P = genomsa::codon_params(gc_def);
     bool use_cpu = false;
-    std::string tree_out, qc_out;
+    bool lf_set = false;
+    std::string tree_out, qc_out, guide_path;
     for (int i = 3; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--cpu") use_cpu = true;
@@ -62,10 +76,16 @@ int main(int argc, char** argv) {
         else if (a == "--fs-cost" && i + 1 < argc) P.codon_fs = atof(argv[++i]);
         else if (a == "--fs-term-cost" && i + 1 < argc) P.codon_fs_term = atof(argv[++i]);
         else if (a == "--refine-band" && i + 1 < argc) P.codon_refine_band = atof(argv[++i]);
-        else if (a == "--local-frame") P.codon_local_frame = 1;
+        else if (a == "--local-frame") { P.codon_local_frame = 1; lf_set = true; }
+        else if (a == "--no-local-frame") { P.codon_local_frame = 0; lf_set = true; }
         else if (a == "--fs-enc-cost" && i + 1 < argc) P.codon_fs_enc = atof(argv[++i]);
+        else if (a == "--guide-aln" && i + 1 < argc) guide_path = argv[++i];
+        else if (a == "--guide-w" && i + 1 < argc) P.guide_w = atof(argv[++i]);
         else { fprintf(stderr, "unknown arg: %s\n", a.c_str()); return 2; }
     }
+    // --local-frame is the default in codon mode (downstream RF parity
+    // with base + real gain under frameshifts); --no-local-frame opts out.
+    if (codon_mode && !lf_set) P.codon_local_frame = 1;
 
     std::vector<genoaligner::io::FastaRecord> recs;
     auto tr0 = std::chrono::steady_clock::now();
@@ -80,12 +100,64 @@ int main(int argc, char** argv) {
             std::chrono::duration<double>(
                 std::chrono::steady_clock::now() - tr0).count());
 
+    // --guide-aln: a prior nt-level alignment of the SAME records supplies
+    // the context the blind local-frame encode lacks. For each column we
+    // tally nt frequencies over non-gap rows; each input seq's raw nt r
+    // maps to the column where its own guide row carries that nt, and
+    // bonus[r] = leave-one-out agreement (freq - 0.5). The guided encode
+    // DP then re-places frameshift blocks where context disagrees.
+    std::vector<std::vector<float>> guide_bonus;
+    if (!guide_path.empty()) {
+        std::vector<genoaligner::io::FastaRecord> grecs;
+        if (!genoaligner::io::read_fasta_file(guide_path, &grecs, &err)) {
+            fprintf(stderr, "read guide %s: %s\n", guide_path.c_str(), err.c_str());
+            return 1;
+        }
+        const int W = grecs.empty() ? 0 : (int)grecs[0].sequence.size();
+        std::vector<std::array<int,4>> cnt(W);
+        std::vector<int> ngap(W, 0);
+        std::unordered_map<std::string,int> gidx;
+        for (size_t i = 0; i < grecs.size(); ++i) {
+            gidx[grecs[i].id] = (int)i;
+            const std::string& row = grecs[i].sequence;
+            for (int c = 0; c < W && c < (int)row.size(); ++c) {
+                int b = nt4c(row[c]);
+                if (b >= 0) { cnt[c][b]++; ngap[c]++; }
+            }
+        }
+        guide_bonus.assign(seqs.size(), {});
+        int mapped = 0;
+        for (size_t s = 0; s < seqs.size(); ++s) {
+            auto it = gidx.find(recs[s].id);
+            if (it == gidx.end()) continue;
+            const std::string& row = grecs[it->second].sequence;
+            std::vector<float> b(seqs[s].size(), 0.f);
+            int r = 0;
+            for (int c = 0; c < W && c < (int)row.size() && r < (int)seqs[s].size(); ++c) {
+                if (row[c] == '-') continue;
+                int b4 = nt4c(seqs[s][r]);
+                if (b4 >= 0 && ngap[c] > 1) {
+                    float f = (float)(cnt[c][b4] - (nt4c(row[c]) == b4 ? 1 : 0))
+                            / (float)(ngap[c] - 1);
+                    b[r] = f - 0.5f;
+                }
+                ++r;
+            }
+            if (r == (int)seqs[s].size()) { guide_bonus[s] = std::move(b); ++mapped; }
+        }
+        fprintf(stderr, "guide: %s | %zu rows x %d cols | %d/%zu seqs mapped\n",
+                guide_path.c_str(), grecs.size(), W, mapped, seqs.size());
+        if (!mapped) guide_bonus.clear();
+    }
+
     // codon mode: tokenize to codons up front, decode on output
     std::vector<genomsa::CodonQc> cqc;
     const std::vector<std::string> orig = codon_mode ? seqs : std::vector<std::string>{};
     if (codon_mode) {
         seqs = P.codon_local_frame
-               ? genomsa::codon_encode_local(seqs, P, &cqc)
+               ? (guide_bonus.empty()
+                    ? genomsa::codon_encode_local(seqs, P, &cqc)
+                    : genomsa::codon_encode_guided(seqs, P, guide_bonus, &cqc))
                : genomsa::codon_encode(seqs, P.gc_def, &cqc);
         int f1 = 0, f2 = 0, st = 0, pt = 0;
         for (auto& q : cqc) { f1 += q.frame == 1; f2 += q.frame == 2;

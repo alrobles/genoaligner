@@ -167,6 +167,7 @@ def run_row(scope, rep, variant, outdir):
         "host_arch": meta.get("host_arch", ""),
         "threads": meta.get("threads", ""),
         "seed": meta.get("seed", ""),
+        "chunk": meta.get("chunk", ""),
         "elapsed_seconds": meta.get("elapsed_seconds", ""),
         "max_rss_kb": max_rss_kb(
             os.path.join(outdir, "caster.time"),
@@ -280,7 +281,7 @@ def main():
         "caster_bin_sha256", "caster_backend", "caster_build_profile",
         "caster_aster_commit", "caster_compiler", "caster_flags",
         "caster_config_sha256", "host", "host_arch", "threads", "seed",
-        "elapsed_seconds", "max_rss_kb", "slurm_job_id",
+        "chunk", "elapsed_seconds", "max_rss_kb", "slurm_job_id",
         "slurm_array_task_id",
     ]
     summary_fields = [

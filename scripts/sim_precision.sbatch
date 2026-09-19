@@ -16,7 +16,7 @@
 
 set -u
 PAI=/beegfs/a474r867/phylogenyAI
-REPO=/beegfs/a474r867/genoaligner/repo
+REPO=${REPO:-/beegfs/a474r867/genoaligner/repo}
 GRID=${SIMP_GRID:-$REPO/scripts/codon_smoke_grid.json}
 OUT=${SIMP_OUT:-$PAI/data/sim_precision}
 BIN=$OUT/bin
@@ -66,11 +66,15 @@ CARGS=${SPEC#*|}
 WD=$OUT/$CELL/r$REP
 mkdir -p "$WD"
 
+TOOLSLIST_ARG="${TOOLSLIST:-genomsa genomsa_lf macse threestep}"
+TOOLSLIST_ARG="${TOOLSLIST_ARG// /,}"
+
 python3 "$REPO/scripts/codon_bench_grid.py" "$WD" \
     --cell "$CELL" --rep "$REP" $CARGS \
-    --tools "${TOOLS:-genomsa,genomsa_lf,macse,threestep}" \
+    --tools "$TOOLSLIST_ARG" \
     --genomsa "$BIN/genomsa_cpu" --genomsa-cpu \
     --genomsa-args="${GENOMSA_EXTRA_ARGS:-}" \
+    --guide-w "${GUIDE_W:-20}" \
     --macse "$MACSE" --tree "$FT" \
     --timeout 5400 \
     > "$WD/results.tsv" 2>"$WD/stderr.log"

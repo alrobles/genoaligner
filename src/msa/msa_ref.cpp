@@ -339,6 +339,98 @@ std::vector<std::string> codon_encode_local(const std::vector<std::string>& seqs
     return out;
 }
 
+// Guided re-tokenization: same partition DP as codon_encode_local, but a
+// codon block [i-3,i) also earns guide_w * (bonus[i-3..i-1]) where bonus
+// is the caller-built agreement of each raw nt with a prior alignment's
+// column profile. The tiling is therefore pulled toward parses whose
+// codons sit on context-agreeing positions and whose fs blocks cover
+// context-disagreeing nts -- exactly the signal the blind pass-1 encode
+// lacked (a misplaced fs leaves a trail of profile-mismatching codons).
+std::vector<std::string> codon_encode_guided(
+        const std::vector<std::string>& seqs, const Params& P,
+        const std::vector<std::vector<float>>& guide,
+        std::vector<CodonQc>* qc) {
+    if (P.guide_w == 0.0f) return codon_encode_local(seqs, P, qc);
+    const signed char* aa = codon_aa_table(P.gc_def);
+    const float NEG = -1e30f;
+    std::vector<std::string> out(seqs.size());
+    if (qc) qc->assign(seqs.size(), {});
+    for (size_t s = 0; s < seqs.size(); ++s) {
+        const std::string& q = seqs[s];
+        const int L = (int)q.size();
+        std::string& e = out[s];
+        const std::vector<float>* g =
+            (s < guide.size() && (int)guide[s].size() >= L) ? &guide[s]
+                                                          : nullptr;
+        if (!g || L < 3) {
+            if (L >= 3) {
+                // no usable guide: fall back to the blind tiling for
+                // this row by running the same DP with zero bonus
+            } else if (L) {
+                e.push_back((char)(128 + 64));
+                continue;
+            } else {
+                continue;
+            }
+        }
+        auto fsc = [&](int pos) {
+            return (pos < 3 || pos > L - 3) ? P.codon_fs_term : P.codon_fs_enc;
+        };
+        std::vector<float> dp(L + 1, NEG);
+        std::vector<uint8_t> tr(L + 1, 0);
+        dp[0] = dp[1] = dp[2] = 0.f;
+        for (int i = 3; i <= L; ++i) {
+            float bv = NEG; uint8_t bt = 0;
+            int a = nt4(q[i - 3]), b = nt4(q[i - 2]), c = nt4(q[i - 1]);
+            float cs = (a < 0 || b < 0 || c < 0)
+                       ? 0.f
+                       : (aa[a * 16 + b * 4 + c] < 0 ? -P.codon_stop_pen : 1.f);
+            if (g)
+                cs += P.guide_w *
+                      ((*g)[i - 3] + (*g)[i - 2] + (*g)[i - 1]);
+            float pv = dp[i - 3];
+            if (pv > NEG / 2 && pv + cs > bv) { bv = pv + cs; bt = 1; }
+            for (int d = 1; d <= 2; ++d) {
+                pv = dp[i - d];
+                if (pv <= NEG / 2) continue;
+                float cand = pv - fsc(i - d);
+                if (cand > bv) { bv = cand; bt = (uint8_t)(1 + d); }
+            }
+            dp[i] = bv; tr[i] = bt;
+        }
+        int ei = L; float eb = dp[L];
+        for (int r = 1; r <= 2; ++r)
+            if (dp[L - r] - P.codon_fs_term > eb) { eb = dp[L - r] - P.codon_fs_term; ei = L - r; }
+        std::vector<int> blocks;
+        int i = ei;
+        while (i > 0) {
+            uint8_t t = tr[i];
+            if (t == 0) break;
+            if (t == 1) { blocks.push_back(3); i -= 3; }
+            else      { int d = t - 1; blocks.push_back(-d); i -= d; }
+        }
+        if (ei < L) blocks.push_back(-(L - ei));
+        std::reverse(blocks.begin(), blocks.end());
+        int stops = 0, partial = 0;
+        int p = i;
+        for (int bl : blocks) {
+            if (bl == 3) {
+                int a2 = nt4(q[p]), b2 = nt4(q[p + 1]), c2 = nt4(q[p + 2]);
+                int tok = (a2 < 0 || b2 < 0 || c2 < 0) ? 64
+                                                       : a2 * 16 + b2 * 4 + c2;
+                if (tok < 64 && aa[tok] < 0) ++stops;
+                e.push_back((char)(128 + tok));
+                p += 3;
+            } else {
+                ++partial;
+                p += -bl;
+            }
+        }
+        if (qc) (*qc)[s] = {0, stops, partial};
+    }
+    return out;
+}
+
 std::vector<std::string> codon_decode(const std::vector<std::string>& rows) {
     std::vector<std::string> out(rows.size());
     for (size_t s = 0; s < rows.size(); ++s) {

@@ -34,6 +34,7 @@ def scaling_rows(out_root, thread_counts):
             os.path.join(run_directory, "caster.treefile"), baseline_tree)
         runs.append({
             "threads": threads,
+            "chunk": run["chunk"],
             "status": run["status"],
             "result_state": run["result_state"],
             "elapsed_seconds": elapsed,
