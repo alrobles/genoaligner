@@ -338,7 +338,7 @@ La documentación de esta ruta no autoriza cancelar jobs, sobrescribir matrices/
 
 ## 10. Plan experimental progresivo y modificaciones
 
-Estado: protocolo propuesto el 2026-09-18. C0–C3 están implementados (ver tabla 10.7); las simulaciones E1+ todavía no se han ejecutado. Las cantidades de réplicas, semillas, presupuestos y umbrales de esta sección son decisiones de diseño para la siguiente campaña, no resultados medidos. No reemplazan ni reinterpretan retrospectivamente los números de la auditoría.
+Estado: protocolo propuesto el 2026-09-18. C0–C3 están implementados (ver tabla 10.7); el panel E1 ya se ejecutó completo y sus resultados medidos se registran en la sección 11 (E2+ siguen pendientes). Las cantidades de réplicas, semillas, presupuestos y umbrales de esta sección son decisiones de diseño para la siguiente campaña, no resultados medidos. No reemplazan ni reinterpretan retrospectivamente los números de la auditoría.
 
 ### 10.1 Principio de trabajo
 
@@ -519,3 +519,79 @@ python3 -m unittest discover -s tests -p 'test_caster_report.py'
 5. No regenerar automáticamente los RF históricos. Primero identificar entradas/versiones afectadas; la regeneración será una ejecución separada con procedencia nueva.
 
 Después seguirán C1 y C2, y una celda de E1 para validar la infraestructura experimental. El plan queda listo para comenzar por pruebas que fallen de forma conocida, no por una promesa de aceleración ni por la búsqueda indefinida de un resultado favorable.
+
+## 11. Registro de ejecución: panel E1 medido y escalado de hilos
+
+Fecha del registro: 2026-09-21. Esta sección documenta resultados **medidos** en KUHPC, distintos de las decisiones de diseño de la sección 10. Los números provienen de `result.json` verificados bajo `/beegfs/a474r867/phylogenyAI/results/caster_experiments/e1/`; los jobs citados son instantáneas de Slurm ya cerradas.
+
+### 11.1 Ejecución del panel E1
+
+El panel de 11 celdas (N x L, sección 10.4) se completó: **99/99 unidades `verified_complete`**, 3 datasets congelados por celda (semillas 11001-11003), 3 repeticiones técnicas, binario `caster-site-portable` v1.25.2.6, `--chunk 10000`, semilla de búsqueda 233. RF vs árbol verdadero = 0 en todas las unidades: control de cordura sobre datos JC balanceados fáciles, **no** evidencia de exactitud biológica general.
+
+Cadena de presupuestos por unidad: `e1_panel.json` (1200 s, exploratorio), `e1b_panel.json` (5400 s), `e1c_panel.json` (9000 s). Reuso por manifiesto intacto: los datasets verificados se compartieron entre protocolos sin regeneración. Jobs Slurm: 29914373 (array original, cancelado por contaminación de huérfanos previa al fix), 29915484, 29921775, 29922210, 29922632, 30013342. Los timeouts se registraron como censura limpia (`rc=143`), sin procesos huérfanos tras el fix `killpg` (b4dc528).
+
+### 11.2 Modelo de tiempo medido: t proporcional a n²·L
+
+Medianas por celda (régimen n>=100, K>=4 ventanas):
+
+| Celda | n²L | Mediana (s) | Coeficiente |
+|---|---:|---:|---:|
+| n100, L=40k | 0,40 G | 413 | 1,03e-6 |
+| n101, L=40k | 0,41 G | 421 | 1,03e-6 |
+| n128, L=40k | 0,66 G | 620 | 0,95e-6 |
+| n128, L=160k | 2,62 G | 2452 | 0,94e-6 |
+| n256, L=40k | 2,62 G | 2407 | 0,92e-6 |
+| n128, L=320k | 5,24 G | 5031 (mediana celda) | 0,96e-6 |
+
+`n=256, L=40k` y `n=128, L=160k` tienen el mismo n²L y difieren en mediana un 0,7 %: el trabajo efectivo dominante escala con n²·L. El ajuste es descriptivo dentro del panel medido (JC, balanceado, sin faltantes); no extrapolarlo fuera sin medición.
+
+Régimen n<100 (ruta distinta del algoritmo, confirmada por el corte a two-step en N=100):
+
+| Celda | Mediana (s) | Coeficiente |
+|---|---:|---:|
+| n32, L=40k | 35 | 0,85e-6 |
+| n60, L=40k | 165 | 1,15e-6 |
+| n99, L=40k | 528 | 1,35e-6 |
+
+Coeficiente creciente con n y discontinuidad a la baja en n=100 (528 -> 413 s): el régimen n<100 es más caro por unidad de trabajo. No ajustar una sola ley de potencia a ambos regímenes (H-sección 10.3 confirmada como distinción necesaria).
+
+### 11.3 Efecto dataset y frontera operativa
+
+El tiempo depende del dataset simulado, no sólo de n²·L. En `n=128, L=320k`:
+
+| Dataset | Tiempos por repetición (s) |
+|---|---|
+| s11001 | 8621, 8632, 6739 |
+| s11002 | 4901, 4904, 4937 |
+| s11003 | 4961, 5031, 5031 |
+
+Répica técnica dentro de un mismo dataset: dispersión ~0,1-0,4 %. Entre datasets: hasta ~1,7x. La dificultad de búsqueda varía con la semilla de datos; el análisis pareado por dataset es obligatorio (promediar sin emparejar inflaría la varianza y ocultaría el efecto).
+
+L320k quedó **dentro** de la factibilidad, no fuera: los timeouts a 5400 s correspondían al dataset difícil cortado en la fase NNI final; con 9000 s las nueve unidades completaron (2 unidades difíciles por ventana de 6 h). La frontera operativa real para n=128/L=320k es ~1-2 unidades por ventana según dificultad del dataset.
+
+### 11.4 Escalado de hilos: meseta medida a ~4x
+
+Paneles `e1t4_panel.json` y `e1t8_panel.json`: tres celdas (n99, n128, n256; L=40k), mismos datasets congelados, cada job fijado por `--nodelist` al mismo nodo donde corrió su baseline `cpu_ref` (bloque de hardware idéntico en el emparejamiento), `--cpus-per-task` igual al número de hilos. Análisis pareado (mediana de log-ratios por dataset, bootstrap 10k, semilla 41001):
+
+| Comparación | Speedup | IC95 | Pares |
+|---|---:|---:|---:|
+| cpu_t4 vs cpu_ref | **3,90x** | [3,85 ; 3,94] | 27/27 |
+| cpu_t8 vs cpu_ref | **3,99x** | [3,97 ; 4,01] | 27/27 |
+| cpu_t8 vs cpu_t4 | **1,02x** | [1,01 ; 1,03] | 27/27 |
+
+Lectura: escalado casi ideal hasta 4 hilos y **meseta dura a partir de ahí** (t8 aporta ~2 %). Consistente entre datasets y regímenes. Interpretación provisional (no medida por fases): la sección que reparte trabajo por sitios/ventanas paraleliza hasta ~4 trabajadores efectivos; el resto (construcción de guías, búsqueda NNI, I/O) es serial o está acotado por memoria. Esto delimita la palanca "hilos" a ~4x de techo en este binario y hardware: cualquier aceleración adicional requiere modificar la sección serial (guías concurrentes, evaluación rama x sitio, o integración HIP), como proponen P2-P3.
+
+Consecuencia operativa: una unidad L320k difícil (~8600 s a 1 hilo) baja a ~2200 s con `-t 4`; la barrera de seis horas para el rango medido es configurable, no estructural. Para n de miles (supermatriz real) el factor n² sigue dominando: 4 hilos ayudan pero no eliminan la necesidad de checkpoints/encadenamiento.
+
+### 11.5 Artefactos
+
+- Resultados y metadatos: `/beegfs/a474r867/phylogenyAI/results/caster_experiments/e1/` (`runs/`, `datasets/`, `analysis/`, `e1*_panel.json`, `e1_resubmit.{sh,sbatch}`, `e1t4_case.sbatch`, `e1t8_case.sbatch`, `e1_final_summary.txt`).
+- Código del harness: `scripts/caster_experiment.py` en `devin/c0-c2-rf-provenance` (mergeado en `codon-msa` vía PR 11 de genoaligner-devel y en `genoaligner/main` vía PR 1 de genoaligner).
+- Análisis formal: `analysis/all_cpu_t4_vs_cpu_ref.json`, `analysis/all_cpu_t8_vs_cpu_ref.json` en el directorio de resultados.
+
+### 11.6 Lo que E1 no resolvió (pendiente para E2+)
+
+- Efecto de datos faltantes y forma del árbol sobre tiempo y error (E2).
+- El patrón n²·L sólo se midió con JC, balanceado, sin faltantes; máscaras pueden cambiar tanto la dificultad de búsqueda como el error del estimador (H4).
+- El techo ~4x de hilos no identifica qué sección domina el tiempo serial restante; hace falta descomposición por fases (guías vs NNI vs scoring) antes de elegir la modificación de E3.
+- Todas las corridas fueron `cpu-portable`; ninguna variante GPU ha entrado al panel todavía.
