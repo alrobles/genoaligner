@@ -624,3 +624,21 @@ Hallazgos:
 Consecuencia para el objetivo backbone: el cuello de botella inferencial en régimen tipo supermatriz es la **estructura de cobertura por locus**, no el tiempo de cómputo. Una aceleración del solver reproduciría más rápido el mismo error; las palancas inferenciales (selección de representantes, submatrices, método) son un eje separado de la palanca computacional medida en 11.4.
 
 Precauciones: una sola configuración n=128/L=40k/JC; la ausencia efectiva y la conectividad de las máscaras se registran en `dataset.json` por dataset; RF=250 es el máximo del denominador, no "azar" necesariamente (puede indicar degeneración estructural del estimado, p. ej. estrella o biparticiones conflictivas — revisar los treefiles antes de caracterizar el modo de fallo).
+
+### 11.8 Registro: los tres árboles de producción y su estabilidad (medido)
+
+Fecha: 2026-09-21. Las tres corridas `caster_full` sobre las supermatrices reales (4.353 terminales, 32 hilos, partición kbs, binario `caster-site` v1.25) terminaron con `status=complete` y `Final Tree` escrito:
+
+| Matriz | Columnas | Duración | Artefacto |
+|---|---:|---:|---|
+| supermatrix_genomsa | 280.189 | 457.674 s (~5,3 días) | `full/genomsa/caster.treefile` |
+| supermatrix_genomsa_lf | 240.125 | 367.051 s (~4,2 días) | `full/genomsa_lf/caster.treefile` |
+| supermatrix_codon | 247.185 | 258.032 s (~3,0 días) | `full/codon/caster.treefile` |
+
+**Distancias entre árboles** (RF corregido, taxones compartidos): genomsa/genomsa_lf 0,896; genomsa/codon 0,894; genomsa_lf/codon 0,774. Contra `upham_pruned_4353.tre` (3.786 compartidos): 0,849-0,864. Los árboles comparten 10-23 % de biparticiones entre sí y ~14-15 % con Upham.
+
+**Poda a taxones bien cubiertos** (76 taxones con >=25 genes en las tres matrices; artefactos en `full/hc76/`): la distancia baja pero no desaparece — lf/codon 0,534; codon/Upham 0,630; genomsa/Upham 0,753. La inestabilidad atraviesa el backbone central, no se concentra en taxones pobres.
+
+**Análisis por soporte** (etiquetas internas 0-100 de CASTER): cada árbol tiene 73 biparticiones internas en el subconjunto de 76 taxones, con 11-16 de soporte >=90. Las biparticiones confiadas de un árbol mayoritariamente **no** aparecen en los otros (genomsa >=95: sólo 2/11 compartidas con genomsa_lf, 5/11 con Upham; excepción: genomsa_lf->codon comparte 6/7 de su núcleo >=95). El desacuerdo no es ruido en splits débiles: cada composición de matriz produce una respuesta confiada pero distinta.
+
+**Interpretación**: consistente con el hallazgo E2 (locus-masked -> RF 46-100 % con verdad conocida), el estimador es sensible a qué sitios/loci retiene cada variante de matriz. Upham no es verdad de referencia (otro estimador, otros datos), pero la no convergencia interna entre variantes basta para caracterizar la inestabilidad. El cuello de botella del backbone es la **composición de la supermatriz** — el diseño de qué loci y taxones entran — más que el tiempo de cómputo o la varianza técnica.
