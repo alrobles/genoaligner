@@ -129,6 +129,60 @@ class MaskTest(unittest.TestCase):
         self.assertAlmostEqual(record["effective_absence"], 1 / 8)
 
 
+class SelectionTest(unittest.TestCase):
+    def seqs(self):
+        # 7 taxa x 4 loci of width 2; occupancy varies per taxon/locus
+        return {
+            "a": "ACGTACGT",   # occupies all 4 loci
+            "b": "ACGT----",   # loci 0,1
+            "c": "AC------",   # locus 0 only
+            "d": "--------",   # none
+            "e": "ACGTAC--",   # loci 0,1,2
+            "f": "ACGTACGT",   # all 4
+            "g": "ACGTACGT",   # all 4
+        }
+
+    def test_taxon_min_drops_low_occupancy(self):
+        sel, rec = EXP.apply_selection(self.seqs(), {"taxon_min": 2}, 4)
+        self.assertEqual(sorted(sel), ["a", "b", "e", "f", "g"])
+        self.assertEqual(rec["taxa_kept"], 5)
+        self.assertEqual(rec["occupancy"]["taxon_loci_min"], 0)
+
+    def test_locus_min_drops_low_coverage_loci(self):
+        # locus occupancy: l0 has a,b,c,e,f,g (6); l1 a,b,e,f,g (5);
+        # l2 a,e,f,g (4); l3 a,f,g (3)
+        sel, rec = EXP.apply_selection(self.seqs(), {"locus_min": 5}, 4)
+        self.assertEqual(rec["loci_kept"], 2)
+        self.assertTrue(all(len(s) == 4 for s in sel.values()))
+        self.assertEqual(sel["c"], "AC--")
+
+    def test_combined_selection(self):
+        sel, rec = EXP.apply_selection(
+            self.seqs(), {"taxon_min": 1, "locus_min": 3}, 4)
+        self.assertEqual(sorted(sel), ["a", "b", "c", "e", "f", "g"])
+        self.assertEqual(rec["loci_kept"], 4)
+
+    def test_taxon_guard_keeps_four(self):
+        sel, rec = EXP.apply_selection(self.seqs(), {"taxon_min": 5}, 4)
+        self.assertEqual(len(sel), 4)
+        self.assertTrue(rec["taxon_guard"])
+        self.assertIn("a", sel)  # best-occupied taxon always kept
+
+    def test_locus_guard_keeps_best_locus(self):
+        sel, rec = EXP.apply_selection(self.seqs(), {"locus_min": 99}, 4)
+        self.assertTrue(rec["locus_guard"])
+        self.assertTrue(all(len(s) == 2 for s in sel.values()))
+        self.assertEqual(sel["c"], "AC")  # locus 0 is the best occupied
+
+    def test_selection_is_deterministic(self):
+        s1, r1 = EXP.apply_selection(self.seqs(),
+                                     {"taxon_min": 2, "locus_min": 2}, 4)
+        s2, r2 = EXP.apply_selection(self.seqs(),
+                                     {"taxon_min": 2, "locus_min": 2}, 4)
+        self.assertEqual(s1, s2)
+        self.assertEqual(r1["taxa_kept"], r2["taxa_kept"])
+
+
 class ObservedTest(unittest.TestCase):
     def test_dimensions(self):
         with tempfile.TemporaryDirectory() as d:
