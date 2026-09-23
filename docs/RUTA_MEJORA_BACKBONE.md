@@ -595,3 +595,32 @@ Consecuencia operativa: una unidad L320k difícil (~8600 s a 1 hilo) baja a ~220
 - El patrón n²·L sólo se midió con JC, balanceado, sin faltantes; máscaras pueden cambiar tanto la dificultad de búsqueda como el error del estimador (H4).
 - El techo ~4x de hilos no identifica qué sección domina el tiempo serial restante; hace falta descomposición por fases (guías vs NNI vs scoring) antes de elegir la modificación de E3.
 - Todas las corridas fueron `cpu-portable`; ninguna variante GPU ha entrado al panel todavía.
+
+### 11.7 Registro E2: dificultad por forma de árbol y datos faltantes (medido)
+
+Fecha: 2026-09-21. Panel `e2_panel.json`: 9 celdas (3 formas x 3 máscaras), n=128, L=40.000, JC, chunk 10.000, semillas 11001-11003, 3 reps, budget 2.400 s/unidad. Los datasets `balanced_none` son los mismos objetos congelados de E1 (reuso por `dataset_id`). Array Slurm 30073146; cadena `e2b_panel.json` (5.400 s) lanzada para las 3 unidades censuradas de `e2_pectinate_locus`.
+
+Resultados: 78/81 unidades `verified_complete` al cierre del primer array (3 timeouts limpios en la celda más dura). Medianas por celda sobre n=9 (RF denominador máximo = 2(n-3) = 250):
+
+| Celda | t mediana (s) | RF mediana | RF/250 |
+|---|---:|---:|---:|
+| balanced_none | 611 | 0 | 0 % |
+| balanced_independent | 430 | 4 | 2 % |
+| balanced_locus | 1.766 | 116 | 46 % |
+| pectinate_none | 619 | 28 | 11 % |
+| pectinate_independent | 1.635 | 170 | 68 % |
+| pectinate_locus | 829 (+3 censuradas) | 250 | 100 % |
+| yule_none | 636 | 2 | 1 % |
+| yule_independent | 674 | 34 | 14 % |
+| yule_locus | 1.879 | 152 | 61 % |
+
+Hallazgos:
+
+1. **El patrón de ausencia domina el error, no la cantidad.** Con el mismo 80 % nominal de faltantes, la máscara independiente produce RF 4-34 mientras la máscara por locus produce RF 116-250. Los loci completos ausentes por taxón — la estructura real de la supermatriz de producción (mediana de cobertura ~3 genes) — es lo que degrada la inferencia.
+2. **La forma del árbol es un eje de dificultad ordenado**: balanced < yule < pectinate. `pectinate_locus` colapsa a RF=250 en todas las unidades completadas: el árbol inferido no comparte ninguna bipartición con la verdad.
+3. **Las máscaras encarecen la búsqueda** (locus ~3x el coste de none); la excepción `balanced_independent` (más rápida que none) sugiere que la pérdida de señal también simplifica el paisaje de búsqueda.
+4. **Determinismo técnico**: réplicas del mismo dataset producen RF idénticos; la variación es entre datasets (semillas), no entre repeticiones. El análisis pareado por dataset sigue siendo obligatorio.
+
+Consecuencia para el objetivo backbone: el cuello de botella inferencial en régimen tipo supermatriz es la **estructura de cobertura por locus**, no el tiempo de cómputo. Una aceleración del solver reproduciría más rápido el mismo error; las palancas inferenciales (selección de representantes, submatrices, método) son un eje separado de la palanca computacional medida en 11.4.
+
+Precauciones: una sola configuración n=128/L=40k/JC; la ausencia efectiva y la conectividad de las máscaras se registran en `dataset.json` por dataset; RF=250 es el máximo del denominador, no "azar" necesariamente (puede indicar degeneración estructural del estimado, p. ej. estrella o biparticiones conflictivas — revisar los treefiles antes de caracterizar el modo de fallo).
