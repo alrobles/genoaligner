@@ -447,6 +447,33 @@ else
     exit 1
 fi
 
+echo
+echo "--- [host] public MSA API contract ---"
+# The public msa_align entry (src/api/api_msa.cpp) is pure host code -- no
+# shim, no device: it validates the request, composes the genomsa engine and
+# verifies the result contract (row count, equal width, QC, refusal paths).
+# Emits "MSA API test: PASS"; a build break here means the installed
+# libgenoaligner.a would be missing its newest public symbol.
+if g++ -O2 -std=c++17 -pthread -I"$REPO_ROOT/include" \
+       -o "$BUILD_DIR/test_msa_api" \
+       "$REPO_ROOT/tests/api/test_msa_api.cpp" \
+       "$REPO_ROOT/src/api/api_msa.cpp" "$REPO_ROOT/src/msa/msa_ref.cpp" \
+       2>"$BUILD_DIR/msa_api_build.log"; then
+    if ! "$BUILD_DIR/test_msa_api" | tee "$BUILD_DIR/msa_api.out" | tail -15; then
+        echo
+        echo "=== CPU GATE FAILED (public MSA API) — do not submit ==="
+        exit 1
+    fi
+    if ! grep -q "MSA API test: PASS" "$BUILD_DIR/msa_api.out"; then
+        echo "  !!! public MSA API test produced no PASS verdict — treating as FAILURE."
+        exit 1
+    fi
+else
+    echo "  !!! public MSA API test failed to BUILD:"
+    sed -n '1,20p' "$BUILD_DIR/msa_api_build.log"
+    exit 1
+fi
+
 # --- Stage 6: REAL biological sequences -------------------------------------
 # Stage 5 exercises the API. This stage changes the INPUT: real mtDNA instead of
 # generated bases, because repeats, low-complexity and structured regions are where

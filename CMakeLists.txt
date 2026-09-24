@@ -227,7 +227,7 @@ endfunction()
 # `cmake --build` produced only a probe executable, so "install this software"
 # had no meaning. api.cpp is the public surface (align/align_batch); the kernels
 # it launches are headers, so they need no separate translation unit.
-add_library(genoaligner STATIC src/api/api.cpp)
+add_library(genoaligner STATIC src/api/api.cpp src/api/api_msa.cpp)
 genoaligner_configure_hip(genoaligner)
 target_include_directories(genoaligner PUBLIC
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
@@ -240,6 +240,14 @@ add_executable(genoaligner_api_test tests/api/test_api.cpp)
 target_link_libraries(genoaligner_api_test PRIVATE genoaligner)
 genoaligner_configure_hip(genoaligner_api_test)
 
+# Threads is needed by every host-side engine consumer below (msa_ref uses
+# std::thread for level batching); find it once, before the first target.
+find_package(Threads REQUIRED)
+
+# Public MSA API test: host engine only, no HIP config needed.
+add_executable(genoaligner_msa_api_test tests/api/test_msa_api.cpp)
+target_link_libraries(genoaligner_msa_api_test PRIVATE genoaligner Threads::Threads)
+
 # FASTA reading is header-only and pure host code, so this test needs no HIP flags.
 add_executable(genoaligner_fasta_test tests/io/test_fasta.cpp)
 target_include_directories(genoaligner_fasta_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -248,6 +256,12 @@ target_include_directories(genoaligner_fasta_test PRIVATE "${CMAKE_CURRENT_SOURC
 # profile/merge/DP semantics that every later GPU kernel is validated against.
 add_library(genomsa_ref STATIC src/msa/msa_ref.cpp)
 target_include_directories(genomsa_ref PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+
+# The public MSA entry (src/api/api_msa.cpp) composes the host engine, so the
+# installed genoaligner archive needs genomsa_ref's symbols reachable -- and
+# Threads, which msa_ref uses for level batching, must propagate to whoever
+# links libgenoaligner.a downstream (R bindings included).
+target_link_libraries(genoaligner PUBLIC genomsa_ref Threads::Threads)
 
 add_executable(genomsa_ref_test tests/msa/test_msa_ref.cpp)
 target_link_libraries(genomsa_ref_test PRIVATE genomsa_ref)
@@ -275,7 +289,7 @@ add_executable(nj_bench tools/nj_bench.cpp)
 target_link_libraries(nj_bench PRIVATE genomsa_nj_gpu Threads::Threads)
 genoaligner_configure_hip(nj_bench)
 
-install(TARGETS genoaligner ARCHIVE DESTINATION lib)
+install(TARGETS genoaligner genomsa_ref ARCHIVE DESTINATION lib)
 install(FILES include/genoaligner/api.hpp DESTINATION include/genoaligner)
 install(FILES include/genoaligner/io/fasta.hpp DESTINATION include/genoaligner/io)
 install(DIRECTORY include/genoaligner/backend DESTINATION include/genoaligner)
@@ -292,6 +306,10 @@ genoaligner_configure_hip(genoaligner_example)
 add_executable(genoaligner_example_sw examples/align_sw.cpp)
 target_link_libraries(genoaligner_example_sw PRIVATE genoaligner)
 genoaligner_configure_hip(genoaligner_example_sw)
+
+# The MSA example -- same contract, through the public msa_align entry point.
+add_executable(genoaligner_example_msa examples/msa_fasta.cpp)
+target_link_libraries(genoaligner_example_msa PRIVATE genoaligner Threads::Threads)
 
 if(GENOALIGNER_BUILD_TESTS)
     enable_testing()
@@ -335,6 +353,9 @@ if(GENOALIGNER_BUILD_TESTS)
     add_test(NAME batch_runs COMMAND genoaligner_batch_test
              WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
     set_tests_properties(batch_runs PROPERTIES SKIP_RETURN_CODE 77)
+
+    # Public MSA API: pure host engine -- must pass everywhere, no skip code.
+    add_test(NAME msa_api_runs COMMAND genoaligner_msa_api_test)
 endif()
 
 # --- Summary -----------------------------------------------------------
