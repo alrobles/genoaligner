@@ -27,9 +27,11 @@ int main(int argc, char** argv)
     const char* path = "tests/data/mtdna_human.fa";
     genoaligner::MsaMode mode = genoaligner::MsaMode::dna;
     int gc_def = 1;
+    bool device = false;
     for (int i = 1; i < argc; ++i) {
         if      (!std::strcmp(argv[i], "--codon"))   mode = genoaligner::MsaMode::codon;
         else if (!std::strcmp(argv[i], "--protein")) mode = genoaligner::MsaMode::protein;
+        else if (!std::strcmp(argv[i], "--device"))  device = true;
         else if (!std::strcmp(argv[i], "--gc") && i + 1 < argc) gc_def = std::atoi(argv[++i]);
         else path = argv[i];
     }
@@ -50,18 +52,21 @@ int main(int argc, char** argv)
     req.gc_def = gc_def;
     for (const auto& r : records) req.seqs.push_back(r.sequence);
 
-    genoaligner::MsaResult res = genoaligner::msa_align(req);
+    genoaligner::MsaResult res = device ? genoaligner::msa_align_device(req)
+                                        : genoaligner::msa_align(req);
     if (!res.ok()) {
-        std::fprintf(stderr, "msa_align failed: %s\n",
+        std::fprintf(stderr, "%s failed: %s\n",
+                     device ? "msa_align_device" : "msa_align",
                      res.error ? res.error : "unknown");
         return 1;
     }
 
-    std::printf("aligned %zu records from %s (mode=%s, gc=%d) -> width %d\n\n",
+    std::printf("aligned %zu records from %s (mode=%s, gc=%d, engine=%s)"
+                " -> width %d\n\n",
                 records.size(), path,
                 mode == genoaligner::MsaMode::dna    ? "dna" :
                 mode == genoaligner::MsaMode::protein ? "protein" : "codon",
-                gc_def, res.width);
+                gc_def, res.device ? "device" : "host", res.width);
 
     const bool codon = mode == genoaligner::MsaMode::codon;
     for (size_t i = 0; i < records.size(); ++i) {

@@ -148,6 +148,11 @@ set(GENOALIGNER_ALL_HIP_SOURCES
     src/api/api.cpp
     include/genoaligner/backend/nj_kernel_impl.hip
     src/msa/nj_gpu.cpp
+    # The MSA device driver pulls the profile-profile and codon-refine kernel
+    # bodies through these headers; same -x cu requirement as nj_gpu.cpp.
+    include/genoaligner/backend/msa_pp_kernel_impl.hip
+    include/genoaligner/backend/codon_refine_kernel_impl.hip
+    src/msa/msa_gpu.cpp
 )
 
 # The LANGUAGE property must be set on the SOURCE before add_executable, and
@@ -227,7 +232,8 @@ endfunction()
 # `cmake --build` produced only a probe executable, so "install this software"
 # had no meaning. api.cpp is the public surface (align/align_batch); the kernels
 # it launches are headers, so they need no separate translation unit.
-add_library(genoaligner STATIC src/api/api.cpp src/api/api_msa.cpp)
+add_library(genoaligner STATIC src/api/api.cpp src/api/api_msa.cpp
+                               src/api/api_msa_gpu.cpp)
 genoaligner_configure_hip(genoaligner)
 target_include_directories(genoaligner PUBLIC
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
@@ -248,6 +254,12 @@ find_package(Threads REQUIRED)
 add_executable(genoaligner_msa_api_test tests/api/test_msa_api.cpp)
 target_link_libraries(genoaligner_msa_api_test PRIVATE genoaligner Threads::Threads)
 
+# Public MSA device-API test: the test TU itself is plain C++; the device
+# symbols arrive transitively through genoaligner -> genomsa_gpu. Needs a
+# real device at RUN time -- exits 77 without one, like the pairwise tests.
+add_executable(genoaligner_msa_api_device_test tests/api/test_msa_api_device.cpp)
+target_link_libraries(genoaligner_msa_api_device_test PRIVATE genoaligner Threads::Threads)
+
 # FASTA reading is header-only and pure host code, so this test needs no HIP flags.
 add_executable(genoaligner_fasta_test tests/io/test_fasta.cpp)
 target_include_directories(genoaligner_fasta_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -256,12 +268,6 @@ target_include_directories(genoaligner_fasta_test PRIVATE "${CMAKE_CURRENT_SOURC
 # profile/merge/DP semantics that every later GPU kernel is validated against.
 add_library(genomsa_ref STATIC src/msa/msa_ref.cpp)
 target_include_directories(genomsa_ref PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
-
-# The public MSA entry (src/api/api_msa.cpp) composes the host engine, so the
-# installed genoaligner archive needs genomsa_ref's symbols reachable -- and
-# Threads, which msa_ref uses for level batching, must propagate to whoever
-# links libgenoaligner.a downstream (R bindings included).
-target_link_libraries(genoaligner PUBLIC genomsa_ref Threads::Threads)
 
 add_executable(genomsa_ref_test tests/msa/test_msa_ref.cpp)
 target_link_libraries(genomsa_ref_test PRIVATE genomsa_ref)
@@ -289,7 +295,24 @@ add_executable(nj_bench tools/nj_bench.cpp)
 target_link_libraries(nj_bench PRIVATE genomsa_nj_gpu Threads::Threads)
 genoaligner_configure_hip(nj_bench)
 
-install(TARGETS genoaligner genomsa_ref ARCHIVE DESTINATION lib)
+# The MSA device driver: level-batched kernels behind msa_align_gpu /
+# codon_refine_gpu; the guide tree comes from nj_tree_gpu, so it links the
+# NJ driver too. HIP-compiled TU; the public msa_align_device entry in
+# libgenoaligner resolves against it.
+add_library(genomsa_gpu STATIC src/msa/msa_gpu.cpp)
+target_link_libraries(genomsa_gpu PUBLIC genomsa_ref genomsa_nj_gpu
+                                          Threads::Threads)
+genoaligner_configure_hip(genomsa_gpu)
+
+# The public MSA entries (src/api/api_msa{,_gpu}.cpp) compose the engines, so
+# the installed genoaligner archive needs genomsa_ref + genomsa_gpu symbols
+# reachable -- and Threads, which the engines use for level batching, must
+# propagate to whoever links libgenoaligner.a downstream (R bindings
+# included).
+target_link_libraries(genoaligner PUBLIC genomsa_ref genomsa_gpu
+                                          Threads::Threads)
+
+install(TARGETS genoaligner genomsa_ref genomsa_gpu ARCHIVE DESTINATION lib)
 install(FILES include/genoaligner/api.hpp DESTINATION include/genoaligner)
 install(FILES include/genoaligner/io/fasta.hpp DESTINATION include/genoaligner/io)
 install(DIRECTORY include/genoaligner/backend DESTINATION include/genoaligner)
@@ -356,6 +379,11 @@ if(GENOALIGNER_BUILD_TESTS)
 
     # Public MSA API: pure host engine -- must pass everywhere, no skip code.
     add_test(NAME msa_api_runs COMMAND genoaligner_msa_api_test)
+
+    # The device entry: 77 = "no device here", same convention as the
+    # pairwise tests. The shim build exercises it for real.
+    add_test(NAME msa_device_runs COMMAND genoaligner_msa_api_device_test)
+    set_tests_properties(msa_device_runs PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 
 # --- Summary -----------------------------------------------------------

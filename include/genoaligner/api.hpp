@@ -385,9 +385,39 @@ SWAlignResult align_sw(const SWRequest& req);
 // aligned.size() == seqs.size(), all rows equal width, input order kept --
 // verified before the result leaves the library, not trusted from the engine.
 //
+// TWO ENGINES, ONE RESULT
+// -----------------------
+//   msa_align(req)         the HOST engine described above. Portable: pure
+//                          CPU, no device needed, same answer everywhere.
+//   msa_align_device(req)  the DEVICE engine: NJ guide tree on the device
+//                          (nj_tree_gpu), one profile-profile kernel launch
+//                          per guide-tree level, host merge. The level batch
+//                          is gated BIT-EXACT against the sequential engine
+//                          (tests/parity/msa_driver_parity.cpp), so the rows
+//                          are identical -- what changes is throughput and
+//                          which processor did the work. MsaResult::device
+//                          records which engine produced the rows.
+//
+// DEVICE SEMANTICS — requested device, or a refusal
+// -------------------------------------------------
+// msa_align_device answers Status::device_error (not a host result) when the
+// device path fails -- no device visible, allocation failure, kernel error.
+// Falling back to the host engine would silently serve a different
+// PERFORMANCE contract: a device caller on 8k sequences asked for hours, not
+// days. Call msa_align() yourself if host timing is acceptable.
+// One exception, documented rather than hidden: in codon mode the stage-2
+// refine may fall back to host codon_refine after a device failure, because
+// its DP body is shared source between codon_refine and codon_refine_kernel
+// -- identical answer either way, and the O(n*W) refine is not why a caller
+// chose the device. The align core never falls back.
+// device_error is a distinct Status, same convention as the pairwise API.
+//
 // THREAD SAFETY
 // -------------
-// Host code only; safe for concurrent calls with disjoint requests.
+// msa_align is host code, safe for concurrent calls with disjoint requests.
+// msa_align_device launches on the default stream: results do not depend on
+// launch order, but concurrent calls serialise arbitrarily with respect to
+// each other -- same caveat as the pairwise API.
 //
 // EXAMPLE
 // -------
@@ -425,14 +455,16 @@ struct MsaResult {
     std::vector<std::string> aligned;   // equal-length rows, input order
     std::vector<MsaSeqQc>    qc;        // one entry per input seq
     int width = 0;                      // column count (0 when empty)
+    bool device = false;                // rows came from the device engine
 
-    enum class Status { ok, invalid_argument, error };
+    enum class Status { ok, invalid_argument, device_error, error };
     Status status = Status::ok;
     const char* error = nullptr;        // static string, non-null iff != ok
 
     bool ok() const { return status == Status::ok; }
 };
 MsaResult msa_align(const MsaRequest& req);
+MsaResult msa_align_device(const MsaRequest& req);
 
 // ---------------------------------------------------------------------------
 // Environment / provenance. Cheap calls, no device work.
