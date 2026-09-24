@@ -869,15 +869,28 @@ def cmd_run(args):
         run_unit(manifest, case, ds, spec, variant, rep, args.out)
 
 
+def unit_input_path(manifest, case, variant, ds_dir, run_dir):
+    """Effective input for a unit: the canonical dataset alignment, or the
+    selection-derived fasta when the variant carries a select spec. Both
+    run_unit and external state checks must agree on this path."""
+    if manifest["variants"][variant].get("select"):
+        sel_path = os.path.join(run_dir, "selected.fasta")
+        if os.path.exists(sel_path):
+            return sel_path
+    return os.path.join(ds_dir, "alignment.fasta")
+
+
 def cmd_status(args):
     manifest = load_manifest(args.manifest)
     rows = []
     for case, ds, spec, variant, rep in iter_units(
             manifest, args.case):
         ds_dir = os.path.join(args.out, "datasets", ds)
-        input_path = os.path.join(ds_dir, "alignment.fasta")
-        out_dir = os.path.join(args.out, "runs", case["case_id"], ds,
-                               variant, f"rep{rep}", "out")
+        run_dir = os.path.join(args.out, "runs", case["case_id"], ds,
+                               variant, f"rep{rep}")
+        input_path = unit_input_path(manifest, case, variant, ds_dir,
+                                     run_dir)
+        out_dir = os.path.join(run_dir, "out")
         state = caster_report.result_state(out_dir, input_path)
         rows.append((case["case_id"], ds, variant, rep, state))
     for row in rows:
