@@ -134,6 +134,20 @@ else()
 endif()
 message(STATUS "CXX compiler: ${CMAKE_CXX_COMPILER} (${_cxx_name})")
 
+# Position-independent code (CUDA backend). Modern toolchains default to PIE
+# linking, but nvcc does not emit PIC/PIE objects on its own, which fails with:
+#   relocation R_X86_64_32S against `.rodata' can not be used when making a PIE
+#   object; recompile with -fPIE
+# Both halves are needed: -Xcompiler -fPIE for the objects and -Xcompiler -pie
+# for the link step, and they must cover EVERY target -- including pure-C++
+# ones like genomsa_ref that never call genoaligner_configure_hip (the q6000
+# sm_75 build died exactly there: libgenomsa_ref.a's nvcc objects were not
+# PIE-safe). hipcc handles this itself, hence CUDA-only.
+if(GENOALIGNER_BACKEND STREQUAL "cuda")
+    add_compile_options("SHELL:-Xcompiler -fPIE")
+    add_link_options("SHELL:-Xcompiler -pie")
+endif()
+
 # --- .hip must be treated as C++ ---------------------------------------
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -213,16 +227,6 @@ function(genoaligner_configure_hip target)
                 "SHELL:-ccbin ${GENOALIGNER_HOST_CXX}")
         endif()
 
-        # Position-independent code. Modern toolchains default to PIE linking,
-        # but nvcc does not emit PIC/PIE objects on its own, which fails with:
-        #   relocation R_X86_64_32S against `.rodata' can not be used when
-        #   making a PIE object; recompile with -fPIE
-        # Both halves are needed: -Xcompiler -fPIE for the objects and -pie for
-        # the link step. hipcc handles this itself, hence CUDA-only.
-        target_compile_options(${target} PRIVATE
-            "SHELL:-Xcompiler -fPIE")
-        target_link_options(${target} PRIVATE
-            "SHELL:-Xcompiler -pie")
     endif()
 endfunction()
 
