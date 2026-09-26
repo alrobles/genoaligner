@@ -20,7 +20,7 @@ plan para cerrar ese gap y, con él, el lado C++ de la superficie MSA.
 ## Convenciones heredadas (de msa_gpu_validate*.sbatch)
 
 - Clone congelado por propósito: `/beegfs/a474r867/genoaligner/repo-msa-api`
-  @ `devin/msa-public-api` (`7f7f02c` o el head al momento de lanzar).
+  @ `devin/msa-public-api` (head al momento de lanzar; último run @ `ff21aef`).
 - Partición `sixhour`, logs a `/beegfs/a474r867/genoaligner/logs/`.
 - Paridad = **byte-identical**, nunca "close enough".
 - FASTAs reales: `/beegfs/a474r867/phylogenyAI/data/genes_qc_pass/`
@@ -76,6 +76,28 @@ el binario device que sirve `msa_align_device`, idéntico al host.
 - Merge PR #12 → `devin/codon-msa`; la siguiente unión a `main` del repo
   de producción lleva la superficie MSA completa.
 - Con el lado C++ cerrado → Fase 2 (bindings Rcpp `msa_align`/`msa_codon`).
+
+## Resultados (2026-09-25)
+
+| Leg | Job | Device | Arch | Resultado |
+|-----|-----|--------|------|-----------|
+| CUDA public API | 30360709 | Quadro RTX 6000 | sm_75 | **PASS** — ctest 9/9, `msa_api_device_test` PASS, paridad DNA+CODON byte-idéntica (34s) |
+| CUDA V100 | 30360600→30402545 | Tesla V100 | sm_70 | primer run FALLÓ por env cmake (pre-fix); reencolado |
+| ROCm MI210 | 30252647, 30360674, 30360718, 30402538 | MI210 | gfx90a | PENDING — nodos saturados (MIXED+PLANNED; 4 nodos bajo reserva hpc_wang) |
+
+### Hallazgos de esta ronda
+
+- **cmake GLIBCXX (ambos backends)**: `cmake/3.30.3/gcc/14.2` (el primero
+  que prueba `build_*.sh`) exige `GLIBCXX_3.4.32`; los nodos traen ≤3.4.29.
+  Fix sin tocar scripts: enviar el job con
+  `--export=ALL,PATH=/kuhpc/sw/cmake/3.30.3/gcc/11.4/bin:$PATH`
+  (la variante gcc/11.4 corre con el libstdc++ del sistema).
+- **PIE en nvcc (fixed `ff21aef`)**: los targets pure-C++ no pasaban por
+  `genoaligner_configure_hip` → objetos sin `-fPIE` rompían el link PIE
+  (`R_X86_64_32S` en `libgenomsa_ref.a`). Flags movidos a scope directorio.
+- **Cómo se consiguió slot**: `--gres=gpu:q6000:1 --export=ALL,GENOALIGNER_ARCH=75`
+  — las Q6000 (r22rXX) estaban libres; MI210/V100 saturadas. La misma
+  receta sirve para A100 (`a100:1`, ARCH=80) y A40/L40 si hace falta.
 
 ## Riesgos conocidos
 
