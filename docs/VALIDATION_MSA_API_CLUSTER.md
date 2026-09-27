@@ -82,7 +82,7 @@ el binario device que sirve `msa_align_device`, idéntico al host.
 | Leg | Job | Device | Arch | Resultado |
 |-----|-----|--------|------|-----------|
 | CUDA public API | 30360709 | Quadro RTX 6000 | sm_75 | **PASS** — ctest 9/9, `msa_api_device_test` PASS, paridad DNA+CODON byte-idéntica (34s) |
-| CUDA V100 | 30360600→30402545 | Tesla V100 | sm_70 | primer run FALLÓ por env cmake (pre-fix); reencolado |
+| CUDA V100 | 30402545 | Tesla V100 | sm_70 | **PASS** — ctest 9/9, device test PASS, paridad DNA+CODON byte-idéntica (42s) |
 | ROCm MI210 | 30252647, 30360674, 30360718, 30402538 | MI210 | gfx90a | PENDING — nodos saturados (MIXED+PLANNED; 4 nodos bajo reserva hpc_wang) |
 
 ### Hallazgos de esta ronda
