@@ -455,6 +455,13 @@ struct MsaRequest {
                                      // Identical output host/device; in
                                      // codon mode it refines the token
                                      // MSA before decode.
+    int  fft_band          = 0;      // >0: FFT-anchored band half-width
+                                     // (columns) for the refine-phase
+                                     // profile-profile DP; 0 = full DP.
+    int  fft_lags          = 4;      // anchor diagonals to union (>= 1)
+    float fft_min_rel      = 0.10f;  // min cosine of the best anchor;
+                                     // below it the band is skipped and
+                                     // the full DP runs (fallback).
 };
 
 struct MsaResult {

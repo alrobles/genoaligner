@@ -57,6 +57,9 @@ inline genomsa::Params params_for(const MsaRequest& req) {
     }
     // else dna: engine defaults (alpha=4)
     P.iter_refine = req.iter_refine;
+    P.fft_band    = req.fft_band;
+    P.fft_lags    = req.fft_lags;
+    P.fft_min_rel = req.fft_min_rel;
     return P;
 }
 
@@ -114,6 +117,15 @@ inline MsaResult check_request(const MsaRequest& req,
     if (req.iter_refine < 0)
         return fail(MsaResult::Status::invalid_argument,
                     "msa_align: iter_refine must be >= 0");
+    if (req.fft_band < 0)
+        return fail(MsaResult::Status::invalid_argument,
+                    "msa_align: fft_band must be >= 0");
+    if (req.fft_lags < 1)
+        return fail(MsaResult::Status::invalid_argument,
+                    "msa_align: fft_lags must be >= 1");
+    if (!(req.fft_min_rel >= 0.f))
+        return fail(MsaResult::Status::invalid_argument,
+                    "msa_align: fft_min_rel must be >= 0");
     return MsaResult{};
 }
 

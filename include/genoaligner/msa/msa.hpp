@@ -101,6 +101,21 @@ struct Params {
     // like every other align stage. Pure host code; identical result
     // whichever engine produced the progressive rows.
     int    iter_refine    = 0;
+    // FFT homology detection inside msa_iter_refine (the literal FFT of
+    // FFT-NS-i): each profile column encodes two property channels --
+    // alpha=4 the binary purine/amino contrast (correlation counts net
+    // identities), alpha>4 residue volume/polarity means -- and the
+    // cross-correlation over lags picks anchor diagonals. The realignment
+    // DP then runs inside a union band of half-width fft_band around the
+    // top fft_lags anchors instead of the full matrix. Candidates are
+    // rescored exactly before selection, so lag choice is deterministic
+    // and float-ulp safe. A best-anchor cosine below fft_min_rel falls
+    // back to the full DP (fragmented or multi-domain input). The
+    // strict-improvement acceptance of the refine loop guards quality
+    // either way. 0 disables banding.
+    int    fft_band       = 0;
+    int    fft_lags       = 4;
+    float  fft_min_rel    = 0.10f;
 };
 
 // Position-specific gap penalties -- THE SPEC. The kernel implements the

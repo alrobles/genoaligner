@@ -4,6 +4,7 @@
 #include <genoaligner/msa/msa.hpp>
 #include <genoaligner/backend/codon_refine_kernel_impl.hip>
 #include <algorithm>
+#include <complex>
 #include <map>
 #include <unordered_map>
 #include <climits>
@@ -1056,10 +1057,16 @@ static float col_score(const Profile& A, int i, const Profile& B, int j,
 // free_end_gaps: first row/col = 0 and the best cell on the last row or
 // column is the endpoint -- columns outside the span are emitted as
 // prefix/suffix blocks by the merge (semiglobal, fragment-friendly).
-AlignResult align_profiles(const Profile& A, const Profile& B,
-                           const Params& P) {
+// diag_ok restricts the reachable diagonal band: cell (i,j) is allowed
+// iff diag_ok[i-j+off]. Empty = full matrix (the classic behaviour).
+// Used by the FFT-banded path; align_profiles proper always passes none.
+static AlignResult align_profiles_diag(const Profile& A, const Profile& B,
+                                       const Params& P,
+                                       const std::vector<char>& diag_ok) {
     const int M = A.ncols(), N = B.ncols();
     const float NEG = -1e30f;
+    const int doff = N;                     // diag_ok index of i-j == 0
+    const bool banded = !diag_ok.empty();
     std::vector<float> mM((size_t)(M + 1) * (N + 1), NEG),
                        mIx((size_t)(M + 1) * (N + 1), NEG),
                        mIy((size_t)(M + 1) * (N + 1), NEG);
@@ -1088,6 +1095,10 @@ AlignResult align_profiles(const Profile& A, const Profile& B,
 
     for (int i = 1; i <= M; ++i) {
         for (int j = 1; j <= N; ++j) {
+            if (banded && !diag_ok[(size_t)(i - j + doff)]) {
+                dir[dt(i, j)] = 0;
+                continue;                    // outside the anchor band
+            }
             float s = col_score(A, i - 1, B, j - 1, P);
             // gap in B opposite A_{i-1}: position-specific penalty
             float openB = psgp_open(A.occ[i - 1], P);
@@ -1150,6 +1161,11 @@ AlignResult align_profiles(const Profile& A, const Profile& B,
     r.ai = i; r.aj = j;
     r.bi = ei; r.bj = ej;
     return r;
+}
+
+AlignResult align_profiles(const Profile& A, const Profile& B,
+                           const Params& P) {
+    return align_profiles_diag(A, B, P, {});
 }
 
 // -------------------------------------------------------------- merging
@@ -1305,6 +1321,232 @@ AlignResult cigar_expand_gappy(const AlignResult& aln,
     return r;
 }
 
+// ======================================= FFT homology detection
+// The literal FFT of FFT-NS-i: a profile column maps to two numeric
+// property channels, the cross-correlation of the two channel pairs over
+// all lags identifies the diagonals where homology concentrates, and the
+// realignment DP is restricted to a union band around the best anchors.
+// MAFFT runs this on single sequences; ours runs on the induced group
+// profiles inside msa_iter_refine, where the accept/reject gate also
+// shields quality if the band ever clipped the true path.
+//
+// Channels:
+//   alpha=4 : (purine, amino) contrast -- on unambiguous bases the dot
+//             of two columns is +2 on identity, 0 on transition, -2 on
+//             transversion: a true homology signal.
+//   alpha>4 : mean residue VOLUME and POLARITY over the column
+//             fractions (Zamyatnin volumes, Grantham polarities). Codon
+//             tokens (alpha=65) translate through codon_aa_table first;
+//             stops and index-64 contribute 0.
+// Occupancy scales every signal so gap-rich columns dampen out.
+//
+// Determinism: the FFT proposes candidate lags; each candidate is then
+// rescored by direct summation in a fixed order, and anchors are chosen
+// by that exact score. A residual libm-ulp difference in the FFT
+// magnitudes can only reorder near-tied candidates, which the exact
+// rescore decides identically.
+
+namespace {
+// Zamyatnin amino-acid volumes (A^3) and Grantham polarities, in the
+// BLOSUM order ARNDCQEGHILKMFPSTWYV used everywhere in this file.
+const float AA_VOL[20] = {
+    88.6f, 173.4f, 114.1f, 111.1f, 108.5f, 143.8f, 138.4f, 60.1f, 153.2f,
+    166.7f, 166.7f, 168.6f, 162.9f, 189.9f, 112.7f, 89.0f, 116.1f, 227.8f,
+    193.6f, 140.0f };
+const float AA_POL[20] = {
+    8.1f, 10.5f, 11.6f, 13.0f, 5.5f, 10.5f, 12.3f, 9.0f, 10.4f, 5.2f, 4.9f,
+    11.3f, 5.7f, 5.2f, 8.0f, 9.2f, 8.6f, 5.4f, 6.2f, 5.9f };
+
+void profile_signals(const Profile& p, const Params& P,
+                     std::vector<float>& s1, std::vector<float>& s2) {
+    const int W = p.ncols();
+    s1.assign((size_t)W, 0.f);
+    s2.assign((size_t)W, 0.f);
+    const signed char* aa =
+        (P.alpha == 65) ? codon_aa_table(P.gc_def) : nullptr;
+    for (int c = 0; c < W; ++c) {
+        const float occ = p.occ[c];
+        if (occ == 0.f) continue;
+        if (P.alpha == 4) {
+            // A=0 C=1 G=2 T=3: (R-Y) purine contrast, (M-K) amino/keto.
+            s1[(size_t)c] = occ * (p.cols[c][0] + p.cols[c][2]
+                                 - p.cols[c][1] - p.cols[c][3]);
+            s2[(size_t)c] = occ * (p.cols[c][0] + p.cols[c][1]
+                                 - p.cols[c][2] - p.cols[c][3]);
+            continue;
+        }
+        float v = 0.f, q = 0.f;
+        for (int s = 0; s < P.alpha; ++s) {
+            const float f = p.cols[c][s];
+            if (f == 0.f) continue;
+            const int a = (P.alpha == 65) ? (s < 64 ? aa[s] : -1) : s;
+            if (a < 0) continue;
+            v += f * AA_VOL[a];
+            q += f * AA_POL[a];
+        }
+        s1[(size_t)c] = v;   // fraction-weighted: gap mass contributes 0
+        s2[(size_t)c] = q;
+    }
+}
+
+// Iterative radix-2 FFT, in place. Twiddles come from one cos/sin pair
+// per stage and a multiplicative recurrence, so every platform evaluates
+// the same op sequence (see the determinism note above).
+void fft_inplace(std::vector<std::complex<double>>& a, bool invert) {
+    const int n = (int)a.size();
+    for (int i = 1, j = 0; i < n; ++i) {
+        int bit = n >> 1;
+        for (; j & bit; bit >>= 1) j ^= bit;
+        j ^= bit;
+        if (i < j) std::swap(a[(size_t)i], a[(size_t)j]);
+    }
+    for (int len = 2; len <= n; len <<= 1) {
+        const double ang = 2.0 * M_PI / len * (invert ? 1.0 : -1.0);
+        const std::complex<double> wn(std::cos(ang), std::sin(ang));
+        for (int i = 0; i < n; i += len) {
+            std::complex<double> w(1.0);
+            const int half = len >> 1;
+            for (int j = 0; j < half; ++j) {
+                const auto u = a[(size_t)i + j];
+                const auto v = a[(size_t)i + j + half] * w;
+                a[(size_t)i + j]       = u + v;
+                a[(size_t)i + j + half] = u - v;
+                w *= wn;
+            }
+        }
+    }
+    if (invert) for (auto& x : a) x /= (double)n;
+}
+
+// corr[d] = sum_i x1[i]*y1[i-d] + x2[i]*y2[i-d] over the padded circular
+// index domain (d = a-b). Returns it in lag order d = lo..hi into out.
+void fft_correlate(const std::vector<float>& x1, const std::vector<float>& x2,
+                   const std::vector<float>& y1, const std::vector<float>& y2,
+                   int lo, int hi, std::vector<double>& out) {
+    const int need = (int)x1.size() + (int)y1.size();
+    int nfft = 1;
+    while (nfft < need) nfft <<= 1;
+    std::vector<std::complex<double>> fa((size_t)nfft),
+                                    fb((size_t)nfft);
+    for (size_t i = 0; i < x1.size(); ++i) fa[i] = x1[i];
+    for (size_t i = 0; i < y1.size(); ++i) fb[i] = y1[i];
+    fft_inplace(fa, false); fft_inplace(fb, false);
+    for (int i = 0; i < nfft; ++i) fa[(size_t)i] *= std::conj(fb[(size_t)i]);
+    fft_inplace(fa, true);
+    std::vector<std::complex<double>> ga((size_t)nfft),
+                                    gb((size_t)nfft);
+    for (size_t i = 0; i < x2.size(); ++i) ga[i] = x2[i];
+    for (size_t i = 0; i < y2.size(); ++i) gb[i] = y2[i];
+    fft_inplace(ga, false); fft_inplace(gb, false);
+    for (int i = 0; i < nfft; ++i) ga[(size_t)i] *= std::conj(gb[(size_t)i]);
+    fft_inplace(ga, true);
+    out.assign((size_t)(hi - lo + 1), 0.0);
+    for (int d = lo; d <= hi; ++d) {
+        const int k = d >= 0 ? d : nfft + d;   // circular wrap
+        out[(size_t)(d - lo)] = fa[(size_t)k].real() + ga[(size_t)k].real();
+    }
+}
+
+// Exact (non-FFT) rescore of one lag: direct dot over the real overlap,
+// plus the cosine-normalizing norms of the overlapped spans.
+void exact_lag_score(const std::vector<float>& a1, const std::vector<float>& a2,
+                     const std::vector<float>& b1, const std::vector<float>& b2,
+                     int d, double& dot, double& rel) {
+    const int M = (int)a1.size(), N = (int)b1.size();
+    const int i0 = d > 0 ? d : 0;              // first valid a index
+    const int i1 = d < M - N ? N + d : M;      // one past the last
+    double d1 = 0.0, d2 = 0.0, na = 0.0, nb = 0.0;
+    for (int i = i0; i < i1; ++i) {
+        const int j = i - d;
+        d1 += (double)a1[(size_t)i] * b1[(size_t)j];
+        d2 += (double)a2[(size_t)i] * b2[(size_t)j];
+        na += (double)a1[(size_t)i] * a1[(size_t)i]
+            + (double)a2[(size_t)i] * a2[(size_t)i];
+        nb += (double)b1[(size_t)j] * b1[(size_t)j]
+            + (double)b2[(size_t)j] * b2[(size_t)j];
+    }
+    dot = d1 + d2;
+    rel = (na > 0.0 && nb > 0.0) ? dot / std::sqrt(na * nb) : 0.0;
+}
+
+// Anchor lags: top FFT candidates rescored exactly, NMS at band distance.
+// Empty return -> caller falls back to the full DP.
+std::vector<int> fft_anchor_lags(const Profile& A, const Profile& B,
+                                 const Params& P) {
+    const int M = A.ncols(), N = B.ncols();
+    if (M < 8 || N < 8 || P.fft_lags < 1) return {};
+    std::vector<float> a1, a2, b1, b2;
+    profile_signals(A, P, a1, a2);
+    profile_signals(B, P, b1, b2);
+    // Center each channel: a DC offset only blurs the peak.
+    auto center = [](std::vector<float>& s) {
+        double m = 0.0;
+        for (float v : s) m += v;
+        m /= (double)s.size();
+        for (auto& v : s) v = (float)(v - m);
+    };
+    center(a1); center(a2); center(b1); center(b2);
+
+    const int lo = -(N - 1), hi = M - 1;
+    std::vector<double> corr;
+    fft_correlate(a1, a2, b1, b2, lo, hi, corr);
+    // Candidate set: top (3*fft_lags + 8) raw lags by FFT magnitude;
+    // the margin keeps near-ties inside the deterministic rescore.
+    const int want = 3 * P.fft_lags + 8;
+    std::vector<int> ord((size_t)(hi - lo + 1));
+    for (size_t i = 0; i < ord.size(); ++i) ord[i] = (int)i;
+    const int take = std::min<int>(want, (int)ord.size());
+    std::partial_sort(ord.begin(), ord.begin() + take, ord.end(),
+                      [&](int x, int y) { return corr[(size_t)x] > corr[(size_t)y]; });
+    ord.resize((size_t)take);
+
+    // Exact rescore of the candidates; keep the best cosine too.
+    std::vector<std::pair<double,int>> scored;   // (exact dot, lag)
+    scored.reserve(ord.size());
+    double best_rel = -1e9;
+    for (int oi : ord) {
+        const int d = lo + oi;
+        double dot, rel;
+        exact_lag_score(a1, a2, b1, b2, d, dot, rel);
+        scored.emplace_back(dot, d);
+        if (rel > best_rel) best_rel = rel;
+    }
+    if (best_rel < P.fft_min_rel) return {};   // weak peak -> full DP
+    std::sort(scored.begin(), scored.end(),
+              [](const auto& x, const auto& y) { return x.first > y.first; });
+    std::vector<int> lags;
+    for (const auto& s : scored) {
+        bool far = true;
+        for (int L : lags)
+            if (std::abs(s.second - L) <= P.fft_band) { far = false; break; }
+        if (!far) continue;
+        lags.push_back(s.second);
+        if ((int)lags.size() >= P.fft_lags) break;
+    }
+    return lags;
+}
+
+// FFT-anchored profile alignment: correlation picks anchor diagonals,
+// the Gotoh DP runs inside their union band. Falls back to the full DP
+// when the peak is weak or the band admits no path.
+AlignResult align_profiles_fft(const Profile& A, const Profile& B,
+                               const Params& P) {
+    if (P.fft_band <= 0) return align_profiles(A, B, P);
+    const std::vector<int> lags = fft_anchor_lags(A, B, P);
+    if (lags.empty()) return align_profiles(A, B, P);
+    const int M = A.ncols(), N = B.ncols();
+    std::vector<char> ok((size_t)M + N + 1, 0);
+    for (int L : lags)
+        for (int d = std::max(-N, L - P.fft_band);
+             d <= std::min(M, L + P.fft_band); ++d)
+            ok[(size_t)(d + N)] = 1;
+    AlignResult r = align_profiles_diag(A, B, P, ok);
+    if (r.score <= -9e29f)              // band admitted no path at all
+        return align_profiles(A, B, P);
+    return r;
+}
+} // namespace
+
 // =============================================== iterative refinement
 // Tree-bipartition refinement (MAFFT FFT-NS-i class): every guide-tree
 // edge partitions the rows into the two groups it separates; realigning
@@ -1444,10 +1686,11 @@ std::vector<std::string> msa_iter_refine(
             if (P.gappy > 0.0f) {
                 GappyStrip sa = profile_strip(A, P.gappy);
                 GappyStrip sb = profile_strip(B, P.gappy);
+                // FFT-anchored band when enabled; falls back inside.
                 aln = cigar_expand_gappy(
-                    align_profiles(sa.prof, sb.prof, P), sa, sb, P);
+                    align_profiles_fft(sa.prof, sb.prof, P), sa, sb, P);
             } else {
-                aln = align_profiles(A, B, P);
+                aln = align_profiles_fft(A, B, P);
             }
             Profile m = merge_profiles(A, B, aln);
             std::vector<std::string> cand((size_t)n);
@@ -1513,6 +1756,10 @@ std::vector<std::string> msa_align_with_tree(
             aln = cigar_expand_gappy(
                 align_profiles(sa.prof, sb.prof, P), sa, sb, P);
         } else {
+            // NOTE: the device engine's progressive stage runs the same
+            // full-matrix DP inside its kernel; keeping this call
+            // unbanded is what preserves host==device rows for
+            // fft_band>0 requests. Kernel-side banding is the follow-up.
             aln = align_profiles(profs[nd.left], profs[nd.right], P);
         }
         profs[u] = merge_profiles(profs[nd.left], profs[nd.right], aln);
