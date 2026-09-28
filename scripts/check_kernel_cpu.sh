@@ -447,6 +447,62 @@ else
     exit 1
 fi
 
+echo
+echo "--- [host] public MSA API contract ---"
+# The public msa_align entry (src/api/api_msa.cpp) is pure host code -- no
+# shim, no device: it validates the request, composes the genomsa engine and
+# verifies the result contract (row count, equal width, QC, refusal paths).
+# Emits "MSA API test: PASS"; a build break here means the installed
+# libgenoaligner.a would be missing its newest public symbol.
+if g++ -O2 -std=c++17 -pthread -I"$REPO_ROOT/include" -I"$REPO_ROOT/src/api" \
+       -o "$BUILD_DIR/test_msa_api" \
+       "$REPO_ROOT/tests/api/test_msa_api.cpp" \
+       "$REPO_ROOT/src/api/api_msa.cpp" "$REPO_ROOT/src/msa/msa_ref.cpp" \
+       2>"$BUILD_DIR/msa_api_build.log"; then
+    if ! "$BUILD_DIR/test_msa_api" | tee "$BUILD_DIR/msa_api.out" | tail -15; then
+        echo
+        echo "=== CPU GATE FAILED (public MSA API) — do not submit ==="
+        exit 1
+    fi
+    if ! grep -q "MSA API test: PASS" "$BUILD_DIR/msa_api.out"; then
+        echo "  !!! public MSA API test produced no PASS verdict — treating as FAILURE."
+        exit 1
+    fi
+else
+    echo "  !!! public MSA API test failed to BUILD:"
+    sed -n '1,20p' "$BUILD_DIR/msa_api_build.log"
+    exit 1
+fi
+
+echo
+echo "--- [shim] public MSA device API (shipped kernels) ---"
+# msa_align_device through the CPU shim: the same kernels msa_gpu.cpp
+# launches, executed on host, so the gate asserts the public promise --
+# device rows BIT-IDENTICAL to host rows -- on every CPU run, not just on
+# a GPU runner. Emits "MSA device API test: PASS"; 77 means "no device",
+# which under the shim cannot happen.
+if g++ -O2 -std=c++17 -pthread -DGENOALIGNER_HIP_SHIM -I"$SHIM_DIR" -I"$REPO_ROOT/include" -I"$REPO_ROOT/src/api" \
+       -o "$BUILD_DIR/test_msa_api_device" \
+       "$REPO_ROOT/tests/api/test_msa_api_device.cpp" \
+       "$REPO_ROOT/src/api/api_msa.cpp" "$REPO_ROOT/src/api/api_msa_gpu.cpp" \
+       "$REPO_ROOT/src/msa/msa_gpu.cpp" "$REPO_ROOT/src/msa/nj_gpu.cpp" \
+       "$REPO_ROOT/src/msa/msa_ref.cpp" \
+       2>"$BUILD_DIR/msa_dev_build.log"; then
+    if ! "$BUILD_DIR/test_msa_api_device" | tee "$BUILD_DIR/msa_dev.out" | tail -15; then
+        echo
+        echo "=== CPU GATE FAILED (public MSA device API) — do not submit ==="
+        exit 1
+    fi
+    if ! grep -q "MSA device API test: PASS" "$BUILD_DIR/msa_dev.out"; then
+        echo "  !!! public MSA device API produced no PASS verdict — treating as FAILURE."
+        exit 1
+    fi
+else
+    echo "  !!! public MSA device API failed to BUILD:"
+    sed -n '1,20p' "$BUILD_DIR/msa_dev_build.log"
+    exit 1
+fi
+
 # --- Stage 6: REAL biological sequences -------------------------------------
 # Stage 5 exercises the API. This stage changes the INPUT: real mtDNA instead of
 # generated bases, because repeats, low-complexity and structured regions are where
