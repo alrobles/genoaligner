@@ -1305,6 +1305,168 @@ AlignResult cigar_expand_gappy(const AlignResult& aln,
     return r;
 }
 
+// =============================================== iterative refinement
+// Tree-bipartition refinement (MAFFT FFT-NS-i class): every guide-tree
+// edge partitions the rows into the two groups it separates; realigning
+// the two induced sub-profiles can place the join better than the
+// original post-order merge did, because a merge decided upstream could
+// not see downstream context. A candidate is kept iff the sum-of-pairs
+// objective strictly improves. The edge sweep is every non-root node in
+// ascending id order: leaf edges realign one sequence against the rest,
+// internal edges realign clades, and the root's own split is covered by
+// its children's edges. Determinism follows the rest of the engine:
+// fixed edge order, strict-improvement acceptance (ties keep the
+// incumbent), double accumulation in index order.
+
+namespace {
+// Letter-pair score through the same substitution table the DP uses
+// (col_score). Ambiguous letters expand to their symbol fractions, so an
+// 'R' scores half A + half G exactly like the profile columns do.
+float letter_score(char x, char y, const Params& P) {
+    const int al = P.alpha;
+    // Fast path: two unambiguous letters index the table directly
+    // (codon tokens always are; most protein letters too).
+    if (al > 4) {
+        const int ia = sym_index(x, al), ib = sym_index(y, al);
+        if (ia >= 0 && ib >= 0) return P.sub[(size_t)ia * al + ib];
+    }
+    float fx[MSA_MAX_SYMS], fy[MSA_MAX_SYMS];
+    if (!sym_counts(x, fx, al) || !sym_counts(y, fy, al)) return 0.f;
+    float s = 0;
+    for (int a = 0; a < al; ++a) {
+        if (fx[a] == 0) continue;
+        for (int b = 0; b < al; ++b) {
+            if (fy[b] == 0) continue;
+            s += fx[a] * fy[b] * (al == 4 ? sub_score(a, b, P)
+                                          : P.sub[(size_t)a * al + b]);
+        }
+    }
+    return s;
+}
+
+// The induced sub-alignment of one group: the group's rows, minus every
+// column that is all-gap inside the group (those columns are pure
+// insertions of the other group; the merge re-derives them wherever the
+// new CIGAR places the other side's columns).
+Profile group_profile(const std::vector<std::string>& rows,
+                      const std::vector<char>& sel, int alpha) {
+    const int n = (int)rows.size(), W = (int)rows[0].size();
+    Profile g; g.alpha = alpha;
+    for (int i = 0; i < n; ++i)
+        if (sel[i]) { g.rows.push_back(rows[i]); g.ids.push_back(i); }
+    g.nseq = (int)g.rows.size();
+    std::vector<char> used((size_t)W, 0);
+    for (const auto& r : g.rows)
+        for (int c = 0; c < W; ++c)
+            if (r[c] != '-') used[(size_t)c] = 1;
+    int nw = 0;
+    for (int c = 0; c < W; ++c) nw += used[(size_t)c];
+    if (nw < W) {
+        for (auto& r : g.rows) {
+            std::string t; t.reserve((size_t)nw);
+            for (int c = 0; c < W; ++c)
+                if (used[(size_t)c]) t.push_back(r[c]);
+            r.swap(t);
+        }
+    }
+    profile_update_counts(g);
+    return g;
+}
+} // namespace
+
+double msa_sp_score(const std::vector<std::string>& rows, const Params& P) {
+    const int n = (int)rows.size();
+    if (n < 2 || rows[0].empty()) return 0.0;
+    const int W = (int)rows[0].size();
+    double total = 0.0;
+    for (int i = 0; i < n; ++i) {
+        const std::string& ri = rows[i];
+        for (int j = i + 1; j < n; ++j) {
+            const std::string& rj = rows[j];
+            int run = 0;   // open one-sided gap run in this pair's
+                           // induced alignment
+            for (int c = 0; c < W; ++c) {
+                const bool gi = ri[c] == '-', gj = rj[c] == '-';
+                if (gi && gj) continue;   // dropped column: runs merge over it
+                if (gi || gj) { ++run; continue; }
+                if (run) {
+                    total -= P.gap_open + (run - 1) * (double)P.gap_extend;
+                    run = 0;
+                }
+                total += letter_score(ri[c], rj[c], P);
+            }
+            if (run)
+                total -= P.gap_open + (run - 1) * (double)P.gap_extend;
+        }
+    }
+    return total;
+}
+
+std::vector<std::string> msa_iter_refine(
+        const std::vector<std::string>& rows0, const Tree& tree,
+        const Params& P, int max_rounds, RefineStats* st) {
+    if (st) *st = RefineStats{};
+    const int n = (int)rows0.size();
+    // <3 rows: every bipartition is leaf-vs-leaf or leaf-vs-pair; the
+    // progressive merge already produced the only optimum the objective
+    // measures on that scale.
+    if (n < 3 || max_rounds < 1 || rows0.empty() || rows0[0].empty())
+        return rows0;
+
+    // Leaf set of every subtree in one ascending pass: nodes were
+    // appended in join order, so both children of u have smaller ids
+    // (same invariant tree_levels relies on).
+    std::vector<std::vector<int>> leaves(tree.nodes.size());
+    for (size_t u = 0; u < tree.nodes.size(); ++u) {
+        const Node& nd = tree.nodes[u];
+        if (nd.left < 0) { leaves[u] = { (int)u }; continue; }
+        auto& v = leaves[u];
+        v.insert(v.end(), leaves[nd.left].begin(), leaves[nd.left].end());
+        v.insert(v.end(), leaves[nd.right].begin(), leaves[nd.right].end());
+    }
+
+    std::vector<std::string> rows = rows0;
+    double obj = msa_sp_score(rows, P);
+    if (st) st->obj0 = obj;
+
+    for (int round = 0; round < max_rounds; ++round) {
+        int accepted = 0;
+        for (size_t u = 0; u < tree.nodes.size(); ++u) {
+            if ((int)u == tree.root) continue;
+            std::vector<char> sel((size_t)n, 0), nsel((size_t)n, 0);
+            for (int id : leaves[u]) sel[(size_t)id] = 1;
+            for (int i = 0; i < n; ++i) nsel[(size_t)i] = !sel[(size_t)i];
+            if (st) ++st->tried;
+
+            Profile A = group_profile(rows, sel, P.alpha);
+            Profile B = group_profile(rows, nsel, P.alpha);
+            AlignResult aln;
+            if (P.gappy > 0.0f) {
+                GappyStrip sa = profile_strip(A, P.gappy);
+                GappyStrip sb = profile_strip(B, P.gappy);
+                aln = cigar_expand_gappy(
+                    align_profiles(sa.prof, sb.prof, P), sa, sb, P);
+            } else {
+                aln = align_profiles(A, B, P);
+            }
+            Profile m = merge_profiles(A, B, aln);
+            std::vector<std::string> cand((size_t)n);
+            for (int k = 0; k < n; ++k) cand[(size_t)m.ids[k]] = m.rows[k];
+            const double o2 = msa_sp_score(cand, P);
+            if (o2 > obj) {
+                rows.swap(cand);
+                obj = o2;
+                ++accepted;
+                if (st) ++st->accepted;
+            }
+        }
+        if (st) st->rounds = round + 1;
+        if (accepted == 0) break;
+    }
+    if (st) st->obj1 = obj;
+    return rows;
+}
+
 // --------------------------------------------------------------- levels
 std::vector<std::vector<int>> tree_levels(const Tree& t) {
     std::vector<int> lvl(t.nodes.size(), 0);
@@ -1359,6 +1521,8 @@ std::vector<std::string> msa_align_with_tree(
     std::vector<std::string> out(n);
     const Profile& root = profs[tree.root];
     for (int k = 0; k < n; ++k) out[root.ids[k]] = root.rows[k];
+    if (P.iter_refine > 0)
+        out = msa_iter_refine(out, tree, P, P.iter_refine);
     return out;
 }
 

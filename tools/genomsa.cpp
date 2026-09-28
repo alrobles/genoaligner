@@ -36,7 +36,7 @@ int main(int argc, char** argv) {
                         "[--psgp|--no-psgp] [--gappy T|--no-gappy] [--tree-out F] "
                         "[--codon-qc F] [--refine N] [--fs-cost X] [--fs-term-cost X]\n"
                         "                 [--refine-band N] [--local-frame|--no-local-frame]\n"
-                        "                 [--guide-aln F] [--guide-w W]\n",
+                        "                 [--guide-aln F] [--guide-w W] [--iter-refine N]\n",
                 argv[0]);
         return 2;
     }
@@ -81,6 +81,7 @@ int main(int argc, char** argv) {
         else if (a == "--fs-enc-cost" && i + 1 < argc) P.codon_fs_enc = atof(argv[++i]);
         else if (a == "--guide-aln" && i + 1 < argc) guide_path = argv[++i];
         else if (a == "--guide-w" && i + 1 < argc) P.guide_w = atof(argv[++i]);
+        else if (a == "--iter-refine" && i + 1 < argc) P.iter_refine = atoi(argv[++i]);
         else { fprintf(stderr, "unknown arg: %s\n", a.c_str()); return 2; }
     }
     // --local-frame is the default in codon mode (downstream RF parity

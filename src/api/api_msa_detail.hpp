@@ -48,14 +48,16 @@ inline bool valid_aa(const std::string& s) {
 }
 
 inline genomsa::Params params_for(const MsaRequest& req) {
-    if (req.mode == MsaMode::protein) return genomsa::protein_params();
-    if (req.mode == MsaMode::codon) {
-        genomsa::Params P = genomsa::codon_params(req.gc_def);
+    genomsa::Params P;
+    if (req.mode == MsaMode::protein)      P = genomsa::protein_params();
+    else if (req.mode == MsaMode::codon) {
+        P = genomsa::codon_params(req.gc_def);
         P.codon_refine      = req.codon_refine;
         P.codon_local_frame = req.codon_local_frame ? 1 : 0;
-        return P;
     }
-    return genomsa::Params{};   // dna: engine defaults (alpha=4)
+    // else dna: engine defaults (alpha=4)
+    P.iter_refine = req.iter_refine;
+    return P;
 }
 
 inline MsaResult fail(MsaResult::Status st, const char* msg) {
@@ -109,6 +111,9 @@ inline MsaResult check_request(const MsaRequest& req,
     if (req.codon_refine < 0)
         return fail(MsaResult::Status::invalid_argument,
                     "msa_align: codon_refine must be >= 0");
+    if (req.iter_refine < 0)
+        return fail(MsaResult::Status::invalid_argument,
+                    "msa_align: iter_refine must be >= 0");
     return MsaResult{};
 }
 

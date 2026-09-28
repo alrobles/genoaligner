@@ -415,6 +415,11 @@ bool msa_align_gpu(const std::vector<std::string>& seqs, const Params& P,
     out.assign(n, std::string());
     const Profile& root = profs[tree.root];
     for (int k = 0; k < n; ++k) out[root.ids[k]] = root.rows[k];
+    // Iterative refinement is pure host code over the finished rows: the
+    // device path runs the identical pass so device and host answers stay
+    // byte-identical (Params::iter_refine).
+    if (P.iter_refine > 0)
+        out = msa_iter_refine(out, tree, P, P.iter_refine);
     if (stats) {
         stats->levels = (int)levels.size();
         stats->dist_s  = std::chrono::duration<double>(t1 - t0).count();
