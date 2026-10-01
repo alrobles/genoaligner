@@ -93,6 +93,29 @@ struct Params {
     // then prefers to exclude low-agreement nts as frameshift blocks.
     // 0 disables (identical to codon_encode_local).
     float  guide_w        = 0.0f;
+    // Iterative refinement (tree-bipartition, MAFFT FFT-NS-i class):
+    // rounds passes over every guide-tree edge after the progressive
+    // build -- the two induced sub-profiles are realigned and the
+    // candidate is kept iff the sum-of-pairs objective strictly improves.
+    // 0 disables. In codon mode it refines the token MSA before decode,
+    // like every other align stage. Pure host code; identical result
+    // whichever engine produced the progressive rows.
+    int    iter_refine    = 0;
+    // FFT homology detection inside msa_iter_refine (the literal FFT of
+    // FFT-NS-i): each profile column encodes two property channels --
+    // alpha=4 the binary purine/amino contrast (correlation counts net
+    // identities), alpha>4 residue volume/polarity means -- and the
+    // cross-correlation over lags picks anchor diagonals. The realignment
+    // DP then runs inside a union band of half-width fft_band around the
+    // top fft_lags anchors instead of the full matrix. Candidates are
+    // rescored exactly before selection, so lag choice is deterministic
+    // and float-ulp safe. A best-anchor cosine below fft_min_rel falls
+    // back to the full DP (fragmented or multi-domain input). The
+    // strict-improvement acceptance of the refine loop guards quality
+    // either way. 0 disables banding.
+    int    fft_band       = 0;
+    int    fft_lags       = 4;
+    float  fft_min_rel    = 0.10f;
 };
 
 // Position-specific gap penalties -- THE SPEC. The kernel implements the
@@ -330,6 +353,34 @@ std::vector<std::string> msa_align(const std::vector<std::string>& seqs,
 std::vector<std::string> msa_align_with_tree(const std::vector<std::string>& seqs,
                                              const Tree& tree,
                                              const Params& P);
+
+// --------------------------------------------------- iterative refinement
+// Sum-of-pairs objective of a finished MSA: for every unordered row pair,
+// double-gap columns are dropped (they merge surrounding gap runs),
+// letter pairs score through the same substitution table the DP uses
+// (ambiguous letters expand fractionally), and each one-sided gap run
+// costs gap_open + (len-1)*gap_extend, terminal runs included. Higher is
+// better. Deterministic: pairs and columns in index order, double
+// accumulation.
+double msa_sp_score(const std::vector<std::string>& rows, const Params& P);
+
+struct RefineStats {
+    int    rounds   = 0;   // passes executed (stops early on a clean pass)
+    int    tried    = 0;   // bipartitions evaluated
+    int    accepted = 0;   // realignments kept
+    double obj0     = 0.0; // objective of the input MSA
+    double obj1     = 0.0; // objective of the returned MSA
+};
+// MAFFT FFT-NS-i-class refinement over finished alignment rows0: each
+// guide-tree edge (every non-root node, ascending id order) partitions
+// the rows; the two induced sub-profiles are realigned through the same
+// gappy-wrap -> Gotoh -> interleave pipeline the progressive stage uses,
+// and the candidate replaces the rows only on strict objective
+// improvement. Leaf edges realign one sequence against the rest. Pure
+// host code: identical result whichever engine produced rows0.
+std::vector<std::string> msa_iter_refine(
+        const std::vector<std::string>& rows0, const Tree& tree,
+        const Params& P, int max_rounds, RefineStats* st = nullptr);
 
 // ------------------------------------------------------------- GPU path
 // Level-batched driver: one kernel launch per guide-tree level over its
