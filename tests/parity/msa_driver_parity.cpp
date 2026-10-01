@@ -61,6 +61,45 @@ static void run_suite(Params P, const char* tag0) {
     }
 }
 
+// Codon suite: encode random CDS-like input, then run the shipped driver at
+// alpha=65 -- exercises the sub_ext path and 65-wide profile packing under
+// the shim (where sub_ext is a plain host pointer).
+static void run_codon_suite(int gc_def, const char* tag) {
+    Params P = codon_params(gc_def);
+    for (int n : {2, 3, 5, 8, 12}) {
+        // ancestor: clean CDS, len multiple of 3
+        std::string anc;
+        {   std::string d = rand_dna(60 + (rng() % 30) * 3);
+            d.resize(d.size() - d.size() % 3);
+            anc = d; }
+        std::vector<std::string> in;
+        for (int i = 0; i < n; ++i) {
+            std::string m = mutate(anc, 10, 8, 8);
+            m.resize(m.size() - m.size() % 3);   // keep CDS-like
+            in.push_back(m);
+        }
+        if (n >= 5) in[3].resize(in[3].size() / 2 * 3);  // fragment CDS
+
+        auto enc = codon_encode(in, gc_def, nullptr);
+        auto ref = msa_align(enc, P);
+        std::vector<std::string> gpu; std::string err; GpuStats st;
+        bool ok = msa_align_gpu(enc, P, gpu, err, &st);
+        CHECK(ok, "%sn=%d driver error: %s", tag, n, err.c_str());
+        if (!ok) continue;
+        CHECK(gpu == ref, "%sn=%d driver != reference", tag, n);
+        // decoded output stays in-frame everywhere
+        auto dec = codon_decode(gpu);
+        for (int i = 0; i < n; ++i) {
+            CHECK(dec[i].size() % 3 == 0, "%sn=%d seq %d off-frame",
+                  tag, n, i);
+            std::string u = dec[i];
+            u.erase(std::remove(u.begin(), u.end(), '-'), u.end());
+            std::string orig = codon_decode({enc[i]})[0];
+            CHECK(u == orig, "%sn=%d seq %d corrupted", tag, n, i);
+        }
+    }
+}
+
 int main() {
     run_suite(Params{}, "default:");
     Params l; l.psgp = false; l.gappy = 0;
@@ -71,6 +110,8 @@ int main() {
     run_suite(g, "gappy:");
     Params pg; pg.gappy = 0.9f;
     run_suite(pg, "psgp+gappy:");
+    run_codon_suite(1, "codon:");
+    run_codon_suite(2, "codon-mt:");
     // n=1 degenerate
     {
         std::vector<std::string> one = {"ACGTACGT"};

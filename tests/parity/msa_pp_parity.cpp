@@ -53,9 +53,11 @@ static MsaPPParams to_params(const Params& P) {
     MsaPPParams k{P.match, P.ts, P.tv, P.gap_open, P.gap_extend,
                   P.free_end_gaps ? 1 : 0,
                   P.psgp ? 1 : 0, P.psgp_scale, P.psgp_min_open,
-                  P.psgp_min_ext, P.alpha, {}};
-    if (P.alpha > 4)
+                  P.psgp_min_ext, P.alpha, {}, nullptr};
+    if (P.alpha > 4 && P.alpha <= MSA_SUB_INLINE_SYMS)
         memcpy(k.sub, P.sub.data(), sizeof(k.sub));
+    if (P.alpha > MSA_SUB_INLINE_SYMS)
+        k.sub_ext = P.sub.data();   // host pointer under the CPU shim
     return k;
 }
 

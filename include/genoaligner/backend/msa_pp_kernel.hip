@@ -42,7 +42,11 @@ namespace genoaligner {
 // Alphabet ceiling shared with genomsa::MSA_MAX_SYMS (msa.hpp): symbols
 // 0..alpha-1, gap fraction lives at index `alpha` on the host side (the
 // kernel never reads it -- gap scaling comes from occ).
-#define MSA_MAX_SYMS 20
+#define MSA_MAX_SYMS 65
+// By-value substitution matrix is capped at the protein width: 65x65
+// floats (~17 KB) would exceed the 4 KB kernel-param space on sm_70.
+// alpha>20 reads p.sub_ext (device buffer) instead.
+#define MSA_SUB_INLINE_SYMS 20
 
 // Scoring parameters, float to match the reference exactly.
 struct MsaPPParams {
@@ -56,11 +60,13 @@ struct MsaPPParams {
     float psgp_scale;
     float psgp_min_open;
     float psgp_min_ext;
-    int   alpha;          // alphabet size: 4 = DNA, 20 = protein
+    int   alpha;          // alphabet size: 4 = DNA, 20 = protein, 65 = codon
     // Row-major alpha*alpha substitution matrix (alpha>4; e.g. BLOSUM62).
     // Carried by value in the launch params (~1.6 KB, inside the 4 KB
-    // sm_70 limit) so no extra device buffer is needed.
-    float sub[MSA_MAX_SYMS * MSA_MAX_SYMS];
+    // sm_70 limit) so no extra device buffer is needed. For alpha>20
+    // (codon mode) the matrix lives in device memory at `sub_ext`.
+    float sub[MSA_SUB_INLINE_SYMS * MSA_SUB_INLINE_SYMS];
+    const float* sub_ext; // device pointer, alpha>20 only (else nullptr)
 };
 
 // One profile, SoA on device. cols[b] has `len` floats, b in 0..alpha-1
@@ -139,8 +145,10 @@ __device__ __host__ inline float msa_col_score(
                       : ((a == 0 && b == 2) || (a == 2 && b == 0) ||
                          (a == 1 && b == 3) || (a == 3 && b == 1))
                           ? p.ts : p.tv;
-            } else {
+            } else if (al <= MSA_SUB_INLINE_SYMS) {
                 sub = p.sub[a * al + b];
+            } else {
+                sub = p.sub_ext[a * al + b];
             }
             s = GA_FADD_RN(s, GA_FMUL_RN(GA_FMUL_RN(fa, fb), sub));
         }

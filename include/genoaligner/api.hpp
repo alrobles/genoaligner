@@ -9,11 +9,18 @@
 //
 // WHAT IT IS NOT
 // --------------
-//   - Not a multiple aligner. This aligns PAIRS. It does not replace MAFFT/MACSE.
-//   - Not a search tool. It aligns two sequences you already have; it does not
+//   - Not a search tool. It aligns sequences you already have; it does not
 //     recruit candidates from a database.
-//   - Not a FASTQ/FASTA reader. Inputs are raw char buffers + lengths, so the API
-//     has no file-format opinion and no IO dependency.
+//   - Not a FASTQ/FASTA reader. Inputs are raw char buffers + lengths (pairwise)
+//     or std::strings (MSA), so the API has no file-format opinion and no IO
+//     dependency.
+//
+// TWO PRODUCTS, ONE CORE
+// ----------------------
+//   - Pairwise: align / align_batch (bounded edit distance) and align_sw /
+//     align_sw_batch (Smith-Waterman). For pairs you already hold.
+//   - Multiple: msa_align (progressive profile-profile alignment; DNA, protein
+//     and MACSE-class codon-aware modes). For a set of sequences.
 //
 // BACKEND SELECTION
 // -----------------
@@ -304,6 +311,160 @@ struct SWBatchResult {
 };
 SWBatchResult align_sw_batch(const std::vector<SWRequest>& reqs);
 SWAlignResult align_sw(const SWRequest& req);
+
+// ===========================================================================
+// MULTIPLE SEQUENCE ALIGNMENT — progressive profile-profile (genomsa engine)
+// ===========================================================================
+//
+// WHAT THIS IS
+// ------------
+// Progressive MSA: fragment-corrected k-mer distances -> deterministic
+// neighbor-joining guide tree -> post-order profile-vs-profile Gotoh DP
+// (semiglobal, free end gaps) -> deterministic column-interleave merge.
+// Position-specific gap penalties (ClustalW/TWILIGHT convention) and a
+// gappy-column heuristic are ON by default. The pipeline is deterministic:
+// NJ ties break on smaller index, DP ties prefer M > Ix > Iy, merge order
+// follows the guide tree's left/right order. This entry runs the HOST
+// engine: pure CPU, no device needed, same result on every platform.
+//
+// MODES (MsaRequest::mode)
+// ------------------------
+//   dna      alpha=4. IUPAC nucleotides; match/transition/transversion
+//            scoring. Input must be unaligned IUPAC DNA (no '-').
+//   protein  alpha=20. Amino acids, BLOSUM62 column scoring
+//            (B/Z/J -> their two-letter sets, X/O uniform, U -> C, '*' and
+//            unknown letters count as gap).
+//   codon    alpha=65. MACSE-class codon-aware alignment: each sequence is
+//            tokenized to codons, aligned over a 65x65 matrix (BLOSUM62 of
+//            the translated amino acids + codon_nt_bonus per identical nt
+//            - codon_stop_pen when exactly one side is a stop), then decoded
+//            back to nucleotides. Indels are whole codons, so the output
+//            keeps reading frame by construction. gc_def selects the NCBI
+//            table: 1 = standard, 2 = vertebrate mitochondrial (CYTB/COI/ND).
+//
+//   codon_local_frame (default ON, codon only): a stop-avoiding DP
+//            partitions each sequence into codon blocks and 1-2 nt
+//            frameshift blocks, so rows with internal frameshifts keep
+//            downstream tokens in-frame. It implies codon_refine >= 1 (the
+//            refine pass restores the real nts where placeholder tokens
+//            sat), exactly like the driver's --local-frame default.
+//   codon_refine (codon only): stage-2 refinement passes that reintroduce
+//            frameshift events as 1-2 nt columns (MACSE '!'). With refine=0
+//            AND local_frame=false the decoded rows are whole-codon
+//            (width %3 == 0); any other codon configuration yields a NT MSA
+//            that is NOT guaranteed %3 -- that is MACSE semantics, not a bug.
+//
+// QC, THE SAME DISCIPLINE AS PairwiseResult FLAGS
+// -----------------------------------------------
+// qc carries one entry per INPUT sequence, in input order; fields are -1 in
+// non-codon modes (no frame concept exists) and measured values in codon
+// mode: the chosen frame, the stop-codon count in that frame, and the
+// partial/ambiguous codon count. The counts are computed in the library
+// during tokenization -- a caller never has to guess which sequences were
+// problematic going in.
+//
+// VALIDATION — refuses rather than guesses
+// ----------------------------------------
+// Whole request fails with Status::invalid_argument (no partial output):
+//   no sequences, or any empty sequence      engine cannot index a tree on
+//                                            nothing / an empty profile is
+//                                            almost surely a caller bug
+//   character outside the mode's alphabet    dna/codon: IUPAC DNA letters
+//                                            (ACGTUN + ambiguity, no '-');
+//                                            protein: A-Z + '*' and '?'
+//   mode outside {dna,protein,codon}         a casted enum must not be
+//                                            answered as if it were dna
+//   gc_def not in {1,2}                      only those tables exist
+//   gc_def != 1 outside codon mode           the field means nothing there;
+//                                            an ignored field is a silent
+//                                            contract break
+//   codon_refine != 0 outside codon mode     same ignored-field rule
+//   codon_refine < 0                         nonsensical round count
+//
+// ONE SEQUENCE is legal and returns the sequence itself (degenerate tree).
+// aligned.size() == seqs.size(), all rows equal width, input order kept --
+// verified before the result leaves the library, not trusted from the engine.
+//
+// TWO ENGINES, ONE RESULT
+// -----------------------
+//   msa_align(req)         the HOST engine described above. Portable: pure
+//                          CPU, no device needed, same answer everywhere.
+//   msa_align_device(req)  the DEVICE engine: NJ guide tree on the device
+//                          (nj_tree_gpu), one profile-profile kernel launch
+//                          per guide-tree level, host merge. The level batch
+//                          is gated BIT-EXACT against the sequential engine
+//                          (tests/parity/msa_driver_parity.cpp), so the rows
+//                          are identical -- what changes is throughput and
+//                          which processor did the work. MsaResult::device
+//                          records which engine produced the rows.
+//
+// DEVICE SEMANTICS — requested device, or a refusal
+// -------------------------------------------------
+// msa_align_device answers Status::device_error (not a host result) when the
+// device path fails -- no device visible, allocation failure, kernel error.
+// Falling back to the host engine would silently serve a different
+// PERFORMANCE contract: a device caller on 8k sequences asked for hours, not
+// days. Call msa_align() yourself if host timing is acceptable.
+// One exception, documented rather than hidden: in codon mode the stage-2
+// refine may fall back to host codon_refine after a device failure, because
+// its DP body is shared source between codon_refine and codon_refine_kernel
+// -- identical answer either way, and the O(n*W) refine is not why a caller
+// chose the device. The align core never falls back.
+// device_error is a distinct Status, same convention as the pairwise API.
+//
+// THREAD SAFETY
+// -------------
+// msa_align is host code, safe for concurrent calls with disjoint requests.
+// msa_align_device launches on the default stream: results do not depend on
+// launch order, but concurrent calls serialise arbitrarily with respect to
+// each other -- same caveat as the pairwise API.
+//
+// EXAMPLE
+// -------
+//     genoaligner::MsaRequest req;
+//     req.mode = genoaligner::MsaMode::codon;
+//     req.gc_def = 2;                    // vertebrate mitochondrial
+//     req.seqs = {"ATGATAATCACC", "ATGATTATCACCTGA"};
+//     genoaligner::MsaResult r = genoaligner::msa_align(req);
+//     // r.aligned has 2 rows of equal width; every indel is a whole codon
+//     // and r.qc[0].frame / r.qc[0].stops report the encode QC.
+//
+// The example is compiled and run by tests/api/test_msa_api.cpp, so the
+// header and the documented usage cannot drift apart.
+// ---------------------------------------------------------------------------
+enum class MsaMode { dna, protein, codon };
+
+// Per-input-sequence quality metrics. All fields are -1 outside codon mode.
+struct MsaSeqQc {
+    int frame   = -1;   // chosen forward frame, 0..2; trivially 0 under
+                        // codon_local_frame (the DP places blocks, not one frame)
+    int stops   = -1;   // stop codons in the tokenized stream
+    int partial = -1;   // partial/ambiguous codons + frameshift blocks held
+                        // out of the token stream
+};
+
+struct MsaRequest {
+    std::vector<std::string> seqs;
+    MsaMode mode = MsaMode::dna;
+    int  gc_def            = 1;      // codon only: NCBI table 1 or 2
+    int  codon_refine      = 0;      // codon only: stage-2 passes
+    bool codon_local_frame = true;   // codon only: local-frame encode DP
+};
+
+struct MsaResult {
+    std::vector<std::string> aligned;   // equal-length rows, input order
+    std::vector<MsaSeqQc>    qc;        // one entry per input seq
+    int width = 0;                      // column count (0 when empty)
+    bool device = false;                // rows came from the device engine
+
+    enum class Status { ok, invalid_argument, device_error, error };
+    Status status = Status::ok;
+    const char* error = nullptr;        // static string, non-null iff != ok
+
+    bool ok() const { return status == Status::ok; }
+};
+MsaResult msa_align(const MsaRequest& req);
+MsaResult msa_align_device(const MsaRequest& req);
 
 // ---------------------------------------------------------------------------
 // Environment / provenance. Cheap calls, no device work.

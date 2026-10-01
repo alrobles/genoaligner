@@ -12,8 +12,8 @@ Usage: hyp_embed_test.py TRUE_TREE.nwk [n_taxa_limit] [dim] [iters]
 import sys
 import numpy as np
 from io import StringIO
-from Bio import Phylo
-from Bio.Phylo.TreeConstruction import DistanceMatrix, DistanceTreeConstructor
+# Bio is only needed by __main__ (tree read / RF / NJ decode); imported lazily
+# there so other scripts can reuse embed/pdist without the dependency.
 
 SEED = 7
 rng = np.random.default_rng(SEED)
@@ -108,6 +108,8 @@ def nj_tree(D, names):
     return DistanceTreeConstructor().nj(dm)
 
 if __name__ == "__main__":
+    from Bio import Phylo
+    from Bio.Phylo.TreeConstruction import DistanceMatrix, DistanceTreeConstructor
     tree_path = sys.argv[1]
     dim = int(sys.argv[3]) if len(sys.argv) > 3 else 4
     iters = int(sys.argv[4]) if len(sys.argv) > 4 else 200000

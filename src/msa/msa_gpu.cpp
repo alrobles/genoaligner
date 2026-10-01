@@ -10,6 +10,8 @@
 
 #include <genoaligner/msa/msa.hpp>
 #include <genoaligner/backend/msa_pp_kernel_impl.hip>
+#define GENOALIGNER_CODON_REFINE_DEF
+#include <genoaligner/backend/codon_refine_kernel_impl.hip>
 #include <hip/hip_runtime.h>
 #include <chrono>
 #include <cstdio>
@@ -96,9 +98,24 @@ bool msa_align_gpu(const std::vector<std::string>& seqs, const Params& P,
     MsaPPParams kp{P.match, P.ts, P.tv, P.gap_open, P.gap_extend,
                    P.free_end_gaps ? 1 : 0,
                    P.psgp ? 1 : 0, P.psgp_scale, P.psgp_min_open,
-                   P.psgp_min_ext, P.alpha, {}};
-    if (P.alpha > 4)
+                   P.psgp_min_ext, P.alpha, {}, nullptr};
+    if (P.alpha > 4 && P.alpha <= MSA_SUB_INLINE_SYMS)
         std::memcpy(kp.sub, P.sub.data(), sizeof(kp.sub));
+    // alpha > 20 (codon mode): the 65x65 matrix exceeds the kernel-param
+    // space, so it lives in a device buffer allocated once per call.
+    float* d_sub = nullptr;
+    if (P.alpha > MSA_SUB_INLINE_SYMS) {
+        const size_t bytes = (size_t)P.alpha * P.alpha * sizeof(float);
+        if (hipMalloc((void**)&d_sub, bytes) != hipSuccess ||
+            hipMemcpy(d_sub, P.sub.data(), bytes, hipMemcpyHostToDevice)
+                != hipSuccess) {
+            return fail("codon substitution matrix upload");
+        }
+        kp.sub_ext = d_sub;
+    }
+    // freed on every exit path, success or failure
+    struct SubGuard { float* p; ~SubGuard() { if (p) hipFree(p); } }
+        sub_guard{d_sub};
 
     static const bool lvldbg = std::getenv("GENOMSA_LVL_DEBUG") != nullptr;
     auto fnv = [](const void* p, size_t n, uint64_t h) {
@@ -115,7 +132,52 @@ bool msa_align_gpu(const std::vector<std::string>& seqs, const Params& P,
     };
     int lvli = 0;
 
-    std::vector<void*> dev;
+    // Persistent device arena. NJ guide trees are near-caterpillar, so the
+    // level loop runs O(n) iterations; allocating+freeing per level costs
+    // ~24 synchronous HIP calls each and dominated walltime. Buffers grow
+    // on demand and persist across levels; freed once on function exit.
+    float*      d_fdata = nullptr; size_t cap_fdata = 0;
+    MsaPPPair*  d_pairs = nullptr; size_t cap_pairs = 0;
+    MsaPPResult* d_res  = nullptr; size_t cap_res   = 0;
+    uint8_t*    d_dirs  = nullptr; size_t cap_dirs  = 0;
+    uint8_t*    d_cig   = nullptr; size_t cap_cig   = 0;
+    int*        d_meta  = nullptr; size_t cap_meta  = 0;
+    float*      d_scr   = nullptr; size_t cap_scr   = 0;
+    size_t*     d_db = nullptr; size_t* d_da = nullptr;
+    size_t*     d_cb = nullptr;
+    size_t*     d_sb = nullptr; size_t* d_sa = nullptr;
+    size_t      cap_db = 0, cap_da = 0, cap_cb = 0, cap_sb = 0, cap_sa = 0;
+    auto ensure = [&](void** p, size_t* cap, size_t need,
+                      const char* what) {
+        if (need == 0) need = 8;
+        if (need <= *cap) return true;
+        if (*p) hipFree(*p);
+        const size_t bytes = need + need / 4;   // 25% growth headroom
+        if (hipMalloc(p, bytes) != hipSuccess) {
+            err = std::string("hipMalloc ") + what;
+            *cap = 0; *p = nullptr;
+            return false;
+        }
+        *cap = bytes;
+        return true;
+    };
+    // Frees whatever the arena pointers hold at scope exit (references, so
+    // reallocations through `ensure` stay covered on every exit path).
+    struct ArenaGuard {
+        float*& fdata; MsaPPPair*& pairs; MsaPPResult*& res;
+        uint8_t*& dirs; uint8_t*& cig; int*& meta; float*& scr;
+        size_t *&db, *&da, *&cb, *&sb, *&sa;
+        ~ArenaGuard() {
+            if (fdata) hipFree(fdata); if (pairs) hipFree(pairs);
+            if (res) hipFree(res);     if (dirs) hipFree(dirs);
+            if (cig) hipFree(cig);     if (meta) hipFree(meta);
+            if (scr) hipFree(scr);     if (db) hipFree(db);
+            if (da) hipFree(da);       if (cb) hipFree(cb);
+            if (sb) hipFree(sb);       if (sa) hipFree(sa);
+        }
+    } arena{d_fdata, d_pairs, d_res, d_dirs, d_cig, d_meta, d_scr,
+            d_db, d_da, d_cb, d_sb, d_sa};
+
     for (const auto& level : levels) {
         const int np = (int)level.size();
         // ---- pack this level's pairs -----------------------------------
@@ -167,41 +229,25 @@ bool msa_align_gpu(const std::vector<std::string>& seqs, const Params& P,
             }
         }
 
-        // ---- device buffers ---------------------------------------------
-        float*      d_fdata = nullptr;
-        MsaPPPair*  d_pairs = nullptr;
-        MsaPPResult* d_res  = nullptr;
-        uint8_t*    d_dirs  = nullptr;
-        uint8_t*    d_cig   = nullptr;
-        int*        d_meta  = nullptr;
-        float*      d_scr   = nullptr;
-        size_t*     d_db = nullptr; size_t* d_da = nullptr;
-        size_t*     d_cb = nullptr;
-        size_t*     d_sb = nullptr; size_t* d_sa = nullptr;
-        auto mal = [&](void** p, size_t bytes, const char* what) {
-            if (bytes == 0) bytes = 8;
-            if (hipMalloc(p, bytes) != hipSuccess) {
-                err = std::string("hipMalloc ") + what;
-                return false;
-            }
-            dev.push_back(*p);
-            return true;
-        };
-        if (!mal((void**)&d_fdata, fdata.size() * sizeof(float), "fdata") ||
-            !mal((void**)&d_pairs, np * sizeof(MsaPPPair), "pairs") ||
-            !mal((void**)&d_res,   np * sizeof(MsaPPResult), "res") ||
-            !mal((void**)&d_dirs,  dtot, "dirs") ||
-            !mal((void**)&d_cig,   ctot, "cig") ||
-            !mal((void**)&d_meta,  np * 2 * sizeof(int), "meta") ||
-            !mal((void**)&d_scr,   stot * sizeof(float), "scratch") ||
-            !mal((void**)&d_db, np * sizeof(size_t), "dir_base") ||
-            !mal((void**)&d_da, np * sizeof(size_t), "dir_avail") ||
-            !mal((void**)&d_cb, np * sizeof(size_t), "cig_base") ||
-            !mal((void**)&d_sb, np * sizeof(size_t), "scr_base") ||
-            !mal((void**)&d_sa, np * sizeof(size_t), "scr_avail")) {
-            hip_free_all(dev);
+        // ---- grow arena to this level's needs --------------------------
+        if (!ensure((void**)&d_fdata, &cap_fdata,
+                    fdata.size() * sizeof(float), "fdata") ||
+            !ensure((void**)&d_pairs, &cap_pairs,
+                    np * sizeof(MsaPPPair), "pairs") ||
+            !ensure((void**)&d_res, &cap_res,
+                    np * sizeof(MsaPPResult), "res") ||
+            !ensure((void**)&d_dirs, &cap_dirs, dtot, "dirs") ||
+            !ensure((void**)&d_cig, &cap_cig, ctot, "cig") ||
+            !ensure((void**)&d_meta, &cap_meta,
+                    np * 2 * sizeof(int), "meta") ||
+            !ensure((void**)&d_scr, &cap_scr,
+                    stot * sizeof(float), "scratch") ||
+            !ensure((void**)&d_db, &cap_db, np * sizeof(size_t), "dir_base") ||
+            !ensure((void**)&d_da, &cap_da, np * sizeof(size_t), "dir_avail") ||
+            !ensure((void**)&d_cb, &cap_cb, np * sizeof(size_t), "cig_base") ||
+            !ensure((void**)&d_sb, &cap_sb, np * sizeof(size_t), "scr_base") ||
+            !ensure((void**)&d_sa, &cap_sa, np * sizeof(size_t), "scr_avail"))
             return false;
-        }
         if (stats && dtot > stats->dir_bytes) stats->dir_bytes = dtot;
         if (lvldbg) {
             uint64_t h = fnv(fdata.data(), fdata.size() * sizeof(float),
@@ -242,7 +288,6 @@ bool msa_align_gpu(const std::vector<std::string>& seqs, const Params& P,
             !cp(d_cb, cig_base.data(), np * sizeof(size_t), "cig_base") ||
             !cp(d_sb, scr_base.data(), np * sizeof(size_t), "scr_base") ||
             !cp(d_sa, scr_av.data(),   np * sizeof(size_t), "scr_avail")) {
-            hip_free_all(dev);
             return false;
         }
 
@@ -302,7 +347,6 @@ bool msa_align_gpu(const std::vector<std::string>& seqs, const Params& P,
 #endif
         if (le != hipSuccess || se != hipSuccess) {
             err = std::string("kernel: ") + hipGetErrorString(le != hipSuccess ? le : se);
-            hip_free_all(dev);
             return false;
         }
 
@@ -314,10 +358,8 @@ bool msa_align_gpu(const std::vector<std::string>& seqs, const Params& P,
             !cp(hmeta.data(), d_meta, np * 2 * sizeof(int), "meta",
                 hipMemcpyDeviceToHost) ||
             !cp(hcig.data(),  d_cig, ctot, "cig", hipMemcpyDeviceToHost)) {
-            hip_free_all(dev);
             return false;
         }
-        hip_free_all(dev);
         if (lvldbg) {
             uint64_t h = fnv(hres.data(), np * sizeof(MsaPPResult),
                              1469598103934665603ull);
@@ -379,6 +421,209 @@ bool msa_align_gpu(const std::vector<std::string>& seqs, const Params& P,
         stats->tree_s  = std::chrono::duration<double>(t2 - t1).count();
         stats->align_s = std::chrono::duration<double>(t3 - t2).count();
     }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Codon stage-2 on device: per round, the host rebuilds the codon-column
+// profile + dot table, packs per-row footprints, launches
+// codon_refine_kernel (one thread per row: phase DP -> tr bytes + endpoint),
+// then traces back + merges on host (genomsa::detail::, shared with
+// codon_refine). Under GENOALIGNER_HIP_SHIM the kernel body runs per-thread
+// on CPU -- the shim binary's --cpu vs default refine outputs must be
+// byte-identical.
+// ---------------------------------------------------------------------------
+bool codon_refine_gpu(const std::vector<std::string>& seqs_nt,
+                      const std::vector<std::string>& aln_nt,
+                      const Params& P, int rounds,
+                      std::vector<std::string>& out, std::string& err,
+                      float* kernel_s) {
+    auto fail = [&](const char* m) { err = m; return false; };
+    if (rounds < 1 || aln_nt.empty()) { out = aln_nt; return true; }
+    int ndev = 0;
+    if (hipGetDeviceCount(&ndev) != hipSuccess || ndev == 0)
+        return fail("no HIP device");
+
+    const int n = (int)aln_nt.size();
+    const int D = (int)P.codon_refine_band;
+    const int ND = 2 * D + 1;
+    std::vector<std::string> cur = aln_nt;
+    std::vector<int> cofs(cur[0].size() / 3);
+    for (size_t j = 0; j < cofs.size(); ++j) cofs[j] = 3 * (int)j;
+    double kt = 0.0;
+
+    for (int r = 0; r < rounds; ++r) {
+        detail::CodonProf cp = detail::codon_prof_build(cur, cofs);
+        const int C = cp.C;
+        std::vector<float> dot((size_t)65 * C, 0.f);
+        for (int t = 0; t < 65; ++t)
+            for (int j = 0; j < C; ++j) {
+                float s = 0;
+                for (int b = 0; b < 65; ++b)
+                    if (cp.ccnt[j][b]) s += cp.ccnt[j][b] * P.sub[t * 65 + b];
+                dot[(size_t)t * C + j] = s;
+            }
+
+        // ---- pack per-row inputs ---------------------------------------
+        std::string seqbuf;
+        std::vector<size_t> seq_base(n), pi_base(n), tr_base(n), scr_base(n);
+        std::vector<int>    seq_len(n), pi_len(n);
+        std::vector<int8_t> stok((size_t)n * C);
+        std::vector<int>    pibuf;
+        size_t trtot = 0;
+        for (int s = 0; s < n; ++s) {
+            seq_base[s] = seqbuf.size();
+            seqbuf += seqs_nt[s];
+            seq_len[s] = (int)seqs_nt[s].size();
+            pi_base[s] = pibuf.size();
+            int K = 0;
+            for (int j = 0; j < C; ++j) {
+                int t = cp.tok[s][j];
+                stok[(size_t)s * C + j] = (int8_t)t;
+                if (t >= 0) { pibuf.push_back(j); ++K; }
+            }
+            pi_len[s] = K;
+            tr_base[s] = trtot;
+            scr_base[s] = (size_t)s * 2 * ND;
+            trtot += (size_t)K * ND;
+        }
+        // tr is direction bytes; cap the workspace at 4 GB (beyond that the
+        // host path is cheaper than the transfer anyway).
+        if (trtot > (size_t)4 << 30) return fail("refine workspace > 4 GB");
+        std::vector<float> ncnt((size_t)C * 12);
+        for (int j = 0; j < C; ++j)
+            std::memcpy(&ncnt[(size_t)j * 12], &cp.ncnt[j][0][0],
+                        12 * sizeof(float));
+
+        genoaligner::CodonRefineParams crp{P.match, P.ts, P.tv, P.gap_open,
+                              P.psgp ? 1 : 0, P.psgp_scale, P.psgp_min_open,
+                              P.codon_fs, P.codon_fs_term, D, n, C};
+
+        // ---- device buffers ---------------------------------------------
+        char*    d_seqs = nullptr;  size_t* d_sb = nullptr;
+        int*     d_sl = nullptr;    int8_t* d_stok = nullptr;
+        int*     d_pi = nullptr;    size_t* d_pb = nullptr;
+        int*     d_pl = nullptr;    float* d_dot = nullptr;
+        float*   d_oc = nullptr;    float* d_nc = nullptr;
+        float*   d_sub = nullptr;   uint8_t* d_tr = nullptr;
+        size_t*  d_tb = nullptr;    float* d_scr = nullptr;
+        size_t*  d_cb = nullptr;    int* d_bes = nullptr;
+        std::vector<void*> dev;
+        auto mal = [&](void** p, size_t bytes, const char* what) {
+            if (bytes == 0) bytes = 8;
+            if (hipMalloc(p, bytes) != hipSuccess) {
+                err = std::string("hipMalloc ") + what;
+                return false;
+            }
+            dev.push_back(*p);
+            return true;
+        };
+        auto cp2 = [&](void* d, const void* s, size_t bytes, const char* what,
+                       hipMemcpyKind k = hipMemcpyHostToDevice) {
+            if (bytes && hipMemcpy(d, s, bytes, k) != hipSuccess) {
+                err = std::string("hipMemcpy ") + what;
+                return false;
+            }
+            return true;
+        };
+        if (!mal((void**)&d_seqs, seqbuf.size(), "seqs") ||
+            !mal((void**)&d_sb,   n * sizeof(size_t), "seq_base") ||
+            !mal((void**)&d_sl,   n * sizeof(int), "seq_len") ||
+            !mal((void**)&d_stok, stok.size(), "stok") ||
+            !mal((void**)&d_pi,   pibuf.size() * sizeof(int), "pi") ||
+            !mal((void**)&d_pb,   n * sizeof(size_t), "pi_base") ||
+            !mal((void**)&d_pl,   n * sizeof(int), "pi_len") ||
+            !mal((void**)&d_dot,  dot.size() * sizeof(float), "dot") ||
+            !mal((void**)&d_oc,   C * sizeof(float), "ocnt") ||
+            !mal((void**)&d_nc,   ncnt.size() * sizeof(float), "ncnt") ||
+            !mal((void**)&d_sub,  65 * 65 * sizeof(float), "sub") ||
+            !mal((void**)&d_tr,   trtot, "tr") ||
+            !mal((void**)&d_tb,   n * sizeof(size_t), "tr_base") ||
+            !mal((void**)&d_scr,  (size_t)n * 2 * ND * sizeof(float), "scr") ||
+            !mal((void**)&d_cb,   n * sizeof(size_t), "scr_base") ||
+            !mal((void**)&d_bes,  n * sizeof(int), "bes")) {
+            hip_free_all(dev);
+            return false;
+        }
+        if (!cp2(d_seqs, seqbuf.data(), seqbuf.size(), "seqs") ||
+            !cp2(d_sb, seq_base.data(), n * sizeof(size_t), "seq_base") ||
+            !cp2(d_sl, seq_len.data(), n * sizeof(int), "seq_len") ||
+            !cp2(d_stok, stok.data(), stok.size(), "stok") ||
+            !cp2(d_pi, pibuf.data(), pibuf.size() * sizeof(int), "pi") ||
+            !cp2(d_pb, pi_base.data(), n * sizeof(size_t), "pi_base") ||
+            !cp2(d_pl, pi_len.data(), n * sizeof(int), "pi_len") ||
+            !cp2(d_dot, dot.data(), dot.size() * sizeof(float), "dot") ||
+            !cp2(d_oc, cp.ocnt.data(), C * sizeof(float), "ocnt") ||
+            !cp2(d_nc, ncnt.data(), ncnt.size() * sizeof(float), "ncnt") ||
+            !cp2(d_sub, P.sub.data(), 65 * 65 * sizeof(float), "sub") ||
+            !cp2(d_tb, tr_base.data(), n * sizeof(size_t), "tr_base") ||
+            !cp2(d_cb, scr_base.data(), n * sizeof(size_t), "scr_base")) {
+            hip_free_all(dev);
+            return false;
+        }
+
+        auto k0 = std::chrono::steady_clock::now();
+#ifdef GENOALIGNER_HIP_SHIM
+        {
+            const unsigned T = 128;
+            gridDim  = dim3{(unsigned)((n + T - 1) / T), 1, 1};
+            blockDim = dim3{T, 1, 1};
+            for (unsigned bx = 0; bx < gridDim.x; ++bx) {
+                blockIdx = uint3{bx, 0, 0};
+                for (unsigned tx = 0; tx < T; ++tx) {
+                    if (bx * T + tx >= (unsigned)n) break;
+                    threadIdx = uint3{tx, 0, 0};
+                    genoaligner::codon_refine_kernel(
+                        d_seqs, d_sb, d_sl, d_stok, d_pi, d_pb, d_pl,
+                        d_dot, d_oc, d_nc, d_sub, crp, d_tr, d_tb,
+                        d_scr, d_cb, d_bes, n);
+                }
+            }
+        }
+        hipError_t le = hipSuccess, se = hipSuccess;
+#else
+        hipLaunchKernelGGL(genoaligner::codon_refine_kernel,
+                           dim3((unsigned)((n + 127) / 128)), dim3(128),
+                           0, nullptr,
+                           d_seqs, d_sb, d_sl, d_stok, d_pi, d_pb, d_pl,
+                           d_dot, d_oc, d_nc, d_sub, crp, d_tr, d_tb,
+                           d_scr, d_cb, d_bes, n);
+        hipError_t le = hipGetLastError();
+        hipError_t se = hipDeviceSynchronize();
+#endif
+        kt += std::chrono::duration<double>(
+                  std::chrono::steady_clock::now() - k0).count();
+        if (le != hipSuccess || se != hipSuccess) {
+            err = std::string("refine kernel: ") +
+                  hipGetErrorString(le != hipSuccess ? le : se);
+            hip_free_all(dev);
+            return false;
+        }
+
+        std::vector<int> hbes(n);
+        std::vector<uint8_t> htr(trtot);
+        if (!cp2(hbes.data(), d_bes, n * sizeof(int), "bes",
+                 hipMemcpyDeviceToHost) ||
+            !cp2(htr.data(), d_tr, trtot, "tr", hipMemcpyDeviceToHost)) {
+            hip_free_all(dev);
+            return false;
+        }
+        hip_free_all(dev);
+
+        // ---- host traceback + merge (shared with codon_refine) ----------
+        std::vector<detail::Place> pls(n);
+        for (int s = 0; s < n; ++s) {
+            const int K = pi_len[s];
+            std::vector<int> pi(pibuf.begin() + pi_base[s],
+                                pibuf.begin() + pi_base[s] + K);
+            pls[s] = detail::codon_trace_place(
+                seqs_nt[s], cp, s, P, pi,
+                K ? htr.data() + tr_base[s] : nullptr, ND, hbes[s]);
+        }
+        cur = detail::codon_refine_merge(pls, C, &cofs);
+    }
+    if (kernel_s) *kernel_s = (float)kt;
+    out = cur;
     return true;
 }
 

@@ -29,14 +29,15 @@
 namespace genomsa {
 
 // ---------------------------------------------------------------- config
-// Maximum alphabet width supported: 20 amino acids (+1 gap slot).
-// DNA mode uses symbols 0..3 (A,C,G,T); the gap fraction always lives at
-// index `alpha` so indexing is alphabet-agnostic.
-constexpr int MSA_MAX_SYMS = 20;
+// Maximum alphabet width supported: 65 = 64 codons + 1 "other/partial"
+// token (codon mode). DNA mode uses symbols 0..3 (A,C,G,T); protein uses
+// 0..19; the gap fraction always lives at index `alpha` so indexing is
+// alphabet-agnostic.
+constexpr int MSA_MAX_SYMS = 65;
 
 struct Params {
     int    kmer_k       = 5;
-    int    alpha        = 4;      // 4 = DNA (IUPAC), 20 = protein
+    int    alpha        = 4;      // 4 = DNA (IUPAC), 20 = protein, 65 = codon
     float  match        = 2.0f;   // S(a,a)              (alpha==4 only)
     float  ts           = -1.0f;  // transition mismatch (alpha==4 only)
     float  tv           = -2.0f;  // transversion        (alpha==4 only)
@@ -60,6 +61,38 @@ struct Params {
     // insertion blocks; runs removed from BOTH profiles at the same
     // position are mini-aligned to each other. 0 disables. Default 0.95.
     float  gappy        = 0.95f;
+    // Codon mode (alpha==65): penalty when exactly one side of a column
+    // pair is a stop codon (MACSE-style), and per-identical-nt bonus on
+    // top of the BLOSUM62 amino-acid score.
+    float  codon_stop_pen = 60.0f;
+    float  codon_nt_bonus = 1.0f;
+    int    gc_def         = 1;    // NCBI genetic code (2 = vertebrate mito)
+    // Stage-2 codon refinement (codon_refine): MACSE-style frameshift
+    // events. codon_refine = passes over the MSA (0 disables);
+    // codon_fs = cost of an internal 1-2 nt indel (MACSE -fs 30);
+    // codon_fs_term = terminal frameshift cost (first/last codon of a
+    // sequence, MACSE -fs_term 10).
+    int    codon_refine   = 0;
+    float  codon_fs       = 30.0f;
+    float  codon_fs_term  = 10.0f;
+    // Max raw-nt drift of codon boundaries inside a row's frozen stage-1
+    // footprint during refinement (the DP's |s - 3k| limit).
+    float  codon_refine_band = 40.0f;
+    // codon_local_frame: tokenize each sequence with the local-frame DP
+    // (codon_encode_local) instead of a single global frame -- keeps
+    // tokens in-frame across internal frameshifts.
+    int    codon_local_frame = 0;
+    // Encode-DP event cost: deliberately higher than codon_fs so that a
+    // lone sequencing-error stop can never be dodged (a single-event
+    // escape costs codon_fs_enc but saves only codon_stop_pen=60); a real
+    // frameshift still wins because its off-frame tail accrues >=2 stops.
+    float  codon_fs_enc   = 80.0f;
+    // Guided re-tokenization (phase-2): weight of the per-nt guide bonus
+    // inside the local-frame encode DP. bonus[r] is a signed agreement
+    // score of raw nt r with a prior alignment's column profile; the DP
+    // then prefers to exclude low-agreement nts as frameshift blocks.
+    // 0 disables (identical to codon_encode_local).
+    float  guide_w        = 0.0f;
 };
 
 // Position-specific gap penalties -- THE SPEC. The kernel implements the
@@ -80,6 +113,110 @@ inline float psgp_ext(float occ, const Params& P) {
 // Protein preset: alpha=20, BLOSUM62 substitution matrix, protein
 // distance/DP defaults (2-mer guide tree, ClustalW-scale gap costs).
 Params protein_params();
+
+// -------------------------------------------------------- codon mode
+// Codon-aware progressive MSA (MACSE-style): sequences are tokenized to
+// codons (one byte per codon, stored as 128 + index where index is 0..63
+// in NCBI codon order TTT,TTC,...,GGG and 64 = partial/ambiguous codon,
+// scores 0 vs all; the +128 offset keeps tokens disjoint from '-'), the
+// engine runs with alpha=65 over a 65x65 substitution matrix built from
+// BLOSUM62 of the translated amino acids plus:
+//   - codon_stop_pen : charged when exactly one side is a stop codon
+//   - codon_nt_bonus : added per identical nt position (0..3)
+// Indels are then always whole codons -- the output keeps reading frame.
+// gc_def: NCBI genetic code id (1 = standard, 2 = vertebrate mito).
+Params codon_params(int gc_def = 1);
+
+// Per-sequence frame selection + tokenization. Returns encoded strings
+// (one byte per codon) plus QC: chosen frame and stop count per seq.
+struct CodonQc { int frame = 0; int stops = 0; int partial = 0; };
+std::vector<std::string> codon_encode(const std::vector<std::string>& seqs,
+                                      int gc_def,
+                                      std::vector<CodonQc>* qc = nullptr);
+// Local-frame variant: a stop-avoiding DP partitions each sequence into
+// codon blocks (3 nt -> token) and frameshift blocks (1-2 nt -> kept out
+// of the token stream; codon_refine restores them as event columns).
+// Rows with internal frameshifts keep downstream tokens in-frame; clean
+// rows tokenize identically to codon_encode. Enabled via
+// Params::codon_local_frame (implies codon_refine >= 1).
+std::vector<std::string> codon_encode_local(
+        const std::vector<std::string>& seqs, const Params& P,
+        std::vector<CodonQc>* qc = nullptr);
+// Guided variant: identical DP to codon_encode_local, but a codon block
+// [i-3,i) earns P.guide_w * (bonus[i-3]+bonus[i-2]+bonus[i-1]) on top of
+// its intrinsic score. bonus[r] is the signed agreement of raw nt r with
+// a prior alignment's column profile (built by the caller, e.g. from a
+// first-pass MSA): the DP then re-places frameshift blocks where context
+// disagrees, fixing pass-1 misplacements the blind DP could not see.
+// guide[s] may be empty (seq has no guide -> plain local encode).
+std::vector<std::string> codon_encode_guided(
+        const std::vector<std::string>& seqs, const Params& P,
+        const std::vector<std::vector<float>>& guide,
+        std::vector<CodonQc>* qc = nullptr);
+// Expand codon-token aligned rows back to nucleotides (token 64 -> NNN).
+std::vector<std::string> codon_decode(const std::vector<std::string>& rows);
+
+// Stage-2 codon refinement -- MACSE-style frameshift events. Realigns each
+// raw nucleotide sequence against the codon-column profile of the REST of
+// the stage-1 MSA with an extended Gotoh whose move set adds 1-2 nt indels
+// charged as frameshift events (codon_fs, or codon_fs_term inside the
+// first/last codon of the sequence). A fs event becomes a new column 1-2 nt
+// wide holding only that row's residues (the "!" of MACSE); an in-frame
+// codon insertion becomes a 3-nt column. A sequence may also cover a codon
+// column partially (1-2 nt + gaps, scored against the column's nt
+// marginals) -- a deletion frameshift. The output is a NT MSA no longer
+// guaranteed %3. rounds>1 rebuilds the codon profile from the refined MSA
+// each pass (original codon columns only; insertion columns are
+// re-derived). Input order preserved; aln_nt must be the codon_decode()
+// output of the stage-1 token MSA (all columns width 3, same row order as
+// seqs_nt).
+std::vector<std::string> codon_refine(const std::vector<std::string>& seqs_nt,
+                                      const std::vector<std::string>& aln_nt,
+                                      const Params& P, int rounds);
+
+// GPU variant: the per-row phase DPs run as codon_refine_kernel (one
+// thread per row); profile build, traceback and merge stay on host.
+// Semantics identical to codon_refine (the DP body is shared source).
+// Returns false with err set on device/packing failure -- callers should
+// fall back to codon_refine.
+bool codon_refine_gpu(const std::vector<std::string>& seqs_nt,
+                      const std::vector<std::string>& aln_nt,
+                      const Params& P, int rounds,
+                      std::vector<std::string>& out, std::string& err,
+                      float* kernel_s = nullptr);
+
+// ---- internals shared by codon_refine (host) and codon_refine_gpu ------
+namespace detail {
+// Codon-column profile of a NT MSA (see codon_prof_build): token counts,
+// occupancy, per-position nt counts and each row's token per column.
+struct CodonProf {
+    int C = 0;
+    int nseq = 0;
+    std::vector<std::array<float, 65>>            ccnt;
+    std::vector<float>                            ocnt;
+    std::vector<std::array<std::array<float, 4>, 3>> ncnt;
+    std::vector<std::vector<int>>                 tok;
+};
+CodonProf codon_prof_build(const std::vector<std::string>& rows,
+                           const std::vector<int>& cofs);
+// One row's placement after realignment: fill[j] = its 3 chars at codon
+// column j ("---" = absent); ins[b] = nt blocks inserted before column b
+// (b == C = trailing).
+struct Place {
+    std::vector<std::string>              fill;
+    std::vector<std::vector<std::string>> ins;
+};
+// Reconstruct a row's placement from the phase-DP outputs: pi = footprint
+// columns, tr = K*ND direction bytes, bes = endpoint s (-2 = dump raw).
+Place codon_trace_place(const std::string& seq, const CodonProf& cp,
+                        int self, const Params& P,
+                        const std::vector<int>& pi,
+                        const uint8_t* tr, int tr_stride, int bes);
+// Merge per-row placements into a NT MSA; cofs gets the char offset of
+// each kept codon column.
+std::vector<std::string> codon_refine_merge(const std::vector<Place>& pls,
+                                            int C, std::vector<int>* cofs);
+}  // namespace detail
 
 // ---------------------------------------------------------------- profile
 struct Profile {

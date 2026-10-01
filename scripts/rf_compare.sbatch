@@ -26,7 +26,8 @@ rf() {  # name file
 
 # ---- group A: full set -------------------------------------------------
 TA=$W/groupA.txt; > "$TA"; i=0
-for arm in genomsa_fixed:$R/supermatrix_tree_genomsa/backbone.treefile            genomsa_prefix:$R/supermatrix_tree_genomsa/backbone_prefix.treefile            macse:$R/supermatrix_tree_macse/backbone.treefile; do
+for arm in genomsa_fixed:$R/supermatrix_tree_genomsa/backbone.treefile            genomsa_prefix:$R/supermatrix_tree_genomsa/backbone_prefix.treefile            macse:$R/supermatrix_tree_macse/backbone.treefile \
+            genomsa_codon:$R/supermatrix_tree_codon/backbone.treefile; do
   lbl=${arm%%:*}; f=${arm##*:}
   if [ -f "$f" ]; then cat "$f" >> "$TA"; echo "A[$i]=$lbl"; i=$((i+1)); else echo "A missing $lbl"; fi
 done
@@ -37,15 +38,18 @@ rf groupA "$TA" || true
 TB=$W/groupB.txt; > "$TB"; i=0
 add_b() {  # label ours_tree
   [ -f "$2" ] || { echo "B missing $1"; return; }
-  python3 "$PR" --upham "$UPH/upham_ndexp_mcc.tre"       --ours "$PAI/data/supermatrix_genomsa/supermatrix.fasta"       --names-dmp "$PAI/data/taxonomy/names.dmp"       --ours-tree "$2" --ours-out "$W/$1.uphamset.tre"       --out "$UPH/upham_pruned_4353.tre" | tail -2
+  SMF=${3:-$PAI/data/supermatrix_genomsa/supermatrix.fasta}
+  python3 "$PR" --upham "$UPH/upham_ndexp_mcc.tre"       --ours "$SMF"       --names-dmp "$PAI/data/taxonomy/names.dmp"       --ours-tree "$2" --ours-out "$W/$1.uphamset.tre"       --out "$UPH/upham_pruned_4353.tre" | tail -2
 }
 add_b genomsa_fixed  $R/supermatrix_tree_genomsa/backbone.treefile
 add_b genomsa_prefix $R/supermatrix_tree_genomsa/backbone_prefix.treefile
 add_b macse          $R/supermatrix_tree_macse/backbone.treefile
+add_b genomsa_codon  $R/supermatrix_tree_codon/backbone.treefile \
+                     $PAI/data/supermatrix_codon/supermatrix.fasta
 if [ -f "$UPH/upham_pruned_4353.tre" ]; then
   cat "$UPH/upham_pruned_4353.tre" >> "$TB"; echo "B[$i]=upham"; i=$((i+1))
 fi
-for arm in genomsa_fixed genomsa_prefix macse; do
+for arm in genomsa_fixed genomsa_prefix macse genomsa_codon; do
   f=$W/$arm.uphamset.tre
   [ -f "$f" ] && { cat "$f" >> "$TB"; echo "B[$i]=$arm"; i=$((i+1)); }
 done
