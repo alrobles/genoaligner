@@ -1,5 +1,21 @@
 # Fase 8 — Integración en phylogenyAI: evaluación
 
+> **Actualización 2026-10-04 — la conclusión de abajo está superada.** Los tres
+> bloqueantes de §4 se cerraron: API pública (`include/genoaligner/api.hpp`:
+> WFA, Smith-Waterman y, desde v1.1.0, MSA), IO FASTA
+> (`include/genoaligner/io/fasta.hpp`) y consumidores en `tools/`. La fila "MSA:
+> NO" de §3 también cambió: el motor `genomsa` existe y tiene API pública.
+> phylogenyAI usa genoaligner en producción:
+>
+> | uso en phylogenyAI | componente | evidencia |
+> |---|---|---|
+> | QC por homología de los 31 loci clásicos (homología, frameshifts, stops) | `tools/gene_qc` (SW + CIGAR vía la API) | `RESULTADO_PAI_GENE_QC.md`, `RESULTADO_PAI_PHASE2.md` |
+> | alineamientos por gen de la supermatriz del control monolítico | `genomsa` (modo codón / local-frame) | scripts `align_genes_genomsa_lf`, `codon_all31` de phylogenyAI |
+> | comparación de árboles y remapeo de particiones | `scripts/rf_distance.py`, `scripts/remap_scheme.py` | scripts de RF y de la supermatriz |
+>
+> Desde 2026-10-04 el pipeline fija la release `v1.1.0` en vez de una rama de
+> desarrollo. El resto del documento es el registro de la evaluación del 2026-09-12.
+
 > **Entregable de Fase 8.** Este documento **evalúa** la integración con evidencia;
 > no la promete. Conclusión corta: **hoy no es enchufable, y el bloqueante es la
 > falta de API pública, no el rendimiento.**

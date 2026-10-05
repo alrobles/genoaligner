@@ -1,5 +1,19 @@
 # genoaligner — Estrategia de liberación y publicación
 
+> **Actualización 2026-10-04 (estado de los gates de JOSS):**
+> - Gate 1 (historial público > 6 meses): el repo público existe desde el
+>   2026-09-13 (v1.0.0) → la marca de seis meses es el **2027-03-13**. Su historial
+>   tiene 336 commits concentrados en 2026-09-10..19; lo que corrige esa lectura es
+>   la actividad pública sostenida desde ahora (releases, PRs, issues).
+> - Gate 2 (uso en investigación): **existe** — phylogenyAI usa `gene_qc`,
+>   `genomsa`, `rf_distance.py` y `remap_scheme.py`, y fija la release v1.1.0
+>   (`INTEGRACION_PHYLOGENYAI.md`). Limitación: phylogenyAI es privado; para que el
+>   uso sea verificable por JOSS hace falta un preprint o el pipeline público.
+> - Gate 3 (feature-complete y prácticas abiertas): SW, IO FASTA y API MSA existen;
+>   CI, CONTRIBUTING, LICENSE y releases etiquetadas (v1.0.0, v1.1.0) también.
+>
+> Este documento vive solo en `-devel` (`.release-exclude`).
+
 > **Decisión tomada tras leer los requisitos VIGENTES de JOSS (2026-09-12), no de
 > memoria.** Conclusión corta: **JOSS no es elegible hoy y no lo será hasta ~marzo
 > 2027 en el mejor caso.** Hay un camino alternativo que sí se puede recorrer ahora.
