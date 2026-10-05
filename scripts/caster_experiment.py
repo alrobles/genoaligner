@@ -316,6 +316,69 @@ def apply_mask(seqs, spec, rng):
     return out, record
 
 
+def locus_edges(width, blocks):
+    """Contiguous locus boundaries; matches apply_mask 'locus' layout."""
+    return [round(i * width / blocks) for i in range(blocks + 1)]
+
+
+def locus_occupancy(seqs, blocks):
+    """Per (taxon, locus) presence: a taxon occupies a locus when it has at
+    least one non-missing base inside that locus's column block."""
+    names = sorted(seqs)
+    width = len(seqs[names[0]]) if names else 0
+    edges = locus_edges(width, blocks)
+    occ = {n: [any(seqs[n][j] not in MISSING
+                   for j in range(edges[b], edges[b + 1]))
+               for b in range(blocks)] for n in names}
+    return occ, edges
+
+
+def apply_selection(seqs, select, blocks):
+    """Input-composition selection: drop taxa and/or loci by occupancy.
+
+    select = {"taxon_min": k, "locus_min": t} (either optional). A taxon is
+    dropped when it occupies fewer than taxon_min loci; a locus (contiguous
+    column block) is dropped when fewer than locus_min taxa occupy it.
+    Guards: never leave fewer than 4 taxa or fewer than 1 locus — the
+    best-occupied items are kept instead and the guard is recorded."""
+    names = sorted(seqs)
+    width = len(seqs[names[0]]) if names else 0
+    record = {"spec": select, "blocks": blocks}
+    occ, edges = locus_occupancy(seqs, blocks)
+    taxa_count = {n: sum(occ[n]) for n in names}
+    loci_count = [sum(occ[n][b] for n in names) for b in range(blocks)]
+    record["occupancy"] = {
+        "taxon_loci_min": min(taxa_count.values(), default=0),
+        "taxon_loci_mean": (sum(taxa_count.values()) / len(taxa_count)
+                            if taxa_count else 0),
+        "locus_taxa_min": min(loci_count, default=0),
+        "locus_taxa_mean": (sum(loci_count) / blocks if blocks else 0),
+    }
+    keep_taxa = names
+    tmin = select.get("taxon_min")
+    if tmin is not None:
+        keep_taxa = [n for n in names if taxa_count[n] >= int(tmin)]
+        if len(keep_taxa) < 4:
+            record["taxon_guard"] = True
+            keep_taxa = sorted(names, key=lambda n: -taxa_count[n])[:4]
+    keep_loci = list(range(blocks))
+    lmin = select.get("locus_min")
+    if lmin is not None:
+        keep_loci = [b for b in range(blocks)
+                     if loci_count[b] >= int(lmin)]
+        if not keep_loci:
+            record["locus_guard"] = True
+            keep_loci = [max(range(blocks),
+                             key=lambda b: loci_count[b])]
+    record["taxa_kept"] = len(keep_taxa)
+    record["loci_kept"] = len(keep_loci)
+    out = {}
+    for n in keep_taxa:
+        out[n] = "".join(seqs[n][edges[b]:edges[b + 1]]
+                         for b in keep_loci)
+    return out, record
+
+
 def observed_dimensions(path, chunk):
     seqs = read_fasta(path)
     width = len(next(iter(seqs.values()))) if seqs else 0
@@ -517,6 +580,14 @@ def run_unit(manifest, case, ds, spec, variant, rep, root, log=print):
     budget = int(case.get("budget_seconds",
                           manifest.get("budgets", {})
                           .get("search_seconds", 1200)))
+    sel_record = None
+    if var.get("select"):
+        seqs = read_fasta(input_path)
+        blocks = int(case.get("mask", {}).get("blocks", 31))
+        sel_seqs, sel_record = apply_selection(seqs, var["select"], blocks)
+        input_path = os.path.join(run_dir, "selected.fasta")
+        write_fasta(input_path, sel_seqs)
+        sel_record["selected_fasta"] = input_path
     runner = os.path.join(SCRIPT_DIR, "caster_run.sh")
     proc = subprocess.Popen(["bash", runner, input_path, out_dir],
                             env=env, stdout=subprocess.PIPE,
@@ -573,6 +644,8 @@ def run_unit(manifest, case, ds, spec, variant, rep, root, log=print):
         "shared_taxa_vs_truth": shared,
         "observed": observed,
     }
+    if sel_record is not None:
+        result["selection"] = sel_record
     with open(result_path + ".tmp", "w") as handle:
         json.dump(result, handle, indent=1, sort_keys=True)
     os.replace(result_path + ".tmp", result_path)
@@ -796,15 +869,28 @@ def cmd_run(args):
         run_unit(manifest, case, ds, spec, variant, rep, args.out)
 
 
+def unit_input_path(manifest, case, variant, ds_dir, run_dir):
+    """Effective input for a unit: the canonical dataset alignment, or the
+    selection-derived fasta when the variant carries a select spec. Both
+    run_unit and external state checks must agree on this path."""
+    if manifest["variants"][variant].get("select"):
+        sel_path = os.path.join(run_dir, "selected.fasta")
+        if os.path.exists(sel_path):
+            return sel_path
+    return os.path.join(ds_dir, "alignment.fasta")
+
+
 def cmd_status(args):
     manifest = load_manifest(args.manifest)
     rows = []
     for case, ds, spec, variant, rep in iter_units(
             manifest, args.case):
         ds_dir = os.path.join(args.out, "datasets", ds)
-        input_path = os.path.join(ds_dir, "alignment.fasta")
-        out_dir = os.path.join(args.out, "runs", case["case_id"], ds,
-                               variant, f"rep{rep}", "out")
+        run_dir = os.path.join(args.out, "runs", case["case_id"], ds,
+                               variant, f"rep{rep}")
+        input_path = unit_input_path(manifest, case, variant, ds_dir,
+                                     run_dir)
+        out_dir = os.path.join(run_dir, "out")
         state = caster_report.result_state(out_dir, input_path)
         rows.append((case["case_id"], ds, variant, rep, state))
     for row in rows:

@@ -12,13 +12,17 @@
 
 ## 0. Los dos repositorios
 
-    alrobles/genoaligner-devel   PRIVADO   desarrollo, historial completo (86+ commits)
-    alrobles/genoaligner         PÚBLICO   VACÍO — destino de la promoción
+    alrobles/genoaligner-devel   PRIVADO   desarrollo, historial completo
+    alrobles/genoaligner         PÚBLICO   v1.0.0 (2026-09-13); historial de -devel
+                                           unido en PR #1 (2026-09-19); v1.1.0
     alrobles/genoaligner-paper   PRIVADO   draft del paper (Overleaf-managed)
 
-**Regla de promoción:** `genoaligner` público NO recibe trabajo incremental. Se
-llena **una vez**, cuando las banderas estén verdes, y desde ahí es el repo de
-usuarios. El desarrollo sigue en `-devel`.
+**Regla de promoción:** `genoaligner` público NO recibe trabajo directo. Recibe
+**promociones**: un merge de `devel/main` en una rama `release/vX.Y.Z`, revisado
+por PR con el CI verde y cerrado con un tag. El desarrollo sigue en `-devel`. Lo
+listado en [`.release-exclude`](../.release-exclude) — el pipeline de phylogenyAI
+y las notas internas de planificación — vive solo en `-devel` y se retira en cada
+promoción (§3).
 
 ---
 
@@ -167,43 +171,52 @@ por la razón equivocada), y una cita de números de otro job en la primera vers
 documento.
 
 
-### B7 — Decisión sobre Smith-Waterman
-- [ ] Escribir SW, **o** declarar explícitamente en el README que solo hay WFA.
-- [ ] Criterio: el README no promete lo que no existe.
+### B7 — Decisión sobre Smith-Waterman ✅ COMPLETA
+- [x] SW escrito: kernel, traceback, API pública, path NVIDIA y comparación con
+      parasail (`RESULTADO_H8` a `RESULTADO_H12`); el README lo documenta como
+      superficie separada (`align_sw_batch`).
+- [x] Criterio cumplido: el README no promete lo que no existe.
 
-### B8 — Saneamiento del historial público
-- [ ] **Decisión del usuario:** el historial de `-devel` tiene 86 commits en 3 días.
-- [ ] Opciones: (a) promover el historial completo, (b) promover un historial
-      limpio y revisado, (c) empezar de cero con un commit fundacional.
-- [ ] Criterio: ningún secreto, ninguna ruta privada, ninguna credencial en el
-      historial (revisar con `git log -p | grep` antes de publicar).
+### B8 — Saneamiento del historial público ✅ DECIDIDA
+- [x] Decisión: (a) historial completo — la versión v1.0.0 se publicó el
+      2026-09-13 y el historial de `-devel` se unió en el PR #1 (2026-09-19).
+- [x] Sin secretos ni credenciales (escaneo `git grep` de claves/tokens: limpio,
+      2026-10-04). Las rutas del clúster que quedan están en los `.sbatch` de
+      validación, conservados como evidencia y declarados no portables en el README.
 
 ---
 
-## 3. Procedimiento de promoción (cuando B1-B8 estén verdes)
+## 3. Procedimiento de promoción (cada release)
 
 ```bash
-# 1. Verificar el árbol que se va a publicar, desde un clon limpio
-git clone <devel> /tmp/promote && cd /tmp/promote
+# 1. Rama de release desde el público, con devel como remoto
+git clone https://github.com/alrobles/genoaligner /tmp/promote && cd /tmp/promote
+git remote add devel https://github.com/alrobles/genoaligner-devel && git fetch devel
+git checkout -b release/vX.Y.Z
+
+# 2. Traer devel/main (merge, nunca force-push)
+git merge --no-ff devel/main
+
+# 3. Retirar lo que no se promueve
+grep -vE '^\s*(#|$)' .release-exclude | xargs git rm -r -q --ignore-unmatch
+git commit -m "Release scope: drop the paths listed in .release-exclude"
+
+# 4. Gate sobre el árbol que se va a publicar
 bash scripts/check_kernel_cpu.sh          # debe llegar a CPU GATE COMPLETE
 
-# 2. Revisar que no haya nada privado en el historial
-git log -p --all | grep -inE "beegfs/|/home/|api[_-]?key|token|password|secret" | head
+# 5. Nada privado: claves, tokens, credenciales
+git grep -nIE "(api[_-]?key|token|passw(or)?d|secret)[\"' ]*[:=]" -- ':!*.md'
 
-# 3. Promover (ejemplo con historial completo; ajustar según B8)
-git remote add public git@github.com:alrobles/genoaligner.git
-git push public main
+# 6. PR -> CI verde -> merge; luego tag y release
+git tag -a vX.Y.Z -m "genoaligner vX.Y.Z" && git push origin vX.Y.Z
+gh release create vX.Y.Z --notes-file <notas>
 
-# 4. En el repo público: LICENSE visible, README de usuario, y tag
-git tag -a v0.1.0 -m "genoaligner v0.1.0 — WFA score+CIGAR, ROCm + CUDA"
-git push public v0.1.0
-
-# 5. Verificar ESI el repo público: clonar desde cero y correr el gate
+# 7. Verificar ESE repo público: clonar desde cero y correr el gate
 git clone https://github.com/alrobles/genoaligner /tmp/es_check
 cd /tmp/es_check && bash scripts/check_kernel_cpu.sh
 ```
 
-**Paso 5 no es opcional.** El repo público es un artefacto distinto del privado: hay
+**Paso 7 no es opcional.** El repo público es un artefacto distinto del privado: hay
 que clonarlo desde fuera y correr el gate, porque ya nos encontramos dos headers que
 solo compilaban por accidente de orden de includes.
 

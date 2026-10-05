@@ -11,15 +11,21 @@ The goal is **portability with verified correctness**, not peak throughput.
 Correctness is established against an independent CPU dynamic program and three
 external oracles (edlib, rapidfuzz, SeqAn3) on both vendor paths.
 
-- **Status:** production aligner (v1.0.0) plus development pipeline. WFA score
-  and traceback (CIGAR) verified on CPU, MI210 (hipcc) and five NVIDIA GPUs; the
-  public API is tested on device; the production checklist is in
-  [docs/PLAN_PRODUCCION.md](docs/PLAN_PRODUCCION.md). The `scripts/caster_*` and
-  `docs/RUTA_MEJORA_BACKBONE.md` workflow (CASTER backbone experiments, provenance,
-  immutable-dataset harness) is development-stage.
-- **Scope:** this is a **pairwise** aligner (edit distance / WFA). It is not a
-  multiple aligner and does not replace MAFFT or MACSE, and it is not a search tool
-  that recruits candidates from a database.
+- **Status:** v1.1.0. Pairwise WFA (score + CIGAR) and Smith-Waterman are
+  production: verified on CPU, MI210 (hipcc) and five NVIDIA GPUs, with the public
+  API tested on device. New in v1.1.0: the multiple-alignment API (`msa_align` on
+  the host, `msa_align_device` on the GPU; DNA, protein and codon modes), whose
+  host and device outputs are byte-identical on V100 (sm_70) and RTX 6000 (sm_75);
+  the MI210 leg of that validation is still pending
+  ([docs/VALIDATION_MSA_API_CLUSTER.md](docs/VALIDATION_MSA_API_CLUSTER.md)). The
+  production checklist is in [docs/PLAN_PRODUCCION.md](docs/PLAN_PRODUCCION.md).
+- **Scope:** pairwise alignment (edit distance / WFA, local Smith-Waterman) and
+  progressive profile-profile MSA (the `genomsa` engine). It is not a search tool
+  that recruits candidates from a database, and the MSA engine is not offered as a
+  drop-in replacement for MAFFT or MACSE: its measured comparisons against them are
+  in [docs/RESULTADO_MSA_BENCH.md](docs/RESULTADO_MSA_BENCH.md),
+  [docs/RESULTADO_TREE_PRECISION.md](docs/RESULTADO_TREE_PRECISION.md) and
+  [docs/RESULTADO_CODON_SMOKE.md](docs/RESULTADO_CODON_SMOKE.md).
 
 ## Install
 
@@ -153,6 +159,32 @@ local-alignment coordinates (`start`/`end` on both sequences). A gap of length
 `L` costs `gap_open + (L-1)*gap_extend`. One scoring scheme per batch, same
 rule as one `smax` per batch.
 
+### Multiple sequence alignment
+
+`msa_align` aligns a whole record set — fragment-corrected k-mer distances, a
+deterministic neighbor-joining guide tree, profile-profile Gotoh DP and a
+column-interleave merge — and returns equal-width rows in input order.
+`MsaRequest::mode` selects `dna`, `protein` or `codon` (MACSE-class: whole-codon
+indels, reading frame kept; `gc_def` 1 = standard, 2 = vertebrate mitochondrial).
+`msa_align_device` runs the guide tree and the per-level profile DP on the GPU; it
+is gated bit-exact against the host engine, and its align core answers
+`device_error` instead of silently falling back to the host (the one documented
+exception, codon-mode refinement, gives the identical answer either way). The
+runnable example is
+[examples/msa_fasta.cpp](examples/msa_fasta.cpp):
+
+```cpp
+genoaligner::MsaRequest req;
+req.mode   = genoaligner::MsaMode::codon;
+req.gc_def = 2;                       // vertebrate mitochondrial
+req.seqs   = {"ATGATAATCACC", "ATGATTATCACCTGA"};
+genoaligner::MsaResult r = genoaligner::msa_align(req);
+// r.aligned: equal-width rows in input order; r.qc[i]: frame, stops, partial codons
+```
+
+The full contract — input validation, QC fields, device semantics, thread
+safety — is the MSA section of `include/genoaligner/api.hpp`.
+
 ## Limits — read before you size a run
 
 - **`smax` must be in `[0, 511]`.** Above that the kernel's thread-to-diagonal mapping
@@ -230,6 +262,22 @@ Full method, the non-determinism evidence, and what these numbers do *not* suppo
 [docs/RESULTADO_B6_TCUPS.md](docs/RESULTADO_B6_TCUPS.md). Earlier, cross-job
 measurements (superseded for comparison purposes): [docs/BENCHMARK_FASE6.md](docs/BENCHMARK_FASE6.md).
 
+## Research use
+
+genoaligner runs inside the phylogenyAI mammal-phylogeny pipeline (a private
+repository at present), which pins a tagged release of this repository:
+
+- `tools/gene_qc` (Smith-Waterman + CIGAR through the public API) screens every
+  record of the 31 classic loci against a bait for homology, frameshifts and
+  in-frame stops — [docs/RESULTADO_PAI_GENE_QC.md](docs/RESULTADO_PAI_GENE_QC.md),
+  [docs/RESULTADO_PAI_PHASE2.md](docs/RESULTADO_PAI_PHASE2.md);
+- `genomsa` (codon / local-frame mode) builds the per-gene alignments of the
+  supermatrix behind the pipeline's monolithic IQ-TREE control;
+- `scripts/rf_distance.py` and `scripts/remap_scheme.py` are used for tree
+  comparison and partition remapping;
+- [docs/RESULTADO_H14_PHYLOGENYAI.md](docs/RESULTADO_H14_PHYLOGENYAI.md) measures
+  the pairwise path against MAFFT on the pipeline's real CYTB data.
+
 ## Documentation
 
 - [CONTRIBUTING.md](CONTRIBUTING.md) — the rules this codebase is held to.
@@ -243,6 +291,10 @@ measurements (superseded for comparison purposes): [docs/BENCHMARK_FASE6.md](doc
   replicability.
 - The SW work: [docs/PLAN_SMITH_WATERMAN.md](docs/PLAN_SMITH_WATERMAN.md) and the
   `RESULTADO_H8/H9/H10/H11/H12` files — kernel, traceback, API, NVIDIA, parasail.
+- The MSA work: [docs/PLAN_GPU_MSA.md](docs/PLAN_GPU_MSA.md), the
+  `RESULTADO_MSA_*`, `RESULTADO_CODON_*` and `RESULTADO_NJ_*` files, and
+  [docs/VALIDATION_MSA_API_CLUSTER.md](docs/VALIDATION_MSA_API_CLUSTER.md) for the
+  on-device validation of the public MSA entries.
 - `scripts/*.sbatch` are the validation jobs as actually run on the KU HPC
   cluster (hardcoded cluster paths, kept as evidence; they are not portable).
 
