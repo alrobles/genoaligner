@@ -336,4 +336,4 @@ no son comparables a v2.2 por el cambio de distribución de input.
 - Cadena RF end-to-end: `gsm_iqtr`/`codon_sm`/etc. — revisar cola.
 - Decidir: ¿mejorar genomsa (refinamiento/frame-model) para cerrar el
   gap vs MACSE, o aceptar el framing throughput/robustez?
-- TWILIGHT_ISSUE_DRAFT.md — sin enviar.
+- TWILIGHT_ISSUE_DRAFT.md — sin enviar (borrador; vive solo en `-devel`).

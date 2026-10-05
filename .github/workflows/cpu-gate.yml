@@ -26,4 +26,9 @@ jobs:
         run: bash scripts/check_kernel_cpu.sh
 
       - name: Run the CASTER scripts test suite
-        run: python3 -m unittest discover -s tests -p 'test_caster_report.py'
+        run: |
+          if ls tests/test_caster_report.py >/dev/null 2>&1; then
+            python3 -m unittest discover -s tests -p 'test_caster_report.py'
+          else
+            echo "no CASTER tests in this tree (public release) -- skipped"
+          fi

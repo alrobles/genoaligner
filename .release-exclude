@@ -1,0 +1,65 @@
+# Paths kept in genoaligner-devel but NOT promoted to the public genoaligner.
+# Applied at promotion time (docs/PLAN_PRODUCCION.md, section 3):
+#   grep -vE '^\s*(#|$)' .release-exclude | xargs git rm -r -q --ignore-unmatch
+
+# phylogenyAI pipeline and CASTER experiment scripts (the pipeline runs its own
+# copies from phylogenyAI/scripts since the 2026-09-25 repo-boundary split)
+scripts/align_genes_genomsa_lf.sbatch
+scripts/au_prep.py
+scripts/au_te_array.sbatch
+scripts/au_test.sbatch
+scripts/caster_build.sh
+scripts/caster_cpu_scale.sbatch
+scripts/caster_full_array.sbatch
+scripts/caster_mini_array.sbatch
+scripts/caster_pending.py
+scripts/caster_report.py
+scripts/caster_report.sbatch
+scripts/caster_run.sh
+scripts/caster_sample_alignment.py
+scripts/caster_scale_report.py
+scripts/caster_submit.sh
+scripts/caster_thread_plan.py
+scripts/codon_all31.sbatch
+scripts/codon_sm_iqtree.sbatch
+scripts/codon_supermatrix.sbatch
+scripts/codon_vs_macse.py
+scripts/fasttree_sm.sbatch
+scripts/genomsa_iqtree.sbatch
+scripts/genomsa_pipeline.sbatch
+scripts/iqtree_chain.sbatch
+scripts/macse_iqtree.sbatch
+scripts/macse_pipeline.sbatch
+scripts/mini_backbone.py
+scripts/mini_iqtree_array.sbatch
+scripts/mini_rf_report.py
+scripts/msa_all31.sbatch
+scripts/pai_gene_qc.sbatch
+scripts/pai_qc_filter.py
+scripts/pai_supermatrix.py
+scripts/pipeline_metrics.py
+scripts/pipeline_test.py
+scripts/pipeline_test.sbatch
+scripts/post_chain_rf.sbatch
+scripts/rf_compare.sbatch
+scripts/sm_iqtree_genomsa_lf.sbatch
+scripts/sm_prune_taxa.py
+scripts/trim_sm_genomsa_lf.sbatch
+scripts/upham_prune.py
+scripts/caster_experiment.py
+tests/test_caster_experiment.py
+tests/test_caster_report.py
+tests/test_caster_thread_plan.py
+
+# pipeline documents
+docs/CASTER_BACKBONE.md
+docs/RUTA_MEJORA_BACKBONE.md
+docs/PIPELINE_METRICS.md
+
+# internal planning notes and unpublished drafts
+docs/ESTRATEGIA_LIBERACION.md
+docs/HANDOFF_AUDIT.md
+docs/MASTERPLAN.md
+docs/PREPRINT_ESTADO.md
+docs/ROADMAP_RETAKEOVER.md
+docs/TWILIGHT_ISSUE_DRAFT.md
