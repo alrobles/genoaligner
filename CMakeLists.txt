@@ -285,6 +285,9 @@ target_link_libraries(nj_trace PRIVATE genomsa_ref Threads::Threads)
 add_executable(genomsa_codon_test tests/msa/test_codon.cpp)
 target_link_libraries(genomsa_codon_test PRIVATE genomsa_ref Threads::Threads)
 
+add_executable(genomsa_iter_refine_test tests/msa/test_iter_refine.cpp)
+target_link_libraries(genomsa_iter_refine_test PRIVATE genomsa_ref Threads::Threads)
+
 # NJ0: exact dense Neighbor Joining on the device (nj_tree_gpu), bit-exact with
 # nj_tree. Kernels are header-only; nj_gpu.cpp is the driver.
 add_library(genomsa_nj_gpu STATIC src/msa/nj_gpu.cpp)
@@ -353,6 +356,7 @@ if(GENOALIGNER_BUILD_TESTS)
     # Pure host code: must pass everywhere, so no skip code.
     add_test(NAME fasta_runs COMMAND genoaligner_fasta_test)
     add_test(NAME msa_ref_runs COMMAND genomsa_ref_test)
+    add_test(NAME iter_refine_runs COMMAND genomsa_iter_refine_test)
 
     # Real biological sequences (tests/data/mtdna_*.fa). Needs a GPU; exits 77 on a
     # device-less host, so it is reported as skipped rather than failed.

@@ -380,6 +380,7 @@ SWAlignResult align_sw(const SWRequest& req);
 //                                            contract break
 //   codon_refine != 0 outside codon mode     same ignored-field rule
 //   codon_refine < 0                         nonsensical round count
+//   iter_refine < 0                          nonsensical round count
 //
 // ONE SEQUENCE is legal and returns the sequence itself (degenerate tree).
 // aligned.size() == seqs.size(), all rows equal width, input order kept --
@@ -449,6 +450,18 @@ struct MsaRequest {
     int  gc_def            = 1;      // codon only: NCBI table 1 or 2
     int  codon_refine      = 0;      // codon only: stage-2 passes
     bool codon_local_frame = true;   // codon only: local-frame encode DP
+    int  iter_refine       = 0;      // all modes: tree-bipartition refine
+                                     // rounds (MAFFT FFT-NS-i class).
+                                     // Identical output host/device; in
+                                     // codon mode it refines the token
+                                     // MSA before decode.
+    int  fft_band          = 0;      // >0: FFT-anchored band half-width
+                                     // (columns) for the refine-phase
+                                     // profile-profile DP; 0 = full DP.
+    int  fft_lags          = 4;      // anchor diagonals to union (>= 1)
+    float fft_min_rel      = 0.10f;  // min cosine of the best anchor;
+                                     // below it the band is skipped and
+                                     // the full DP runs (fallback).
 };
 
 struct MsaResult {
